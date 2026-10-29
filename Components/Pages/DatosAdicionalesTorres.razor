@@ -1,0 +1,730 @@
+﻿@* Importa la "tabla de torres" en Excel: un archivo con muchos campos
+   (tipo de cimentación, SPT, coordenadas por pata, planos, etc.) para
+   torres que YA existen en el trazado (cargadas antes por KMZ/Excel).
+   El encabezado de esa tabla suele venir repartido en varias filas (un
+   título general arriba, y A/B/C/D debajo, cada letra en su propia
+   columna), así que no se intenta adivinar el resultado final: se
+   muestran las filas de encabezado tal cual, con un valor de ejemplo, y
+   el usuario confirma o corrige a qué campo va cada columna antes de
+   importar. *@
+@page "/trazado/datos-adicionales"
+@rendermode InteractiveServer
+@using System.Globalization
+@using Microsoft.AspNetCore.Components.Forms
+@using Microsoft.EntityFrameworkCore
+@using SigWeb.Data
+@using SigWeb.Data.Trazado
+@using SigWeb.Models
+@inject AppDbContext Db
+@inject NavigationManager Nav
+
+<PageTitle>Datos adicionales de torres</PageTitle>
+
+<EncabezadoPagina Titulo="Datos adicionales de torres" Icono="trazado" Subtitulo="@SubtituloPaso" Atras="/trazado">
+    <Acciones>
+        @if (paso == "mapeo" && tabla is not null)
+        {
+            <button type="button" class="pg-btn @(verVista ? "activo" : "")" title="Vista previa de los datos" aria-label="Vista previa de los datos" @onclick="() => verVista = !verVista">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16v14H4zM4 10h16M4 15h16M10 5v14"/></svg>
+            </button>
+            <button type="button" class="pg-btn pg-btn-primario" disabled="@(!TieneIdentificador || importando)" title="@($"Continuar ({tabla.Filas.Count} fila(s))")" @onclick="RevisarAntesDeImportar">
+                @(importando ? "Revisando..." : $"Continuar ({tabla.Filas.Count})")
+            </button>
+        }
+        else if (paso == "conflictos")
+        {
+            <button type="button" class="pg-btn pg-btn-primario" disabled="@importando" title="Continuar" @onclick="PrepararComparacion">@(importando ? "Comparando..." : "Continuar")</button>
+        }
+        else if (paso == "comparar")
+        {
+            <button type="button" class="pg-btn pg-btn-primario" disabled="@importando" @onclick="Aplicar">@(importando ? "Importando..." : "Confirmar e importar")</button>
+        }
+    </Acciones>
+</EncabezadoPagina>
+
+<div class="dat-modulo">
+        @if (paso == "subir")
+        {
+
+            <div class="row g-2 align-items-end mb-2">
+                <div class="col-md-5">
+                    <label class="form-label mb-1 small">Archivo Excel</label>
+                    <InputFile class="form-control form-control-sm" OnChange="SeleccionarArchivo" accept=".xlsx" />
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label mb-1 small">Filas de encabezado</label>
+                    <input type="number" class="form-control form-control-sm" min="1" max="6" @bind="filasEncabezado" />
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label mb-1 small">Referencia de esta tabla (opcional)</label>
+                    <input class="form-control form-control-sm" placeholder="Ej: A29-9" @bind="versionReferencia" />
+                </div>
+            </div>
+
+            @if (!string.IsNullOrEmpty(errorArchivo))
+            {
+                <div class="alert alert-warning py-1">@errorArchivo</div>
+            }
+
+            <div class="d-flex justify-content-end gap-2">
+                <button class="btn btn-secondary btn-sm" @onclick="Cerrar" title="Cancelar"><Ico Nombre="cancelar" /></button>
+                <button class="btn btn-primary btn-sm" disabled="@(archivoCargado is null)" @onclick="LeerArchivo">
+                    Leer archivo
+                </button>
+            </div>
+        }
+        else if (paso == "mapeo" && tabla is not null)
+        {
+
+            @if (mapeos.Any(m => m.Destino == TipoDestino.CoordenadaPata))
+            {
+                <div class="row g-2 align-items-end mb-2">
+                    <div class="col-md-6">
+                        <label class="form-label mb-1 small">Sistema de las coordenadas por pata</label>
+                        <select class="form-select form-select-sm" @bind="sistemaSeleccionado">
+                            <option value="@SistemaCoordenadas.Geograficas">Geográficas (Lat/Lon, grados decimales)</option>
+                            <option value="@SistemaCoordenadas.MagnaBogota">MAGNA-SIRGAS — Origen Bogotá (planas)</option>
+                            <option value="@SistemaCoordenadas.Utm17N">UTM zona 17N</option>
+                            <option value="@SistemaCoordenadas.Utm18N">UTM zona 18N</option>
+                            <option value="@SistemaCoordenadas.Utm19N">UTM zona 19N</option>
+                        </select>
+                    </div>
+                </div>
+            }
+
+            @if (verVista)
+            {
+                <div class="dat-vista">
+                    <table class="table table-sm tabla-compacta align-middle mb-0">
+                        <thead>
+                            <tr>
+                                @for (int i = 0; i < mapeos.Count; i++)
+                                {
+                                    var mp = mapeos[i];
+                                    <th class="@(mp.Destino == TipoDestino.Ignorar ? "dat-ign" : "")" title="@mp.Columna.EncabezadoVisible">
+                                        <div class="text-muted small">@mp.Columna.Direccion</div>
+                                        <div>@EtiquetaDestino(mp)</div>
+                                    </th>
+                                }
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var fila in tabla.Filas.Take(15))
+                            {
+                                <tr>
+                                    @for (int i = 0; i < mapeos.Count; i++)
+                                    {
+                                        <td class="small @(mapeos[i].Destino == TipoDestino.Ignorar ? "dat-ign" : "")">@(i < fila.Length ? fila[i] : "")</td>
+                                    }
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+
+            <div class="dat-scroll">
+                <table class="table table-sm tabla-compacta align-middle">
+                    <thead style="position: sticky; top: 0; background: #fff;">
+                        <tr>
+                            <th style="width: 26%;">Columna (encabezado)</th>
+                            <th style="width: 14%;">Ejemplo</th>
+                            <th style="width: 22%;">Migrar como</th>
+                            <th>Detalle</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var m in mapeos)
+                        {
+                            <tr>
+                                <td class="small">
+                                    <div class="text-muted">@m.Columna.Direccion</div>
+                                    @foreach (var linea in m.Columna.Encabezados)
+                                    {
+                                        @if (!string.IsNullOrWhiteSpace(linea))
+                                        {
+                                            <div>@linea</div>
+                                        }
+                                    }
+                                </td>
+                                <td class="small text-muted">@m.Columna.Ejemplo</td>
+                                <td>
+                                    <select class="form-select form-select-sm" @bind="m.Destino">
+                                        <option value="@TipoDestino.Ignorar">Ignorar</option>
+                                        <option value="@TipoDestino.IdentificadorTorre">Identificador de torre</option>
+                                        <option value="@TipoDestino.CampoTorre">Campo de la torre</option>
+                                        <option value="@TipoDestino.CoordenadaPata">Coordenada de pata</option>
+                                        <option value="@TipoDestino.CampoPata">Campo de la pata</option>
+                                    </select>
+                                </td>
+                                <td>
+                                    @if (m.Destino == TipoDestino.CampoTorre)
+                                    {
+                                        <input class="form-control form-control-sm" placeholder="Nombre del campo" @bind="m.NombreCampo" />
+                                    }
+                                    else if (m.Destino == TipoDestino.CampoPata)
+                                    {
+                                        <div class="d-flex gap-1">
+                                            <select class="form-select form-select-sm" style="max-width: 90px;" @bind="m.PataLetra">
+                                                <option value="A">Pata A</option>
+                                                <option value="B">Pata B</option>
+                                                <option value="C">Pata C</option>
+                                                <option value="D">Pata D</option>
+                                            </select>
+                                            <input class="form-control form-control-sm" placeholder="Nombre del campo" @bind="m.NombreCampo" />
+                                        </div>
+                                    }
+                                    else if (m.Destino == TipoDestino.CoordenadaPata)
+                                    {
+                                        <div class="d-flex gap-1">
+                                            <select class="form-select form-select-sm" style="max-width: 90px;" @bind="m.PataLetra">
+                                                <option value="A">Pata A</option>
+                                                <option value="B">Pata B</option>
+                                                <option value="C">Pata C</option>
+                                                <option value="D">Pata D</option>
+                                            </select>
+                                            <select class="form-select form-select-sm" @bind="m.EjeCoordenada">
+                                                <option value="Este">Este / Longitud</option>
+                                                <option value="Norte">Norte / Latitud</option>
+                                            </select>
+                                        </div>
+                                    }
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+
+            @if (!TieneIdentificador)
+            {
+                <div class="alert alert-warning py-1 mt-2">
+                    Marca una columna como "Identificador de torre" (normalmente "NÚMERO DE TORRE" o "Código") para poder importar.
+                </div>
+            }
+
+            <div class="d-flex justify-content-end gap-2 mt-2">
+                <button class="btn btn-secondary btn-sm" @onclick="Cerrar" title="Cancelar"><Ico Nombre="cancelar" /></button>
+            </div>
+        }
+        else if (paso == "conflictos")
+        {
+
+            <div class="dat-scroll">
+                <table class="table table-sm tabla-compacta align-middle">
+                    <thead style="position: sticky; top: 0; background: #fff;">
+                        <tr>
+                            <th>Código en el archivo</th>
+                            <th>Torre existente parecida</th>
+                            <th style="width: 220px;">Decisión</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var c in conflictos)
+                        {
+                            <tr>
+                                <td>@c.CodigoFila</td>
+                                <td>@c.TorreSugerida.Codigo</td>
+                                <td>
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="radio" name="@("decision_" + c.CodigoFila)"
+                                               checked="@(c.Decision == "Omitir")" @onchange="@(() => c.Decision = "Omitir")" />
+                                        <label class="form-check-label">Omitir</label>
+                                    </div>
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="radio" name="@("decision_" + c.CodigoFila)"
+                                               checked="@(c.Decision == "Migrar")" @onchange="@(() => c.Decision = "Migrar")" />
+                                        <label class="form-check-label">Migrar a @c.TorreSugerida.Codigo</label>
+                                    </div>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="d-flex justify-content-end gap-2 mt-2">
+                <button class="btn btn-secondary btn-sm" @onclick="Cerrar" title="Cancelar"><Ico Nombre="cancelar" /></button>
+            </div>
+        }
+        else if (paso == "comparar")
+        {
+            <div class="dat-scroll">
+                <table class="table table-sm tabla-compacta align-middle">
+                    <thead style="position: sticky; top: 0; background: #fff;">
+                        <tr>
+                            <th>Campo</th><th>Dónde</th><th></th>
+                            <th class="text-end" title="Valores que hoy no existen">Nuevos</th>
+                            <th class="text-end" title="Valores distintos a los cargados">Cambiados</th>
+                            <th class="text-end" title="Valores iguales: no se tocan">Iguales</th>
+                            <th class="text-center" title="Reemplazar los valores cambiados (los anteriores van a la Papelera)">Reemplazar</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var r in resumen)
+                        {
+                            <tr>
+                                <td>@r.Clave</td>
+                                <td class="small text-muted">@r.Ambito</td>
+                                <td>@if (r.Nueva) { <span class="badge bg-success" title="Columna que antes no estaba cargada">Nueva</span> }</td>
+                                <td class="text-end">@r.Nuevos</td>
+                                <td class="text-end">
+                                    @if (r.Cambiados > 0) { <button type="button" class="btn btn-link btn-sm p-0" title="Ver cambios" @onclick="() => r.Detalle = !r.Detalle">@r.Cambiados</button> } else { <span>0</span> }
+                                </td>
+                                <td class="text-end">@r.Iguales</td>
+                                <td class="text-center"><input type="checkbox" disabled="@(r.Cambiados == 0)" @bind="r.AplicarCambios" /></td>
+                            </tr>
+                            @if (r.Detalle)
+                            {
+                                <tr><td colspan="7" class="small bg-light">
+                                    @foreach (var mu in r.Muestras) { <div><strong>@mu.Torre</strong>: @mu.Antes → @mu.Ahora</div> }
+                                    @if (r.Cambiados > r.Muestras.Count) { <div class="text-muted">… y @(r.Cambiados - r.Muestras.Count) más</div> }
+                                </td></tr>
+                            }
+                        }
+                        @if (coordNuevas + coordCambiadas + coordIguales > 0)
+                        {
+                            <tr>
+                                <td>Coordenadas de pata</td><td class="small text-muted">Patas</td><td></td>
+                                <td class="text-end">@coordNuevas</td><td class="text-end">@coordCambiadas</td><td class="text-end">@coordIguales</td>
+                                <td class="text-center"><input type="checkbox" disabled="@(coordCambiadas == 0)" title="Usar la ubicación nueva (la anterior no queda en la Papelera)" @bind="aplicarCoord" /></td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+                @if (clavesConservadas.Count > 0)
+                {
+                    <div class="small mt-2" title="Columnas ya cargadas que este archivo no trae: se conservan sin cambios"><strong>Se conservan:</strong> @string.Join(", ", clavesConservadas)</div>
+                }
+                @if (torresNoEncontradas.Count > 0)
+                {
+                    <div class="small mt-1 text-warning" title="Códigos del archivo sin torre en el mapa: se omiten"><strong>Sin torre (@torresNoEncontradas.Count):</strong> @string.Join(", ", torresNoEncontradas.Take(30))@(torresNoEncontradas.Count > 30 ? "…" : "")</div>
+                }
+            </div>
+            <div class="d-flex justify-content-end gap-2 mt-2">
+                <button class="btn btn-secondary btn-sm" @onclick="Cerrar" title="Cancelar"><Ico Nombre="cancelar" /></button>
+            </div>
+        }
+        else if (paso == "resultado")
+        {
+            <div class="alert alert-success">@mensajeResultado</div>
+
+            @if (torresNoEncontradas.Count > 0)
+            {
+                <div class="alert alert-warning">
+                    <strong>@torresNoEncontradas.Count fila(s) sin torre coincidente en el mapa</strong> (no se tocaron):
+                    <div class="small mt-1">@string.Join(", ", torresNoEncontradas)</div>
+                </div>
+            }
+
+            <div class="d-flex justify-content-end">
+                <button class="btn btn-primary btn-sm" @onclick="Cerrar">Cerrar</button>
+            </div>
+        }
+</div>
+
+@code {
+    private bool verVista = true;
+
+    private string SubtituloPaso => paso switch
+    {
+        "subir" => "1 · Archivo",
+        "mapeo" => "2 · Columnas",
+        "conflictos" => "3 · Coincidencias",
+        "comparar" => "4 · Comparación",
+        _ => "5 · Resultado"
+    };
+
+    private static string EtiquetaDestino(MapeoColumna m) => m.Destino switch
+    {
+        TipoDestino.IdentificadorTorre => "Identificador",
+        TipoDestino.CampoTorre => string.IsNullOrWhiteSpace(m.NombreCampo) ? "Campo de la torre" : m.NombreCampo,
+        TipoDestino.CoordenadaPata => $"Pata {m.PataLetra} · {m.EjeCoordenada}",
+        TipoDestino.CampoPata => $"Pata {m.PataLetra} · {m.NombreCampo}",
+        _ => "Ignorar"
+    };
+
+    private enum TipoDestino { Ignorar, IdentificadorTorre, CampoTorre, CoordenadaPata, CampoPata }
+
+    private class MapeoColumna
+    {
+        public ColumnaTablaTorres Columna { get; set; } = null!;
+        public TipoDestino Destino { get; set; } = TipoDestino.Ignorar;
+        public string NombreCampo { get; set; } = "";
+        public string PataLetra { get; set; } = "A";
+        public string EjeCoordenada { get; set; } = "Este";
+    }
+
+    private class ConflictoTorre
+    {
+        public string CodigoFila { get; set; } = "";
+        public ElementoTrazado TorreSugerida { get; set; } = null!;
+        public string Decision { get; set; } = "Omitir"; // "Omitir" | "Migrar" — Omitir por defecto (recomendado)
+    }
+
+    private string paso = "subir"; // "subir" | "mapeo" | "conflictos" | "resultado"
+    private int filasEncabezado = 3;
+    private IBrowserFile? archivoCargado;
+    private string errorArchivo = "";
+    private string versionReferencia = "";
+
+    private TablaTorresCruda? tabla;
+    private List<MapeoColumna> mapeos = new();
+    private SistemaCoordenadas sistemaSeleccionado = SistemaCoordenadas.MagnaBogota;
+    private List<ConflictoTorre> conflictos = new();
+
+    private bool importando = false;
+    private string mensajeResultado = "";
+    private List<string> torresNoEncontradas = new();
+
+    private bool TieneIdentificador => mapeos.Any(m => m.Destino == TipoDestino.IdentificadorTorre);
+
+    private void SeleccionarArchivo(InputFileChangeEventArgs e)
+    {
+        archivoCargado = e.File;
+        errorArchivo = "";
+    }
+
+    private async Task LeerArchivo()
+    {
+        if (archivoCargado is null) return;
+        errorArchivo = "";
+
+        try
+        {
+            await using var stream = archivoCargado.OpenReadStream(20 * 1024 * 1024); // 20 MB
+            using var ms = new MemoryStream();
+            await stream.CopyToAsync(ms);
+            ms.Position = 0;
+
+            tabla = LectorExcelTablaTorres.Leer(ms, filasEncabezado);
+        }
+        catch (Exception ex)
+        {
+            errorArchivo = $"No se pudo leer el archivo: {ex.Message}";
+            return;
+        }
+
+        if (tabla.Columnas.Count == 0)
+        {
+            errorArchivo = "No se detectaron columnas en la primera hoja del archivo.";
+            return;
+        }
+
+        mapeos = tabla.Columnas.Select(SugerirMapeo).ToList();
+        SugerirSistemaCoordenadas();
+        paso = "mapeo";
+    }
+
+    // ---------- Sugerencia automática (el usuario la revisa y corrige) ----------
+    private MapeoColumna SugerirMapeo(ColumnaTablaTorres columna)
+    {
+        var mapeo = new MapeoColumna { Columna = columna };
+        var texto = QuitarTildes(columna.EncabezadoVisible.ToLowerInvariant());
+
+        if (string.IsNullOrWhiteSpace(texto))
+        {
+            mapeo.Destino = TipoDestino.Ignorar;
+            return mapeo;
+        }
+
+        if (texto.Contains("numero de torre") || texto.Trim() == "torre" || texto.Contains("codigo de torre") || texto.Contains("codigo torre"))
+        {
+            mapeo.Destino = TipoDestino.IdentificadorTorre;
+            return mapeo;
+        }
+
+        var letra = DetectarLetraPata(texto);
+        bool pareceCoordenada = texto.Contains("coorden") || texto.Contains("este") || texto.Contains("norte");
+
+        if (letra is not null && pareceCoordenada)
+        {
+            mapeo.Destino = TipoDestino.CoordenadaPata;
+            mapeo.PataLetra = letra;
+            mapeo.EjeCoordenada = texto.Contains("norte") && !texto.Contains("este") ? "Norte"
+                : (EsUltimaPalabra(texto, "norte") ? "Norte" : "Este");
+            return mapeo;
+        }
+
+        if (letra is not null && (texto.Contains("pata") || texto.Contains("cimentacion") || texto.Contains("plano") || texto.Contains("pedestal")))
+        {
+            mapeo.Destino = TipoDestino.CampoPata;
+            mapeo.PataLetra = letra;
+            mapeo.NombreCampo = NombreCampoPorDefecto(columna);
+            return mapeo;
+        }
+
+        mapeo.Destino = TipoDestino.CampoTorre;
+        mapeo.NombreCampo = NombreCampoPorDefecto(columna);
+        return mapeo;
+    }
+
+    private static bool EsUltimaPalabra(string texto, string palabra)
+    {
+        var partes = texto.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        return partes.Length > 0 && partes[^1] == palabra;
+    }
+
+    private string NombreCampoPorDefecto(ColumnaTablaTorres columna)
+    {
+        var visible = columna.EncabezadoVisible.Trim();
+        return visible.Length > 1 ? visible : $"Columna {columna.Direccion}";
+    }
+
+    private static string? DetectarLetraPata(string textoMinusculasSinTildes)
+    {
+        var partes = textoMinusculasSinTildes.Split(new[] { ' ', '-', '_', '(', ')' }, StringSplitOptions.RemoveEmptyEntries);
+        foreach (var p in partes)
+        {
+            if (p.Length == 1 && "abcd".Contains(p)) return p.ToUpperInvariant();
+        }
+        return null;
+    }
+
+    private static string QuitarTildes(string texto) => texto
+        .Replace("á", "a").Replace("é", "e").Replace("í", "i")
+        .Replace("ó", "o").Replace("ú", "u").Replace("ñ", "n");
+
+    private void SugerirSistemaCoordenadas()
+    {
+        var este = mapeos.FirstOrDefault(m => m.Destino == TipoDestino.CoordenadaPata && m.EjeCoordenada == "Este");
+        if (este is null) return;
+        var norte = mapeos.FirstOrDefault(m => m.Destino == TipoDestino.CoordenadaPata && m.EjeCoordenada == "Norte" && m.PataLetra == este.PataLetra);
+        if (norte is null) return;
+
+        if (double.TryParse(este.Columna.Ejemplo, NumberStyles.Any, CultureInfo.InvariantCulture, out var x) &&
+            double.TryParse(norte.Columna.Ejemplo, NumberStyles.Any, CultureInfo.InvariantCulture, out var y))
+        {
+            sistemaSeleccionado = ConversorCoordenadas.Detectar(x, y);
+        }
+    }
+
+    // ---------- Revisión previa (detecta filas que no calzan por código exacto pero se parecen a una torre existente) ----------
+    private async Task RevisarAntesDeImportar()
+    {
+        if (tabla is null || !TieneIdentificador || importando) return;
+        importando = true;
+
+        var colIdentificador = mapeos.First(m => m.Destino == TipoDestino.IdentificadorTorre);
+        int indiceIdentificador = mapeos.IndexOf(colIdentificador);
+
+        var torres = await Db.ElementosTrazado.AsNoTracking().Where(t => !t.Eliminado).ToListAsync();
+        var codigosExactos = torres.Select(t => NormalizarCodigo(t.Codigo)).ToHashSet();
+
+        conflictos = new();
+        var vistos = new HashSet<string>();
+
+        foreach (var fila in tabla.Filas)
+        {
+            var codigoCrudo = fila[indiceIdentificador];
+            var codigoTorre = NormalizarCodigo(codigoCrudo);
+            if (string.IsNullOrWhiteSpace(codigoTorre)) continue;
+            if (codigosExactos.Contains(codigoTorre)) continue;
+            if (!vistos.Add(codigoTorre)) continue; // ya evaluado (filas repetidas)
+
+            var parecida = torres.FirstOrDefault(t => DetectorNombresParecidos.SonParecidos(codigoTorre, NormalizarCodigo(t.Codigo)));
+            if (parecida is not null)
+            {
+                conflictos.Add(new ConflictoTorre { CodigoFila = codigoCrudo, TorreSugerida = parecida });
+            }
+        }
+
+        importando = false;
+        if (conflictos.Count > 0) paso = "conflictos";
+        else await PrepararComparacion();
+    }
+
+    // ---------- Comparar con lo ya cargado, y luego fusionar ----------
+    // Nada se borra: una columna nueva se agrega; un valor distinto reemplaza al
+    // anterior (que va a la Papelera, recuperable); lo igual no se toca; y las
+    // columnas que el archivo no trae se conservan tal cual.
+    private class ResumenColumna
+    {
+        public string Clave { get; set; } = "";
+        public string Ambito { get; set; } = "Torre";
+        public bool Nueva { get; set; }
+        public int Nuevos { get; set; }
+        public int Cambiados { get; set; }
+        public int Iguales { get; set; }
+        public bool AplicarCambios { get; set; } = true;
+        public bool Detalle { get; set; }
+        public List<(string Torre, string Antes, string Ahora)> Muestras { get; } = new();
+    }
+
+    private List<ResumenColumna> resumen = new();
+    private List<string> clavesConservadas = new();
+    private int coordNuevas, coordCambiadas, coordIguales;
+    private bool aplicarCoord = true;
+    private enum Estado { Nuevo, Cambiado, Igual }
+
+    private Dictionary<(int TorreId, string Clave), CampoExtraTorre> extrasTorre = new();
+    private Dictionary<(int ComponenteId, string Clave), CampoExtraComponente> extrasComponente = new();
+
+    private ResumenColumna Columna(string ambito, string clave, bool nueva)
+    {
+        var r = resumen.FirstOrDefault(x => x.Ambito == ambito && x.Clave == clave);
+        if (r is null) { r = new ResumenColumna { Ambito = ambito, Clave = clave, Nueva = nueva }; resumen.Add(r); }
+        return r;
+    }
+
+    private static Estado Evaluar(string? actual, string nuevo) =>
+        actual is null ? Estado.Nuevo : (actual.Trim() == nuevo.Trim() ? Estado.Igual : Estado.Cambiado);
+
+    private async Task PrepararComparacion()
+    {
+        if (importando) return;
+        importando = true;
+        try
+        {
+            resumen = new(); coordNuevas = coordCambiadas = coordIguales = 0; aplicarCoord = true;
+            await Procesar(false);
+            paso = "comparar";
+        }
+        finally { importando = false; }
+    }
+
+    private Task Importar() => Aplicar();
+
+    private async Task Aplicar()
+    {
+        if (importando) return;
+        importando = true;
+        try
+        {
+            var r = await Procesar(true);
+            mensajeResultado = $"{r.Torres} torre(s) actualizada(s): {r.CamposTorre} dato(s) de torre, "
+                + $"{r.CamposPata} dato(s) de pata y {r.Coordenadas} coordenada(s) de pata guardadas. Los valores reemplazados están en la Papelera.";
+            paso = "resultado";
+        }
+        finally { importando = false; }
+    }
+
+    // aplicar = false: solo cuenta y arma el resumen. aplicar = true: escribe, respetando lo elegido en el resumen.
+    private async Task<(int Torres, int CamposTorre, int CamposPata, int Coordenadas)> Procesar(bool aplicar)
+    {
+        var colIdentificador = mapeos.First(m => m.Destino == TipoDestino.IdentificadorTorre);
+        int indiceIdentificador = mapeos.IndexOf(colIdentificador);
+        var nombreArchivo = string.IsNullOrWhiteSpace(archivoCargado?.Name) ? "Tabla de torres" : archivoCargado!.Name;
+        var origenTexto = $"{nombreArchivo} — {DateTime.Now:dd/MM/yyyy HH:mm}"
+            + (string.IsNullOrWhiteSpace(versionReferencia) ? "" : $" (v. {versionReferencia.Trim()})");
+
+        var torres = await Db.ElementosTrazado.Where(t => !t.Eliminado).ToListAsync();
+        var torresPorCodigo = new Dictionary<string, ElementoTrazado>();
+        foreach (var t in torres) torresPorCodigo[NormalizarCodigo(t.Codigo)] = t;
+        var migraciones = conflictos.Where(c => c.Decision == "Migrar")
+            .ToDictionary(c => NormalizarCodigo(c.CodigoFila), c => c.TorreSugerida.Id);
+
+        var componentes = await Db.Componentes.Where(c => !c.Eliminado).ToListAsync();
+        extrasTorre = new(); extrasComponente = new();
+        foreach (var c in await Db.CamposExtraTorre.Where(c => !c.Eliminado).ToListAsync()) extrasTorre[(c.ElementoTrazadoId, c.Clave)] = c;
+        foreach (var c in await Db.CamposExtraComponente.Where(c => !c.Eliminado).ToListAsync()) extrasComponente[(c.ComponenteId, c.Clave)] = c;
+        var clavesTorreExistentes = extrasTorre.Values.Select(c => c.Clave).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var clavesPataExistentes = extrasComponente.Values.Select(c => c.Clave).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        torresNoEncontradas = new();
+        int torresActualizadas = 0, camposTorre = 0, camposPata = 0, coordenadas = 0;
+        var ahora = DateTime.Now;
+
+        foreach (var fila in tabla!.Filas)
+        {
+            var codigoCrudo = fila[indiceIdentificador];
+            var codigoTorre = NormalizarCodigo(codigoCrudo);
+            if (string.IsNullOrWhiteSpace(codigoTorre)) continue;
+
+            if (!torresPorCodigo.TryGetValue(codigoTorre, out var torre))
+                if (migraciones.TryGetValue(codigoTorre, out var idMig)) torre = torres.FirstOrDefault(t => t.Id == idMig);
+            if (torre is null) { torresNoEncontradas.Add(codigoCrudo); continue; }
+
+            bool huboCambios = false;
+            var patas = componentes.Where(c => c.ElementoTrazadoId == torre.Id).ToList();
+
+            foreach (var m in mapeos.Where(m => m.Destino == TipoDestino.CampoTorre))
+            {
+                var valor = fila[mapeos.IndexOf(m)];
+                if (string.IsNullOrWhiteSpace(valor) || string.IsNullOrWhiteSpace(m.NombreCampo)) continue;
+                var clave = m.NombreCampo.Trim();
+                extrasTorre.TryGetValue((torre.Id, clave), out var actual);
+                var est = Evaluar(actual?.Valor, valor);
+                var col = Columna("Torre", clave, !clavesTorreExistentes.Contains(clave));
+                if (!aplicar)
+                {
+                    if (est == Estado.Nuevo) col.Nuevos++; else if (est == Estado.Igual) col.Iguales++;
+                    else { col.Cambiados++; if (col.Muestras.Count < 60) col.Muestras.Add((torre.Codigo, actual!.Valor, valor)); }
+                    continue;
+                }
+                if (est == Estado.Igual || (est == Estado.Cambiado && !col.AplicarCambios)) continue;
+                if (actual is not null) { actual.Eliminado = true; actual.FechaEliminacion = ahora; }
+                var nuevo = new CampoExtraTorre { ElementoTrazadoId = torre.Id, Clave = clave, Valor = valor, Origen = origenTexto };
+                Db.CamposExtraTorre.Add(nuevo);
+                extrasTorre[(torre.Id, clave)] = nuevo;
+                camposTorre++; huboCambios = true;
+            }
+
+            foreach (var m in mapeos.Where(m => m.Destino == TipoDestino.CampoPata))
+            {
+                var valor = fila[mapeos.IndexOf(m)];
+                if (string.IsNullOrWhiteSpace(valor) || string.IsNullOrWhiteSpace(m.NombreCampo)) continue;
+                var pata = patas.FirstOrDefault(p => p.Nombre.Equals($"Pata {m.PataLetra}", StringComparison.OrdinalIgnoreCase));
+                if (pata is null) continue;
+                var clave = m.NombreCampo.Trim();
+                extrasComponente.TryGetValue((pata.Id, clave), out var actual);
+                var est = Evaluar(actual?.Valor, valor);
+                var col = Columna($"Pata {m.PataLetra}", clave, !clavesPataExistentes.Contains(clave));
+                if (!aplicar)
+                {
+                    if (est == Estado.Nuevo) col.Nuevos++; else if (est == Estado.Igual) col.Iguales++;
+                    else { col.Cambiados++; if (col.Muestras.Count < 60) col.Muestras.Add((torre.Codigo, actual!.Valor, valor)); }
+                    continue;
+                }
+                if (est == Estado.Igual || (est == Estado.Cambiado && !col.AplicarCambios)) continue;
+                if (actual is not null) { actual.Eliminado = true; actual.FechaEliminacion = ahora; }
+                var nuevo = new CampoExtraComponente { ComponenteId = pata.Id, Clave = clave, Valor = valor, Origen = origenTexto };
+                Db.CamposExtraComponente.Add(nuevo);
+                extrasComponente[(pata.Id, clave)] = nuevo;
+                camposPata++; huboCambios = true;
+            }
+
+            foreach (var letra in new[] { "A", "B", "C", "D" })
+            {
+                var mEste = mapeos.FirstOrDefault(m => m.Destino == TipoDestino.CoordenadaPata && m.PataLetra == letra && m.EjeCoordenada == "Este");
+                var mNorte = mapeos.FirstOrDefault(m => m.Destino == TipoDestino.CoordenadaPata && m.PataLetra == letra && m.EjeCoordenada == "Norte");
+                if (mEste is null || mNorte is null) continue;
+                if (!double.TryParse(fila[mapeos.IndexOf(mEste)], NumberStyles.Any, CultureInfo.InvariantCulture, out var x)) continue;
+                if (!double.TryParse(fila[mapeos.IndexOf(mNorte)], NumberStyles.Any, CultureInfo.InvariantCulture, out var y)) continue;
+                var pata = patas.FirstOrDefault(p => p.Nombre.Equals($"Pata {letra}", StringComparison.OrdinalIgnoreCase));
+                if (pata is null) continue;
+
+                var (lat, lon) = ConversorCoordenadas.Convertir(x, y, sistemaSeleccionado);
+                bool sinCoord = pata.Latitud is null || pata.Longitud is null || (pata.Latitud == 0 && pata.Longitud == 0);
+                bool igual = !sinCoord && Math.Abs(pata.Latitud!.Value - lat) < 1e-7 && Math.Abs(pata.Longitud!.Value - lon) < 1e-7;
+                if (!aplicar)
+                {
+                    if (sinCoord) coordNuevas++; else if (igual) coordIguales++; else coordCambiadas++;
+                    continue;
+                }
+                if (igual || (!sinCoord && !aplicarCoord)) continue;
+                pata.Latitud = lat; pata.Longitud = lon;
+                coordenadas++; huboCambios = true;
+            }
+
+            if (huboCambios) torresActualizadas++;
+        }
+
+        if (!aplicar)
+        {
+            var enArchivo = resumen.Select(r => r.Clave).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            clavesConservadas = clavesTorreExistentes.Concat(clavesPataExistentes).Distinct(StringComparer.OrdinalIgnoreCase)
+                .Where(c => !enArchivo.Contains(c)).OrderBy(c => c, StringComparer.OrdinalIgnoreCase).ToList();
+            Db.ChangeTracker.Clear();
+            return (0, 0, 0, 0);
+        }
+
+        await Db.SaveChangesAsync();
+        Db.ChangeTracker.Clear();
+        return (torresActualizadas, camposTorre, camposPata, coordenadas);
+    }
+
+    private static string NormalizarCodigo(string codigo) => (codigo ?? "").Trim().ToUpperInvariant();
+
+    private void Cerrar() => Nav.NavigateTo("/trazado");
+}

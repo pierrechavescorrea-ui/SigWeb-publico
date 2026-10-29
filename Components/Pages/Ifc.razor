@@ -1,0 +1,780 @@
+@page "/ifc"
+@rendermode InteractiveServer
+@implements IAsyncDisposable
+@using System.Globalization
+@using System.Text.Json
+@using System.Text.Json.Serialization
+@using SigWeb.Data
+@using SigWeb.Data.Modelos3D
+@using SigWeb.Data.Tablas
+@using SigWeb.Models
+@using Microsoft.EntityFrameworkCore
+@inject IJSRuntime JS
+@inject IWebHostEnvironment Env
+@inject AppDbContext Db
+
+<PageTitle>Modelos 3D</PageTitle>
+
+<EncabezadoPagina Titulo="@(verVinculo ? "Modelos en Línea 3D" : "Modelos 3D")" Icono="ifc" Subtitulo="@Subtitulo" OnAtras="AtrasCb">
+    <Acciones>
+        @if (verVinculo)
+        {
+            <BotonCampos Activo="verCamposVinculo" Deshabilitado="motorVinculo is null" OnClick="() => verCamposVinculo = true" />
+            <BotonExportar Titulo="Modelos en Línea 3D" />
+        }
+        else if (sel is null)
+        {
+            <button type="button" class="pg-btn" title="Modelos en Línea 3D" @onclick="AbrirVinculo">
+                <IconoPunto Punto="menu:linea3d" Clase="ui-svg"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 20h18M7 20 9 6l2 14M13 20l2-14 2 14"/><path d="M4 9c3 2 6 2 8 0s5-2 8 0"/></svg></IconoPunto>
+            </button>
+        }
+        else
+        {
+            <button type="button" class="pg-btn @(verLista ? "activo" : "")" title="Lista de materiales" disabled="@(torreJson is null)" @onclick="AlternarListaAsync"><Ico Nombre="listado" /></button>
+            <button type="button" class="pg-btn" title="Datos de la torre, validación y supuestos" @onclick="AlternarTorre">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5.5M12 7.6v.2"/></svg>
+            </button>
+            <a class="pg-btn" href="@("modelos-ifc/" + sel.Archivo)" download title="Descargar .ifc">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>
+            </a>
+        }
+    </Acciones>
+</EncabezadoPagina>
+
+@if (error is not null)
+{
+    <div class="alert alert-danger py-1 px-2 small">@error</div>
+}
+
+@if (verVinculo)
+{
+    @if (verCamposVinculo && motorVinculo is not null)
+    {
+        <PanelCampos Motor="motorVinculo" OnCerrar="() => verCamposVinculo = false" OnCambio="StateHasChanged" />
+    }
+    <input class="form-control form-control-sm mb-2" style="max-width:240px;" placeholder="Buscar modelo..." @bind="filtroVinculo" @bind:event="oninput" />
+    <div class="tabla-scroll tabla-llena"><table class="table table-sm table-bordered table-hover tabla-compacta align-middle mb-0 tabla-pin">
+        <thead>
+            <tr>
+                @foreach (var c in ColumnasVinculo)
+                {
+                    <th class="th-ordenable" @onclick="() => OrdenarVinculo(c.Clave)">@c.Nombre@(colVinculo == c.Clave ? (ascVinculo ? " ▲" : " ▼") : "")</th>
+                }
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var (c, id) in FilasVinculo)
+            {
+                var repetido = cfg.Count(x => ConfigModelos3D.Norm(x.Nombre) == ConfigModelos3D.Norm(c.Nombre)) > 1;
+                <tr class="@(c.Vinculado ? "ifc-vinc-on" : "")">
+                    @foreach (var col in ColumnasVinculo)
+                    {
+                        @if (col.Origen == OrigenCampoTabla.Nativo && col.Clave == "nombre")
+                        {
+                            <td class="@(repetido ? "ifc-vinc-rep" : "")" title="@(repetido ? "Varios modelos con este nombre: solo uno va a Línea 3D" : null)">
+                                <input class="form-control form-control-sm" value="@c.Nombre" @onchange="@(e => CambiarNombre(c, e.Value?.ToString() ?? ""))" />
+                            </td>
+                        }
+                        else if (col.Origen == OrigenCampoTabla.Nativo && col.Clave == "descripcion")
+                        {
+                            <td><input class="form-control form-control-sm" value="@c.Descripcion" @onchange="@(e => CambiarDescripcion(c, e.Value?.ToString() ?? ""))" /></td>
+                        }
+                        else if (col.Origen == OrigenCampoTabla.Nativo && col.Clave == "linea3d")
+                        {
+                            <td class="text-center">
+                                <input type="checkbox" class="form-check-input" checked="@c.Vinculado" title="Mostrar este modelo en Línea 3D" @onchange="@(e => Vincular(c, (bool)e.Value!))" />
+                            </td>
+                        }
+                        else
+                        {
+                            <CeldaCampo Motor="motorVinculo!" Campo="col" Fila="id" Clase="@(col.Clave == "codigo" ? "fw-bold" : null)" OnCambio="StateHasChanged" />
+                        }
+                    }
+                </tr>
+            }
+        </tbody>
+    </table></div>
+}
+else if (sel is null && familiaSel is null)
+{
+    <div class="ens-grid">
+        @foreach (var g in modelos.GroupBy(m => m.Familia ?? "Otros"))
+        {
+            var primero = g.Last();
+            <div class="ens-cuadro ifc-cuadro" role="button" title="Familia @g.Key" @onclick="() => familiaSel = g.Key">
+                @if (!string.IsNullOrEmpty(primero.Miniatura))
+                {
+                    <img src="@("modelos-ifc/" + primero.Miniatura)" alt="" class="ifc-mini" />
+                }
+                <div class="ens-nombre">@g.Key</div>
+                <div class="ens-cuenta">@g.Count()</div>
+            </div>
+        }
+    </div>
+}
+else if (sel is null)
+{
+    <div class="ens-grid">
+        @foreach (var m in modelos.Where(x => (x.Familia ?? "Otros") == familiaSel))
+        {
+            var c = ConfigDe(m);
+            <div class="ens-cuadro ifc-cuadro" role="button" title="@(c?.Descripcion is { Length: > 0 } d ? d : m.Descripcion)" @onclick="() => Abrir(m)">
+                @if (c?.Vinculado == true)
+                {
+                    <span class="ifc-l3d" title="En Línea 3D como @c.Nombre"><IconoPunto Punto="menu:linea3d" Clase="ui-svg"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 20h18M7 20 9 6l2 14M13 20l2-14 2 14"/><path d="M4 9c3 2 6 2 8 0s5-2 8 0"/></svg></IconoPunto></span>
+                }
+                @if (!string.IsNullOrEmpty(m.Miniatura))
+                {
+                    <img src="@("modelos-ifc/" + m.Miniatura)" alt="" class="ifc-mini" />
+                }
+                <div class="ens-nombre">@m.Nombre</div>
+            </div>
+        }
+    </div>
+}
+else
+{
+    <div class="ifc-marco" @ref="marco">
+        <div class="ifc-visor" @ref="contenedor"></div>
+        @if (verLista && torreJson is not null)
+        {
+            var filasBom = FilasBom;
+            <aside class="ifc-bom">
+                <div class="ifc-bom-cab">
+                    <input class="form-control form-control-sm" placeholder="Buscar marca, perfil, conjunto u hoja…" @bind="filtroBom" @bind:event="oninput" />
+                    <span class="ifc-bom-cuenta" title="Filas">@filasBom.Count / @torreJson.Lista.Count</span>
+                    <BotonCampos Activo="verCamposBom" Deshabilitado="motorBom is null" OnClick="() => verCamposBom = true" />
+                    <BotonExportar Titulo="@($"Lista de materiales {sel?.Nombre}")" Motor="motorBom" Filas="() => FilasBom.Select(IdBom)" Deshabilitado="motorBom is null" />
+                    <button type="button" class="pg-btn" title="Cerrar lista" @onclick="() => verLista = false"><Ico Nombre="cancelar" /></button>
+                </div>
+                @if (piezaSel is not null)
+                {
+                    var asg = AsignacionDe(piezaSel);
+                    <div class="ifc-pieza">
+                        <span class="ifc-pieza-id" title="Pieza seleccionada en el modelo">@piezaSel</span>
+                        @if (asg?.Marca is not null)
+                        {
+                            <span class="rg-chip" title="Perfil asignado a mano">@asg.Perfil · @asg.Marca
+                                <button type="button" class="rg-chip-x" title="Quitar el perfil asignado" @onclick="QuitarPerfilAsync">✕</button></span>
+                        }
+                        else if (!LeidaAuto(piezaSel))
+                        {
+                            <span class="text-warning small" title="Elige en la lista la marca de esta pieza">○ sin perfil</span>
+                        }
+                        @if (asg?.ArchivoPlanoMaestroId is int ap)
+                        {
+                            <span class="rg-chip" title="Plano adjuntado a mano">📄 @NombrePlanoAsignado(ap)
+                                <button type="button" class="rg-chip-x" title="Quitar el plano" @onclick="QuitarPlanoAsync">✕</button></span>
+                        }
+                        <button type="button" class="ens-mini ms-auto @(buscandoPlano ? "activo" : "")" title="Adjuntar plano a esta pieza" @onclick="AbrirBuscarPlano"><Ico Nombre="adjuntar" /></button>
+                    </div>
+                    @if (buscandoPlano)
+                    {
+                        <div class="ifc-plano-buscar">
+                            <input class="form-control form-control-sm mb-1" placeholder="Buscar plano…" @bind="filtroPlano" @bind:event="oninput" />
+                            <div class="ifc-plano-lista">
+                                @foreach (var p in PlanosFiltrados)
+                                {
+                                    var pid = p.Id;
+                                    <button type="button" class="doc-menu-op" @onclick="() => AsignarPlanoAsync(pid)"><Ico Nombre="documento" /> <span class="text-truncate">@p.Texto</span></button>
+                                }
+                                @if (!PlanosFiltrados.Any()) { <span class="doc-menu-op doc-menu-off">—</span> }
+                            </div>
+                        </div>
+                    }
+                    @if (!string.IsNullOrEmpty(mensajePieza)) { <div class="alert alert-warning py-1 m-1 small">@mensajePieza</div> }
+                }
+                <div class="tabla-scroll ifc-bom-tabla" @ref="bomScroll">
+                    <table class="table table-sm table-bordered table-hover tabla-compacta align-middle mb-0 tabla-pin">
+                        <thead>
+                            <tr>
+                                @foreach (var c in ColumnasBom)
+                                {
+                                    <th class="th-ordenable" @onclick="() => OrdenarBom(c.Clave)">@c.Nombre@(colBom == c.Clave ? (ascBom ? " ▲" : " ▼") : "")</th>
+                                }
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <Virtualize Items="filasBom" Context="f" ItemSize="AltoFila" SpacerElement="tr" OverscanCount="20">
+                                @{ var id = IdBom(f); var mapeada = torreJson.Piezas.ContainsKey(ClaveFila(f)); }
+                                <tr class="@(filasSel.Contains(id) ? "ifc-bom-sel" : "")">
+                                    @foreach (var c in ColumnasBom)
+                                    {
+                                        <CeldaCampo Motor="motorBom!" Campo="c" Fila="id" Clase="@(c.Clave == "marca" ? "fw-bold" : null)" OnCambio="StateHasChanged" />
+                                    }
+                                    <td class="text-center text-nowrap">
+                                        @if (mapeada)
+                                        {
+                                            <button type="button" class="ens-mini" title="Ver en el modelo" @onclick="() => VerFilaAsync(f)"><Ico Nombre="ubicar" /></button>
+                                        }
+                                        @if (piezaSel is not null && EsAnguloL(f))
+                                        {
+                                            <button type="button" class="ens-mini" title="@($"Asignar {f.Perfil} ({f.Marca}) a la pieza {piezaSel}")" @onclick="() => AsignarFilaAsync(f)"><Ico Nombre="usar-en" /></button>
+                                        }
+                                    </td>
+                                </tr>
+                            </Virtualize>
+                        </tbody>
+                    </table>
+                </div>
+            </aside>
+        }
+        @if (verCamposBom && motorBom is not null)
+        {
+            <PanelCampos Motor="motorBom" OnCerrar="() => verCamposBom = false" OnCambio="StateHasChanged" />
+        }
+    </div>
+}
+
+@code {
+    private static readonly CultureInfo Ci = CultureInfo.InvariantCulture;
+    private const int AltoFila = 30;
+
+    private sealed class ModeloIfc
+    {
+        public string Archivo { get; set; } = "";
+        public string Nombre { get; set; } = "";
+        public string? Descripcion { get; set; }
+        public string? Familia { get; set; }
+        public string? Miniatura { get; set; }
+    }
+
+    private List<ModeloIfc> modelos = new();
+    private List<ConfigModelo> cfg = new();
+    private ModeloIfc? sel;
+    private string? familiaSel;
+    private string? error;
+    private ElementReference contenedor, marco, bomScroll;
+    private IJSObjectReference? modulo, visor;
+    private DotNetObjectReference<Ifc>? yo;
+    private bool iniciar;
+
+    private string? Subtitulo => verVinculo ? null : sel is not null ? (ConfigDe(sel)?.Descripcion is { Length: > 0 } d ? d : sel.Descripcion) : familiaSel is null ? null : "Familia " + familiaSel;
+
+    protected override void OnInitialized()
+    {
+        try
+        {
+            var ruta = Path.Combine(Env.WebRootPath, "modelos-ifc", "modelos.json");
+            if (File.Exists(ruta))
+                modelos = JsonSerializer.Deserialize<List<ModeloIfc>>(File.ReadAllText(ruta), new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? new();
+            cfg = ConfigModelos3D.Cargar(Env.WebRootPath);
+        }
+        catch (Exception ex) { error = "No se pudo leer la lista de modelos IFC: " + ex.Message; }
+    }
+
+    // El modelo IFC y el de Línea 3D comparten nombre de archivo (torre-be.ifc ↔ torre-be.json).
+    private static string Raiz(string archivo) => Path.GetFileNameWithoutExtension(archivo).ToLowerInvariant();
+    private ConfigModelo? ConfigDe(ModeloIfc m) => cfg.FirstOrDefault(c => Raiz(c.Archivo) == Raiz(m.Archivo));
+    private bool TieneIfc(ConfigModelo c) => modelos.Any(m => Raiz(m.Archivo) == Raiz(c.Archivo));
+
+    // ================= Modelos en Línea 3D =================
+    private bool verVinculo, verCamposVinculo;
+    private MotorTabla? motorVinculo;
+    private string filtroVinculo = "";
+    private string? colVinculo = "nombre";
+    private bool ascVinculo = true;
+
+    private IEnumerable<CampoTabla> ColumnasVinculo => motorVinculo?.Visibles ?? Enumerable.Empty<CampoTabla>();
+
+    private ConfigModelo? Cfg(int id) => id >= 1 && id <= cfg.Count ? cfg[id - 1] : null;
+
+    private IEnumerable<ColumnaNativa> NativasVinculo() => new[]
+    {
+        new ColumnaNativa("codigo", "Modelo", TipoCampoTabla.Texto, id => Cfg(id)?.Codigo),
+        new ColumnaNativa("nombre", "Tipo en tabla de torres", TipoCampoTabla.Texto, id => Cfg(id)?.Nombre),
+        new ColumnaNativa("familia", "Familia", TipoCampoTabla.Texto, id => Cfg(id)?.Familia),
+        new ColumnaNativa("descripcion", "Descripción", TipoCampoTabla.Texto, id => Cfg(id)?.Descripcion),
+        new ColumnaNativa("ifc", "IFC", TipoCampoTabla.SiNo, id => Cfg(id) is { } c ? TieneIfc(c) : null),
+        new ColumnaNativa("linea3d", "En Línea 3D", TipoCampoTabla.SiNo, id => Cfg(id)?.Vinculado),
+    };
+
+    private async Task AbrirVinculo()
+    {
+        cfg = ConfigModelos3D.Cargar(Env.WebRootPath);
+        verVinculo = true;
+        try { motorVinculo = await MotorTabla.CargarAsync(Db, "ifc-modelos", NativasVinculo(), cfg.Select((c, i) => (i + 1, c.Codigo))); }
+        catch { motorVinculo = null; }
+    }
+
+    private IEnumerable<(ConfigModelo, int)> FilasVinculo
+    {
+        get
+        {
+            var q = cfg.Select((c, i) => (c, i + 1));
+            var f = filtroVinculo.Trim();
+            if (f.Length > 0)
+                q = q.Where(x => (x.c.Codigo + " " + x.c.Nombre + " " + x.c.Familia + " " + x.c.Descripcion).Contains(f, StringComparison.OrdinalIgnoreCase)
+                                 || (motorVinculo is not null && motorVinculo.TextoBusqueda(x.Item2).Contains(f, StringComparison.OrdinalIgnoreCase)));
+            if (motorVinculo is not null && colVinculo is not null) q = motorVinculo.Ordenar(q, x => x.Item2, colVinculo, ascVinculo);
+            return q.ToList();
+        }
+    }
+
+    private void OrdenarVinculo(string clave) { if (colVinculo == clave) ascVinculo = !ascVinculo; else { colVinculo = clave; ascVinculo = true; } }
+
+    private void CambiarNombre(ConfigModelo c, string nombre)
+    {
+        c.Nombre = string.IsNullOrWhiteSpace(nombre) ? c.Codigo : nombre.Trim();
+        ConfigModelos3D.Normalizar(cfg);
+        GuardarCfg();
+    }
+
+    private void CambiarDescripcion(ConfigModelo c, string d) { c.Descripcion = d.Trim(); GuardarCfg(); }
+
+    // Dentro de un mismo tipo (nombre) solo un modelo va a Línea 3D.
+    private void Vincular(ConfigModelo c, bool marcado)
+    {
+        foreach (var x in cfg.Where(x => ConfigModelos3D.Norm(x.Nombre) == ConfigModelos3D.Norm(c.Nombre))) x.Vinculado = false;
+        c.Vinculado = marcado;
+        GuardarCfg();
+    }
+
+    private void GuardarCfg()
+    {
+        try { ConfigModelos3D.Guardar(Env.WebRootPath, cfg); error = null; }
+        catch (Exception ex) { error = "No se pudo guardar: " + ex.Message; }
+    }
+
+    // ================= Visor =================
+    private async Task Abrir(ModeloIfc m)
+    {
+        await CerrarVisor();
+        sel = m; iniciar = true; error = null;
+        filtroBom = ""; filasSel.Clear(); colBom = "hoja"; ascBom = true;
+        CargarTorreJson();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!iniciar || sel is null) return;
+        iniciar = false;
+        try
+        {
+            yo ??= DotNetObjectReference.Create(this);
+            modulo ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/visorifc.js");
+            var catalogo = modelos.Select(m => new { nombre = m.Nombre, familia = m.Familia ?? "Otros", url = "modelos-ifc/" + m.Archivo }).ToList();
+            visor = await modulo.InvokeAsync<IJSObjectReference>("crear", TimeSpan.FromMinutes(2), contenedor, "modelos-ifc/" + sel.Archivo, yo, catalogo, sel.Nombre, marco);
+            await visor.InvokeVoidAsync("habilitarLista", torreJson is not null);
+            await AplicarAsignacionesAsync();
+            await EnlazarPlanosAsync();
+            if (torreJson is not null && motorBom is null) await CargarMotorBomAsync();
+        }
+        catch (Exception ex) { error = "No se pudo abrir el IFC: " + ex.Message; sel = null; StateHasChanged(); }
+    }
+
+    private async Task AlternarTorre()
+    {
+        if (visor is not null) await visor.InvokeVoidAsync("alternarTorre");
+    }
+
+    // Vínculo → IFC; visor → torres de la familia → familias → página anterior.
+    private EventCallback AtrasCb => verVinculo || sel is not null || familiaSel is not null ? EventCallback.Factory.Create(this, Atras) : default;
+
+    private async Task Atras()
+    {
+        if (verVinculo) { verVinculo = false; verCamposVinculo = false; return; }
+        if (sel is not null) { await CerrarVisor(); sel = null; return; }
+        familiaSel = null;
+    }
+
+    private async Task CerrarVisor()
+    {
+        if (visor is not null)
+        {
+            try { await visor.InvokeVoidAsync("dispose"); await visor.DisposeAsync(); } catch { }
+            visor = null;
+        }
+        torreJson = null; motorBom = null; verLista = false; verCamposBom = false;
+        piezaSel = null; asignaciones = new(); buscandoPlano = false;
+    }
+
+    // ================= Lista de materiales (del JSON del modelo) =================
+    private sealed class TorreJson
+    {
+        public List<FilaLista> Lista { get; init; } = new();
+        public Dictionary<string, List<string>> Piezas { get; init; } = new();   // "hoja|marca" -> Ids de pieza (Pset SigWeb_Pieza.Id)
+        public List<MiembroJ> Miembros { get; init; } = new();
+        public string? PlanoBase { get; init; }
+        public Dictionary<string, List<string>> PiezasAuto { get; init; } = new();   // solo las del JSON (sin asignaciones manuales)
+    }
+
+    private TorreJson? torreJson;
+    private string? archivoJson;
+    private MotorTabla? motorBom;
+    private bool verLista, verCamposBom;
+    private string filtroBom = "";
+    private string colBom = "hoja";
+    private bool ascBom = true;
+    private readonly HashSet<int> filasSel = new();
+
+    private IEnumerable<CampoTabla> ColumnasBom => motorBom?.Visibles ?? Enumerable.Empty<CampoTabla>();
+
+    private static string ClaveFila(FilaLista f) => f.Hoja + "|" + f.Marca;
+    private Dictionary<FilaLista, int> idPorFila = new();   // FilaLista no redefine Equals: compara por referencia
+    private int IdBom(FilaLista f) => idPorFila.TryGetValue(f, out var i) ? i : 0;
+
+    private void CargarTorreJson()
+    {
+        torreJson = null; archivoJson = null;
+        if (sel is null) return;
+        var nombre = Path.GetFileNameWithoutExtension(sel.Archivo) + ".json";
+        var ruta = Path.Combine(Env.WebRootPath, "modelos3d", nombre);
+        if (!File.Exists(ruta)) return;
+        try
+        {
+            using var fs = File.OpenRead(ruta);
+            var d = JsonSerializer.Deserialize<ModeloJ>(fs);
+            if (d is null) return;
+            var piezas = new Dictionary<string, List<string>>();
+            foreach (var m in d.Miembros)
+                foreach (var k in m.Marcas ?? new())
+                {
+                    if (!piezas.TryGetValue(k, out var l)) piezas[k] = l = new();
+                    l.Add(m.Id);
+                }
+            idPorFila = new();
+            for (var i = 0; i < d.ListaMateriales.Count; i++) idPorFila[d.ListaMateriales[i]] = i + 1;
+            torreJson = new TorreJson
+            {
+                Lista = d.ListaMateriales, Miembros = d.Miembros, PlanoBase = d.Meta?.PlanoBase,
+                PiezasAuto = piezas, Piezas = piezas.ToDictionary(kv => kv.Key, kv => kv.Value.ToList())
+            };
+            archivoJson = nombre;
+            CargarAsignaciones();
+        }
+        catch (Exception ex) { error = "No se pudo leer la lista de materiales: " + ex.Message; }
+    }
+
+    private IEnumerable<ColumnaNativa> NativasBom()
+    {
+        FilaLista? F(int id) => torreJson is not null && id >= 1 && id <= torreJson.Lista.Count ? torreJson.Lista[id - 1] : null;
+        object? N(string? t) => double.TryParse((t ?? "").Replace(",", ""), NumberStyles.Float, Ci, out var v) ? v : (string.IsNullOrWhiteSpace(t) ? null : t);
+        return new[]
+        {
+            new ColumnaNativa("marca", "Marca", TipoCampoTabla.Texto, id => F(id)?.Marca),
+            new ColumnaNativa("clase", "Clase", TipoCampoTabla.Texto, id => F(id)?.Clase),
+            new ColumnaNativa("perfil", "Perfil", TipoCampoTabla.Texto, id => F(id)?.Perfil),
+            new ColumnaNativa("long", "Long. (mm)", TipoCampoTabla.Numero, id => N(F(id)?.LongMm)),
+            new ColumnaNativa("cant", "Cant.", TipoCampoTabla.Numero, id => N(F(id)?.Cant)),
+            new ColumnaNativa("acero", "Acero", TipoCampoTabla.Texto, id => F(id)?.Acero),
+            new ColumnaNativa("conjunto", "Conjunto", TipoCampoTabla.Texto, id => F(id)?.Conjunto),
+            new ColumnaNativa("hoja", "Hoja", TipoCampoTabla.Texto, id => F(id) is { } f ? "H" + (f.HojaTxt ?? f.Hoja.ToString()) : null),
+        };
+    }
+
+    // Misma clave de tabla que Modelos 3D ("bom:torre-xx.json"): los campos creados allá se ven aquí.
+    private async Task CargarMotorBomAsync()
+    {
+        if (torreJson is null || archivoJson is null) return;
+        try
+        {
+            motorBom = await MotorTabla.CargarAsync(Db, "bom:" + archivoJson, NativasBom(),
+                torreJson.Lista.Select((f, i) => (i + 1, $"{f.Marca} · {f.Perfil} · H{f.HojaTxt ?? f.Hoja.ToString()}")));
+        }
+        catch { motorBom = null; }
+        StateHasChanged();
+    }
+
+    private static double Num(string? t) => double.TryParse((t ?? "").Replace(",", ""), NumberStyles.Float, Ci, out var v) ? v : double.MaxValue;
+    private static (double, string) Nat(string t)
+    {
+        var d = new string(t.TakeWhile(char.IsDigit).ToArray());
+        return (d.Length > 0 ? double.Parse(d, Ci) : double.MaxValue, t);
+    }
+
+    private static readonly HashSet<string> NativasOrden = new() { "marca", "clase", "perfil", "long", "cant", "acero", "conjunto", "hoja" };
+
+    private List<FilaLista> FilasBom
+    {
+        get
+        {
+            if (torreJson is null) return new();
+            var q = filtroBom.Trim();
+            IEnumerable<FilaLista> b = q.Length == 0 ? torreJson.Lista
+                : torreJson.Lista.Where(f => f.Marca.Contains(q, StringComparison.OrdinalIgnoreCase)
+                    || f.Perfil.Contains(q, StringComparison.OrdinalIgnoreCase)
+                    || f.Conjunto.Contains(q, StringComparison.OrdinalIgnoreCase)
+                    || ("H" + (f.HojaTxt ?? f.Hoja.ToString())).Equals(q, StringComparison.OrdinalIgnoreCase)
+                    || (motorBom is not null && motorBom.TextoBusqueda(IdBom(f)).Contains(q, StringComparison.OrdinalIgnoreCase)));
+            if (motorBom is not null && !NativasOrden.Contains(colBom))
+                return motorBom.Ordenar(b, IdBom, colBom, ascBom).ToList();
+            IOrderedEnumerable<FilaLista> o = colBom switch
+            {
+                "marca" => ascBom ? b.OrderBy(f => Nat(f.Marca)) : b.OrderByDescending(f => Nat(f.Marca)),
+                "clase" => ascBom ? b.OrderBy(f => f.Clase) : b.OrderByDescending(f => f.Clase),
+                "perfil" => ascBom ? b.OrderBy(f => f.Perfil) : b.OrderByDescending(f => f.Perfil),
+                "long" => ascBom ? b.OrderBy(f => Num(f.LongMm)) : b.OrderByDescending(f => Num(f.LongMm)),
+                "cant" => ascBom ? b.OrderBy(f => Num(f.Cant)) : b.OrderByDescending(f => Num(f.Cant)),
+                "acero" => ascBom ? b.OrderBy(f => f.Acero) : b.OrderByDescending(f => f.Acero),
+                "conjunto" => ascBom ? b.OrderBy(f => f.Conjunto) : b.OrderByDescending(f => f.Conjunto),
+                _ => ascBom ? b.OrderBy(f => f.Hoja) : b.OrderByDescending(f => f.Hoja),
+            };
+            return o.ThenBy(f => f.Hoja).ThenBy(f => Nat(f.Marca)).ToList();
+        }
+    }
+
+    private void OrdenarBom(string clave) { if (colBom == clave) ascBom = !ascBom; else { colBom = clave; ascBom = true; } }
+
+    private async Task AlternarListaAsync()
+    {
+        verLista = !verLista && torreJson is not null;
+        if (verLista && motorBom is null) await CargarMotorBomAsync();
+    }
+
+    // Botón de la lista dentro del visor (también en pantalla completa).
+    [JSInvokable]
+    public async Task AlternarLista()
+    {
+        await InvokeAsync(async () => { await AlternarListaAsync(); StateHasChanged(); });
+    }
+
+    private async Task VerFilaAsync(FilaLista f)
+    {
+        if (visor is null || sel is null || torreJson is null) return;
+        if (!torreJson.Piezas.TryGetValue(ClaveFila(f), out var ids)) return;
+        filasSel.Clear(); filasSel.Add(IdBom(f));
+        try { await visor.InvokeVoidAsync("verPiezas", "modelos-ifc/" + sel.Archivo, ids); } catch (JSException) { }
+    }
+
+    // Clic en una pieza del modelo: resalta en la lista las filas de sus marcas y lleva la lista a la primera.
+    [JSInvokable]
+    public async Task AlSeleccionarPieza(string? url, string? pieza)
+    {
+        await InvokeAsync(async () =>
+        {
+            filasSel.Clear();
+            piezaSel = sel is not null && url == "modelos-ifc/" + sel.Archivo ? pieza : null;
+            buscandoPlano = false; mensajePieza = "";
+            if (torreJson is not null && sel is not null && url == "modelos-ifc/" + sel.Archivo && pieza is not null)
+            {
+                var claves = (torreJson.Miembros.FirstOrDefault(m => m.Id == pieza)?.Marcas ?? new()).ToList();
+                if (AsignacionDe(pieza) is { Marca: not null } asg) claves.Add(asg.Hoja + "|" + asg.Marca);
+                for (var i = 0; i < torreJson.Lista.Count; i++)
+                    if (claves.Contains(ClaveFila(torreJson.Lista[i]))) filasSel.Add(i + 1);
+            }
+            StateHasChanged();
+            if (verLista && filasSel.Count > 0 && modulo is not null)
+            {
+                var filas = FilasBom;
+                var idx = filas.FindIndex(f => filasSel.Contains(IdBom(f)));
+                if (idx >= 0) { try { await modulo.InvokeVoidAsync("desplazar", bomScroll, idx * AltoFila); } catch (JSException) { } }
+            }
+        });
+    }
+
+    // ================= Asignaciones manuales (perfil real y plano por pieza) =================
+    private List<AsignacionPiezaModelo> asignaciones = new();
+    private string? piezaSel;
+    private string mensajePieza = "";
+    private bool buscandoPlano;
+    private string filtroPlano = "";
+    private List<(int Id, string Texto)> planosDisponibles = new();
+
+    private string ModeloActual => sel is null ? "" : Raiz(sel.Archivo);
+    private AsignacionPiezaModelo? AsignacionDe(string? pieza) => pieza is null ? null : asignaciones.FirstOrDefault(a => a.Pieza == pieza);
+    private MiembroJ? MiembroDe(string? pieza) => pieza is null || torreJson is null ? null : torreJson.Miembros.FirstOrDefault(m => m.Id == pieza);
+    // Perfil leído automáticamente: la pieza tiene marca en el JSON y esa marca está en la lista como perfil L.
+    private bool LeidaAuto(string pieza) => torreJson is not null && torreJson.PiezasAuto.Any(kv => kv.Value.Contains(pieza)
+        && torreJson.Lista.Any(f => ClaveFila(f) == kv.Key && f.Perfil.TrimStart().StartsWith("L", StringComparison.OrdinalIgnoreCase)));
+    private static bool EsAnguloL(FilaLista f) => (f.Clase is "" or "PERFIL") && System.Text.RegularExpressions.Regex.IsMatch(f.Perfil ?? "", @"^\s*L\s*\d");
+
+    private void CargarAsignaciones()
+    {
+        asignaciones = new();
+        if (sel is null || torreJson is null) return;
+        try { asignaciones = Db.AsignacionesPiezaModelo.AsNoTracking().Where(a => a.Modelo == ModeloActual).ToList(); }
+        catch { asignaciones = new(); }   // sin migración aplicada: el visor funciona igual, sin asignaciones
+        var ids = asignaciones.Where(a => a.ArchivoPlanoMaestroId != null).Select(a => a.ArchivoPlanoMaestroId!.Value).ToList();
+        nombresPlano = ids.Count == 0 ? new() : Db.ArchivosPlanoMaestro.AsNoTracking().Where(a => ids.Contains(a.Id))
+            .ToDictionary(a => a.Id, a => (a.Eliminado ? "(en Papelera) " : "") + a.NombreOriginal);
+        // Las piezas asignadas a mano también quedan ligadas a su fila de la lista ("ver en el modelo").
+        torreJson.Piezas.Clear();
+        foreach (var (k, v) in torreJson.PiezasAuto) torreJson.Piezas[k] = v.ToList();
+        foreach (var a in asignaciones.Where(a => a.Marca is not null))
+        {
+            var clave = a.Hoja + "|" + a.Marca;
+            if (!torreJson.Piezas.TryGetValue(clave, out var l)) torreJson.Piezas[clave] = l = new();
+            if (!l.Contains(a.Pieza)) l.Add(a.Pieza);
+        }
+    }
+
+    private async Task AplicarAsignacionesAsync()
+    {
+        if (visor is null || sel is null || torreJson is null) return;
+        var lista = asignaciones.Where(a => a.Marca is not null && a.Perfil is not null)
+            .Select(a => (a, m: MiembroDe(a.Pieza))).Where(x => x.m?.A is not null && x.m.B is not null)
+            .Select(x => new { pieza = x.a.Pieza, a = x.m!.A, b = x.m.B, tipo = x.m.Tipo, cara = x.m.Cara, marca = x.a.Marca, perfil = x.a.Perfil })
+            .ToList();
+        try { await visor.InvokeAsync<int>("aplicarAsignaciones", "modelos-ifc/" + sel.Archivo, lista); } catch (JSException) { }
+    }
+
+    private async Task<AsignacionPiezaModelo> AsignacionEditable(string pieza)
+    {
+        var a = await Db.AsignacionesPiezaModelo.FirstOrDefaultAsync(x => x.Modelo == ModeloActual && x.Pieza == pieza);
+        if (a is null) { a = new AsignacionPiezaModelo { Modelo = ModeloActual, Pieza = pieza }; Db.AsignacionesPiezaModelo.Add(a); }
+        a.Fecha = DateTime.Now;
+        return a;
+    }
+
+    private async Task GuardarYRefrescarAsync()
+    {
+        await Db.SaveChangesAsync();
+        Db.ChangeTracker.Clear();
+        CargarAsignaciones();
+        await AplicarAsignacionesAsync();
+        await EnlazarPlanosAsync();
+    }
+
+    // Fila de la lista → pieza seleccionada en el modelo: se dibuja con el perfil L de esa marca.
+    private async Task AsignarFilaAsync(FilaLista f)
+    {
+        if (piezaSel is null || !EsAnguloL(f)) return;
+        try
+        {
+            var a = await AsignacionEditable(piezaSel);
+            a.Hoja = f.Hoja; a.Marca = f.Marca.Trim(); a.Perfil = f.Perfil.Trim();
+            await GuardarYRefrescarAsync();
+            filasSel.Clear(); filasSel.Add(IdBom(f));
+            mensajePieza = "";
+        }
+        catch (Exception ex) { mensajePieza = "No se pudo asignar (¿falta aplicar la migración?): " + ex.Message; }
+    }
+
+    private async Task QuitarPerfilAsync()
+    {
+        if (piezaSel is null) return;
+        var a = await Db.AsignacionesPiezaModelo.FirstOrDefaultAsync(x => x.Modelo == ModeloActual && x.Pieza == piezaSel);
+        if (a is null) return;
+        a.Hoja = null; a.Marca = null; a.Perfil = null;
+        if (a.ArchivoPlanoMaestroId is null) Db.AsignacionesPiezaModelo.Remove(a);
+        await GuardarYRefrescarAsync();
+    }
+
+    private void AbrirBuscarPlano()
+    {
+        buscandoPlano = !buscandoPlano; filtroPlano = "";
+        if (!buscandoPlano) return;
+        // Archivos vigentes del listado maestro de planos (código + nombre del PDF).
+        var planos = Db.PlanosMaestro.AsNoTracking().Where(p => !p.Eliminado).ToDictionary(p => p.Id, p => p.Codigo);
+        planosDisponibles = Db.ArchivosPlanoMaestro.AsNoTracking()
+            .Where(a => !a.Eliminado && a.Clase != ClaseArchivoDocumento.Obsoleta).ToList()
+            .Where(a => planos.ContainsKey(a.PlanoMaestroId))
+            .Select(a => (a.Id, $"{planos[a.PlanoMaestroId]} · {a.NombreOriginal}"))
+            .OrderBy(x => x.Item2).ToList();
+    }
+
+    private IEnumerable<(int Id, string Texto)> PlanosFiltrados =>
+        (string.IsNullOrWhiteSpace(filtroPlano) ? planosDisponibles
+            : planosDisponibles.Where(p => p.Texto.Contains(filtroPlano.Trim(), StringComparison.OrdinalIgnoreCase))).Take(30);
+
+    private async Task AsignarPlanoAsync(int archivoId)
+    {
+        if (piezaSel is null) return;
+        try
+        {
+            var a = await AsignacionEditable(piezaSel);
+            a.ArchivoPlanoMaestroId = archivoId;
+            buscandoPlano = false;
+            await GuardarYRefrescarAsync();
+        }
+        catch (Exception ex) { mensajePieza = "No se pudo adjuntar el plano: " + ex.Message; }
+    }
+
+    private async Task QuitarPlanoAsync()
+    {
+        if (piezaSel is null) return;
+        var a = await Db.AsignacionesPiezaModelo.FirstOrDefaultAsync(x => x.Modelo == ModeloActual && x.Pieza == piezaSel);
+        if (a is null) return;
+        a.ArchivoPlanoMaestroId = null;
+        if (a.Marca is null) Db.AsignacionesPiezaModelo.Remove(a);
+        await GuardarYRefrescarAsync();
+    }
+
+    // Precalculado en CargarAsignaciones: el render no consulta Db.
+    private Dictionary<int, string> nombresPlano = new();
+    private string NombrePlanoAsignado(int id) => nombresPlano.TryGetValue(id, out var n) ? n : $"#{id}";
+
+    // Enlaces a los PDF del listado maestro de Planos (los muestra la ficha de la pieza).
+    private async Task EnlazarPlanosAsync()
+    {
+        if (visor is null || sel is null || torreJson is null) return;
+        try
+        {
+            var porPieza = new Dictionary<string, string>();
+            var refs = new List<EnlacePlanos.Referencia>();
+            foreach (var m in torreJson.Miembros)
+            {
+                var r = EnlacePlanos.DePieza(m.Plano?.Codigo, m.Plano?.Hoja ?? 0, m.Plano?.Titulo, torreJson.PlanoBase, m.Fuente);
+                if (r is null) continue;
+                refs.Add(r);
+                porPieza[m.Id] = EnlacePlanos.Clave(r.Codigo, r.Hoja);
+            }
+            var enlaces = (await EnlacePlanos.ResolverAsync(Db, refs)).Select(e => new { clave = e.Clave, texto = e.Texto, url = e.Url }).ToList();
+            // Plano adjuntado a mano a una pieza: manda sobre el que se dedujo del IFC.
+            var ids = asignaciones.Where(a => a.ArchivoPlanoMaestroId != null).Select(a => a.ArchivoPlanoMaestroId!.Value).Distinct().ToList();
+            if (ids.Count > 0)
+            {
+                var archs = Db.ArchivosPlanoMaestro.AsNoTracking().Where(a => ids.Contains(a.Id) && !a.Eliminado).ToDictionary(a => a.Id);
+                foreach (var a in asignaciones.Where(a => a.ArchivoPlanoMaestroId is int id && archs.ContainsKey(id)))
+                {
+                    var arch = archs[a.ArchivoPlanoMaestroId!.Value];
+                    var clave = "manual|" + arch.Id;
+                    if (enlaces.All(e => e.clave != clave)) enlaces.Add(new { clave, texto = arch.NombreOriginal, url = (string?)arch.RutaArchivo });
+                    porPieza[a.Pieza] = clave;
+                }
+            }
+            await visor.InvokeVoidAsync("setPlanos", "modelos-ifc/" + sel.Archivo, enlaces, porPieza);
+        }
+        catch (Exception) { /* sin enlaces: la ficha muestra el código del plano del IFC */ }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        await CerrarVisor();
+        if (modulo is not null) { try { await modulo.DisposeAsync(); } catch { } }
+        yo?.Dispose();
+    }
+
+    // ---------- JSON del modelo (wwwroot/modelos3d) ----------
+    private sealed class ModeloJ
+    {
+        [JsonPropertyName("meta")] public MetaJ? Meta { get; set; }
+        [JsonPropertyName("miembros")] public List<MiembroJ> Miembros { get; set; } = new();
+        [JsonPropertyName("lista_materiales")] public List<FilaLista> ListaMateriales { get; set; } = new();
+    }
+    private sealed class MetaJ
+    {
+        [JsonPropertyName("plano_base")] public string? PlanoBase { get; set; }
+    }
+    private sealed class MiembroJ
+    {
+        [JsonPropertyName("id")] public string Id { get; set; } = "";
+        [JsonPropertyName("fuente")] public string? Fuente { get; set; }
+        [JsonPropertyName("plano")] public PlanoJ? Plano { get; set; }
+        [JsonPropertyName("marcas")] public List<string>? Marcas { get; set; }
+        [JsonPropertyName("a")] public double[]? A { get; set; }
+        [JsonPropertyName("b")] public double[]? B { get; set; }
+        [JsonPropertyName("tipo")] public string? Tipo { get; set; }
+        [JsonPropertyName("cara")] public string? Cara { get; set; }
+    }
+    private sealed class PlanoJ
+    {
+        [JsonPropertyName("codigo")] public string Codigo { get; set; } = "";
+        [JsonPropertyName("hoja")] public int Hoja { get; set; }
+        [JsonPropertyName("titulo")] public string? Titulo { get; set; }
+    }
+    private sealed class FilaLista
+    {
+        [JsonPropertyName("hoja")] public int Hoja { get; set; }
+        [JsonPropertyName("hoja_txt")] public string? HojaTxt { get; set; }
+        [JsonPropertyName("clase")] public string Clase { get; set; } = "";
+        [JsonPropertyName("marca")] public string Marca { get; set; } = "";
+        [JsonPropertyName("perfil")] public string Perfil { get; set; } = "";
+        [JsonPropertyName("long_mm")] public string LongMm { get; set; } = "";
+        [JsonPropertyName("cant")] public string Cant { get; set; } = "";
+        [JsonPropertyName("acero")] public string Acero { get; set; } = "";
+        [JsonPropertyName("conjunto")] public string Conjunto { get; set; } = "";
+    }
+}

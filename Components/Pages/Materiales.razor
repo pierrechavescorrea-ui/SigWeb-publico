@@ -1,0 +1,1011 @@
+﻿@page "/materiales"
+@rendermode InteractiveServer
+@using Microsoft.EntityFrameworkCore
+@using Microsoft.AspNetCore.Components.Forms
+@using SigWeb.Data
+@using SigWeb.Models
+@using SigWeb.Data.Tablas
+@using SigWeb.Data.Documentos
+@inject AppDbContext Db
+@inject IServiceScopeFactory Scopes
+@inject IWebHostEnvironment Env
+
+@* Listado de materiales (16/10/2026): sus columnas son Campos (importados del Excel o creados a mano)
+   más la propia "Adjuntos" (Remisión, Certificado, Registro fotográfico, Otros). Solo lectura hasta Editar. *@
+
+@if (verTodosDe is int vtId && materiales.FirstOrDefault(x => x.Id == vtId) is { } matVer)
+{
+    var todos = AdjuntosDe(vtId).OrderBy(a => Array.IndexOf(AdjuntoMaterial.Clases, a.Clase)).ToList();
+    <EncabezadoPagina Titulo="@TituloDe(matVer.Id)" Icono="materiales" Subtitulo="@($"Adjuntos ({todos.Count})")" OnAtras="() => verTodosDe = null">
+        <Acciones>
+            <button type="button" class="pg-btn pg-btn-primario" title="Cargar adjuntos" @onclick="() => AbrirCargaAdjuntos(vtId)"><Ico Nombre="adjuntar" /></button>
+        </Acciones>
+    </EncabezadoPagina>
+    <div class="tabla-scroll tabla-auto"><table class="table table-sm table-bordered table-hover tabla-compacta align-middle mb-0 tabla-pin">
+        <thead>
+            <tr><th>Clase</th><th>Archivo</th><th>Cargado</th><th style="width:130px;"></th></tr>
+        </thead>
+        <tbody>
+            @foreach (var a in todos)
+            {
+                var adj = a;
+                <tr>
+                    <td class="small">@adj.Clase</td>
+                    <td class="small">@adj.NombreOriginal</td>
+                    <td class="small text-nowrap text-muted">@adj.FechaCarga.ToString("dd/MM/yyyy HH:mm")</td>
+                    <td class="text-nowrap">
+                        <a class="ens-mini" href="@adj.RutaArchivo" target="_blank" rel="noopener" title="Ver"><Ico Nombre="ubicar" /></a>
+                        <a class="ens-mini" href="@adj.RutaArchivo" download="@adj.NombreOriginal" title="Descargar"><Ico Nombre="importar" /></a>
+                        <button type="button" class="ens-mini" title="Editar (reemplazar archivo o clase)" @onclick="() => AbrirReemplazo(adj)"><Ico Nombre="editar" /></button>
+                        <button type="button" class="ens-mini" title="Eliminar adjunto" @onclick="() => PedirEliminarAdjunto(adj)"><Ico Nombre="eliminar" /></button>
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table></div>
+}
+else
+{
+<div class="@(pantallaCompleta ? "ens-pantalla" : "")">
+<EncabezadoPagina Titulo="Materiales" Icono="materiales" Subtitulo="@($"{materiales.Count} material{(materiales.Count == 1 ? "" : "es")}")" OnAtras="AtrasPantalla">
+    <Acciones>
+        <button type="button" class="pg-btn @(pantallaCompleta ? "activo" : "")" title="@(pantallaCompleta ? "Salir de pantalla completa" : "Pantalla completa")" @onclick="() => pantallaCompleta = !pantallaCompleta"><Ico Nombre="pantalla-completa" /></button>
+        <button type="button" class="pg-btn @(verCargas ? "activo" : "")" title="@($"Cargas ({cargasMat.Count})")" disabled="@modoEdicion" @onclick="AlternarCargas"><Ico Nombre="cargas" />@(cargasMat.Count > 0 ? $" {cargasMat.Count}" : "")</button>
+        <span class="pg-sep"></span>
+        <BotonCampos Activo="verCampos" Deshabilitado="motor is null || modoEdicion" OnClick="() => verCampos = true" />
+        <button type="button" class="pg-btn @(mostrarImportar ? "activo" : "")" title="Importar listado (Excel)" disabled="@modoEdicion" @onclick="AlternarImportar"><Ico Nombre="cargar-excel" /></button>
+        <BotonExportar Titulo="Materiales" Motor="motor" Filas="() => Mostrados.Select(m => m.Id)" Deshabilitado="motor is null" />
+        <span class="pg-sep"></span>
+        @if (!modoEdicion)
+        {
+            <button type="button" class="pg-btn pg-btn-peligro" title="Eliminar material seleccionado" disabled="@(selId is null)" @onclick="() => PedirEliminar(selId)"><Ico Nombre="eliminar" /></button>
+            <button type="button" class="pg-btn" title="Editar" disabled="@(motor is null)" @onclick="EntrarEdicion"><Ico Nombre="editar" /></button>
+            <button type="button" class="pg-btn pg-btn-primario @(form is not null ? "activo" : "")" title="Nuevo material" disabled="@(motor is null)" @onclick="Nuevo"><Ico Nombre="agregar" /></button>
+        }
+        else
+        {
+            <button type="button" class="pg-btn" title="Descartar cambios y salir de edición" @onclick="SalirEdicion"><Ico Nombre="cancelar" /></button>
+            <button type="button" class="pg-btn pg-btn-primario" title="Guardar cambios" disabled="@(cambios.Count == 0 || guardando)" @onclick="GuardarEdicion"><Ico Nombre="guardar" />@(cambios.Count > 0 ? $" {cambios.Count}" : "")</button>
+        }
+    </Acciones>
+</EncabezadoPagina>
+
+@if (verCampos && motor is not null)
+{
+    <PanelCampos Motor="motor" OnCerrar="() => verCampos = false" OnCambio="StateHasChanged" />
+}
+
+@if (!string.IsNullOrEmpty(mensaje))
+{
+    <div class="alert @(error ? "alert-warning" : "alert-success") py-1">@mensaje</div>
+}
+
+@* ---------- Cargas (bases de datos Excel) ---------- *@
+@if (verCargas)
+{
+    <div class="card panel-formulario mb-3">
+        <div class="card-body">
+            @if (cargasMat.Count == 0) { <div class="text-muted small">—</div> }
+            else
+            {
+                <div class="tabla-scroll mb-2" style="max-height:280px;">
+                    <table class="table table-sm table-bordered align-middle mb-0">
+                        <thead>
+                            <tr>
+                                <th style="width:32px;"><input type="checkbox" class="form-check-input" title="Todas" checked="@(cargasSel.Count == cargasMat.Count)" @onchange="@(e => { cargasSel = (bool)e.Value! ? cargasMat.Select(c => c.Id).ToHashSet() : new(); elimCargas = null; })" /></th>
+                                <th>Archivo</th><th>Hoja</th><th>Fecha</th><th title="Materiales de esta carga">Mat.</th>
+                                <th style="width:40px;"></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var c in cargasMat)
+                            {
+                                var id = c.Id;
+                                <tr class="@(cargaFiltro == id ? "table-active" : "")">
+                                    <td><input type="checkbox" class="form-check-input" checked="@cargasSel.Contains(id)" @onchange="@(e => { if ((bool)e.Value!) cargasSel.Add(id); else cargasSel.Remove(id); elimCargas = null; })" /></td>
+                                    <td class="small">@c.NombreArchivo</td>
+                                    <td class="small">@c.Hoja</td>
+                                    <td class="small text-nowrap">@c.Fecha.ToString("dd/MM/yyyy HH:mm")</td>
+                                    <td class="small text-end">@(materialesPorCarga.TryGetValue(id, out var n) ? n : 0)</td>
+                                    <td><button type="button" class="ens-mini @(cargaFiltro == id ? "activo" : "")" title="Ver solo esta carga" @onclick="() => cargaFiltro = cargaFiltro == id ? null : id"><Ico Nombre="ubicar" /></button></td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+                <div class="d-flex justify-content-end">
+                    <button type="button" class="btn btn-danger btn-sm" title="@($"Eliminar cargas seleccionadas ({cargasSel.Count})")" disabled="@(cargasSel.Count == 0)" @onclick="PedirEliminarCargas"><Ico Nombre="eliminar" /> @cargasSel.Count</button>
+                </div>
+            }
+            @if (elimCargas is not null)
+            {
+                <div class="border border-danger rounded p-2 mt-2">
+                    <PanelImpacto Informe="impactoCargas" OnEntendido="@(v => impactoCargasOk = v)" />
+                    <div class="d-flex gap-2">
+                        <button class="btn btn-secondary btn-sm" type="button" title="Cancelar" @onclick="() => elimCargas = null"><Ico Nombre="cancelar" /></button>
+                        <button class="btn btn-danger btn-sm" type="button" title="Eliminar (va a la Papelera)" disabled="@(impactoCargas is null || (impactoCargas.RequiereEntender && !impactoCargasOk))" @onclick="ConfirmarEliminarCargas"><Ico Nombre="eliminar" /></button>
+                    </div>
+                </div>
+            }
+        </div>
+    </div>
+}
+
+@if (mostrarImportar)
+{
+    <PanelImportarExcel Destinos="DestinosImportacion" Importando="importando" OnImportar="ImportarExcel" OnCancelar="() => mostrarImportar = false" />
+}
+
+@* ---------- Nuevo material ---------- *@
+@if (form is not null && motor is not null)
+{
+    <FormularioSig Titulo="Nuevo material" Icono="agregar" Clase="mb-3" OnCerrar="() => form = null">
+        <ChildContent>
+            @if (CamposEditables.Any())
+            {
+                <SeccionFormulario Titulo="Datos del material">
+                    @foreach (var c in CamposEditables)
+                    {
+                        var campo = c;
+                        <CampoFormulario Etiqueta="@campo.Nombre" Ancho="col-md-3" Destacado="@campo.Nombre.Contains("material", StringComparison.OrdinalIgnoreCase)">
+                            @EntradaCampo(campo, form.TryGetValue(campo.Id, out var v) ? v : null, val => form[campo.Id] = val)
+                        </CampoFormulario>
+                    }
+                </SeccionFormulario>
+            }
+            else
+            {
+                <div class="frm-vacio">—</div>
+            }
+        </ChildContent>
+        <Acciones>
+            <button type="button" class="btn btn-secondary btn-sm" title="Cancelar" @onclick="() => form = null"><Ico Nombre="cancelar" /></button>
+            <button type="button" class="btn btn-primary btn-sm" title="Guardar" disabled="@guardando" @onclick="GuardarNuevo"><Ico Nombre="guardar" /></button>
+        </Acciones>
+    </FormularioSig>
+}
+
+@if (elimId is int eid)
+{
+    <div class="card panel-formulario mb-3 border-danger">
+        <div class="card-body">
+            <div class="mb-2"><Ico Nombre="eliminar" /> <strong>@TituloDe(eid)</strong></div>
+            <PanelImpacto Informe="impacto" OnEntendido="@(v => impactoOk = v)" />
+            <div class="d-flex gap-2">
+                <button class="btn btn-secondary btn-sm" type="button" title="Cancelar" @onclick="() => elimId = null"><Ico Nombre="cancelar" /></button>
+                <button class="btn btn-danger btn-sm" type="button" title="Eliminar (va a la Papelera)" disabled="@(impacto is null || (impacto.RequiereEntender && !impactoOk))" @onclick="ConfirmarEliminar"><Ico Nombre="eliminar" /></button>
+            </div>
+        </div>
+    </div>
+}
+
+@* ---------- Filtros ---------- *@
+<div class="mpie-barra mb-2">
+    <input class="form-control form-control-sm" style="max-width:260px;" placeholder="Buscar material..." @bind="filtro" @bind:event="oninput" />
+    @if (cargaFiltro is int cf && cargasMat.FirstOrDefault(c => c.Id == cf) is { } cg)
+    {
+        <span class="rg-chip"><Ico Nombre="cargas" /> @cg.NombreArchivo <button type="button" class="rg-chip-x" title="Quitar" @onclick="() => cargaFiltro = null">✕</button></span>
+    }
+    @if (cargaFiltro is not null || !string.IsNullOrWhiteSpace(filtro))
+    {
+        <button type="button" class="btn btn-sm btn-outline-secondary" title="Quitar filtros" @onclick="LimpiarFiltros">✕</button>
+        <span class="text-muted small">@Mostrados.Count() / @materiales.Count</span>
+    }
+</div>
+
+<div class="tabla-scroll tabla-auto"><table class="table table-sm table-bordered @(modoEdicion ? "" : "table-hover") tabla-compacta align-middle mb-0 tabla-pin @(modoEdicion ? "doc-editando" : "")">
+    <thead>
+        <tr>
+            @foreach (var c in Columnas)
+            {
+                <th class="th-ordenable" @onclick="() => OrdenarPor(c.Clave)">@c.Nombre@(Flecha(c.Clave))</th>
+            }
+            <th style="width:40px;"></th>
+        </tr>
+    </thead>
+    <tbody>
+        @if (motor is not null)
+        {
+            @foreach (var m in Mostrados)
+            {
+                var id = m.Id;
+                <tr class="@(!modoEdicion && selId == id ? "table-active" : "")" @onclick="() => { if (!modoEdicion) selId = id; }">
+                    @foreach (var c in Columnas)
+                    {
+                        var campo = c;
+                        if (campo.Origen == OrigenCampoTabla.Nativo && campo.Clave == ColUbicacion)
+                        {
+                            <td class="small">@CeldaUbicacion(id)</td>
+                        }
+                        else if (campo.Origen == OrigenCampoTabla.Nativo && campo.Clave == ColAdjuntos)
+                        {
+                            <td class="text-center">@CeldaAdjuntos(id)</td>
+                        }
+                        else if (modoEdicion && !campo.Calculado && campo.Origen != OrigenCampoTabla.Nativo)
+                        {
+                            <td class="small p-0 @(cambios.ContainsKey((id, campo.Id)) ? "doc-cambio" : "")">
+                                @EntradaCampo(campo, ValorEdicion(id, campo), val => Cambiar(id, campo, val), "cc-input")
+                            </td>
+                        }
+                        else
+                        {
+                            <CeldaCampo Motor="Motor" Campo="campo" Fila="id" SoloLectura="true" OnCambio="StateHasChanged" />
+                        }
+                    }
+                    <td class="text-nowrap text-end">
+                        <button type="button" class="btn btn-sm btn-outline-danger py-0" title="Eliminar (va a la Papelera)" disabled="@modoEdicion" @onclick:stopPropagation="true" @onclick="() => { selId = id; PedirEliminar(id); }"><Ico Nombre="eliminar" /></button>
+                    </td>
+                </tr>
+            }
+        }
+    </tbody>
+</table></div>
+@MenuAdjuntos()
+@MenuUbicacion()
+</div>
+}
+
+@* ---------- Cargar adjuntos a un material ---------- *@
+@if (cargaAdj is not null)
+{
+    <div class="modal-backdrop-custom">
+        <div class="modal-box-custom" style="max-width:640px;">
+            <h5 class="mb-2"><Ico Nombre="adjuntar" /> @TituloDe(cargaAdj.MaterialId)</h5>
+            <div class="d-flex gap-2 align-items-center flex-wrap mb-2">
+                <div class="btn-group btn-group-sm" role="group" title="Clase">
+                    @foreach (var cl in AdjuntoMaterial.Clases)
+                    {
+                        var clase = cl;
+                        <button type="button" class="btn @(cargaAdj.Clase == clase ? "btn-dark" : "btn-outline-secondary")" @onclick="() => CambiarClaseCarga(clase)">@clase</button>
+                    }
+                </div>
+                <InputFile class="form-control form-control-sm" multiple OnChange="SeleccionarAdjuntos" />
+            </div>
+            @if (cargaAdj.Archivos.Count > 0)
+            {
+                <div class="tabla-scroll mb-2" style="max-height:300px;">
+                    <table class="table table-sm table-bordered align-middle mb-0">
+                        <tbody>
+                            @foreach (var a in cargaAdj.Archivos)
+                            {
+                                var it = a;
+                                <tr>
+                                    <td class="small">
+                                        <div class="text-truncate" style="max-width:340px;" title="@it.Archivo.Name">@it.Archivo.Name</div>
+                                        <span class="text-muted">@((it.Archivo.Size / 1024.0).ToString("0")) KB</span>
+                                        @if (it.Archivo.Size > MaxArchivo) { <span class="text-danger"> · supera 50 MB</span> }
+                                    </td>
+                                    <td class="p-0" style="width:190px;">
+                                        <select class="form-select form-select-sm cc-input" value="@it.Clase" @onchange="@(e => it.Clase = e.Value?.ToString() ?? AdjuntoMaterial.Otros)">
+                                            @foreach (var cl in AdjuntoMaterial.Clases) { <option value="@cl">@cl</option> }
+                                        </select>
+                                    </td>
+                                    <td style="width:36px;"><button type="button" class="ens-mini" title="Quitar" @onclick="() => cargaAdj.Archivos.Remove(it)">✕</button></td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+            @if (!string.IsNullOrEmpty(mensajeAdj)) { <div class="alert alert-warning py-1">@mensajeAdj</div> }
+            <div class="d-flex justify-content-end gap-2">
+                <button class="btn btn-secondary btn-sm" title="Cancelar" @onclick="() => cargaAdj = null"><Ico Nombre="cancelar" /></button>
+                <button class="btn btn-primary btn-sm" title="@($"Cargar {cargaAdj.Archivos.Count(x => x.Archivo.Size <= MaxArchivo)} archivo(s)")" disabled="@(guardando || !cargaAdj.Archivos.Any(x => x.Archivo.Size <= MaxArchivo))" @onclick="GuardarAdjuntos">
+                    @if (guardando) { <span class="spinner-border spinner-border-sm" role="status"></span> } else { <Ico Nombre="guardar" /> }
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+@* ---------- Editar un adjunto: reemplazar el archivo y/o cambiar su clase ---------- *@
+@if (reemplazo is not null)
+{
+    <div class="modal-backdrop-custom">
+        <div class="modal-box-custom" style="max-width:520px;">
+            <h5 class="mb-2"><Ico Nombre="editar" /> @TituloDe(reemplazo.MaterialId)</h5>
+            <div class="small text-muted mb-2">@reemplazo.NombreOriginal</div>
+            <select class="form-select form-select-sm mb-2" title="Clase" @bind="claseReemplazo">
+                @foreach (var cl in AdjuntoMaterial.Clases) { <option value="@cl">@cl</option> }
+            </select>
+            <InputFile class="form-control form-control-sm mb-2" OnChange="@(e => archivoReemplazo = e.File)" />
+            @if (!string.IsNullOrEmpty(mensajeAdj)) { <div class="alert alert-warning py-1">@mensajeAdj</div> }
+            <div class="d-flex justify-content-end gap-2">
+                <button class="btn btn-secondary btn-sm" title="Cancelar" @onclick="() => reemplazo = null"><Ico Nombre="cancelar" /></button>
+                <button class="btn btn-primary btn-sm" title="Guardar" disabled="@(guardando || (archivoReemplazo is null && claseReemplazo == reemplazo.Clase))" @onclick="Reemplazar"><Ico Nombre="guardar" /></button>
+            </div>
+        </div>
+    </div>
+}
+
+@if (elimAdjunto is not null)
+{
+    <div class="modal-backdrop-custom">
+        <div class="modal-box-custom" style="max-width:520px;">
+            <h5 class="mb-2"><Ico Nombre="eliminar" /> @TituloDe(elimAdjunto.MaterialId) · @elimAdjunto.Clase</h5>
+            <div class="small text-muted mb-2">@elimAdjunto.NombreOriginal</div>
+            <PanelImpacto Informe="impactoAdj" OnEntendido="@(v => impactoAdjOk = v)" />
+            <div class="d-flex justify-content-end gap-2">
+                <button class="btn btn-secondary btn-sm" title="Cancelar" @onclick="() => elimAdjunto = null"><Ico Nombre="cancelar" /></button>
+                <button class="btn btn-danger btn-sm" title="Eliminar (va a la Papelera)" disabled="@(impactoAdj is null || (impactoAdj.RequiereEntender && !impactoAdjOk))" @onclick="ConfirmarEliminarAdjunto"><Ico Nombre="eliminar" /></button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private const string Tabla = SigWeb.Data.ListadoMateriales.MigracionMateriales.Tabla;
+    private const string ColAdjuntos = "Adjuntos";
+    private const string ColUbicacion = "Ubicacion";
+    private const long MaxArchivo = 50L * 1024 * 1024;
+    private const int MaxMenu = 3;
+
+    // ---------- Pantalla completa (igual que Ensayos) ----------
+    private bool pantallaCompleta;
+    private EventCallback AtrasPantalla => pantallaCompleta ? EventCallback.Factory.Create(this, () => pantallaCompleta = false) : default;
+
+    private List<Material> materiales = new();
+    private Dictionary<int, List<AdjuntoMaterial>> adjuntos = new();   // material → adjuntos, el más reciente primero
+    private int? selId;
+    private string mensaje = "";
+    private bool error, guardando;
+
+    // ?buscar=texto (buscador rápido Ctrl + K): llega como filtro de la lista.
+    [SupplyParameterFromQuery(Name = "buscar")] public string? BuscarQ { get; set; }
+    private string? buscarAplicado;
+    protected override void OnParametersSet()
+    {
+        if (BuscarQ == buscarAplicado) return;
+        buscarAplicado = BuscarQ;
+        if (!string.IsNullOrWhiteSpace(BuscarQ)) filtro = BuscarQ;
+    }
+
+    protected override void OnInitialized() => CargarLista();
+
+    private void CargarLista()
+    {
+        motorPendiente = true;
+        Db.ChangeTracker.Clear();
+        materiales = Db.Materiales.AsNoTracking().Where(m => !m.Eliminado).OrderBy(m => m.Id).ToList();
+        var ids = materiales.Select(m => m.Id).ToList();
+        try
+        {
+            adjuntos = Db.AdjuntosMaterial.AsNoTracking().Where(a => ids.Contains(a.MaterialId)).ToList()
+                .GroupBy(a => a.MaterialId).ToDictionary(g => g.Key, g => g.OrderByDescending(a => a.FechaCarga).ThenByDescending(a => a.Id).ToList());
+        }
+        catch { adjuntos = new(); }   // sin la migración aplicada
+        try
+        {
+            ubicaciones = Db.UbicacionesMaterial.AsNoTracking().Where(u => ids.Contains(u.MaterialId)).OrderBy(u => u.Id).ToList()
+                .GroupBy(u => u.MaterialId).ToDictionary(g => g.Key, g => g.ToList());
+            lugares = SigWeb.Data.ListadoMateriales.LugaresMaterial.Cargar(Db);
+        }
+        catch { ubicaciones = new(); }
+        cargasMat = Db.CargasMateriales.AsNoTracking().OrderByDescending(c => c.Fecha).ToList();
+        materialesPorCarga = materiales.Where(m => m.CargaMaterialesId != null).GroupBy(m => m.CargaMaterialesId!.Value).ToDictionary(g => g.Key, g => g.Count());
+        cargasSel.RemoveWhere(id => cargasMat.All(c => c.Id != id));
+        if (cargaFiltro is int cf && cargasMat.All(c => c.Id != cf)) cargaFiltro = null;
+        if (selId is int s && materiales.All(m => m.Id != s)) selId = null;
+    }
+
+    private List<AdjuntoMaterial> AdjuntosDe(int id) => adjuntos.TryGetValue(id, out var l) ? l : new();
+
+    // ---------- Campos ----------
+    private MotorTabla? motor;
+    private MotorTabla Motor => motor!;
+    private bool verCampos, motorPendiente = true;
+    private string? colOrden;
+    private bool ordenAsc = true;
+
+    private IEnumerable<CampoTabla> Columnas => motor?.Visibles ?? Enumerable.Empty<CampoTabla>();
+
+    private IEnumerable<ColumnaNativa> ColumnasNativas() => new[]
+    {
+        new ColumnaNativa(ColUbicacion, "Ubicación", TipoCampoTabla.Texto, id => string.Join(", ", UbicacionesDe(id).Select(u => lugares.Etiqueta(u)))),
+        new ColumnaNativa(ColAdjuntos, "Adjuntos", TipoCampoTabla.Numero, id => (double)AdjuntosDe(id).Count),
+    };
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!motorPendiente) return;
+        motorPendiente = false;
+        try
+        {
+            motor = await MotorTabla.CargarAsync(Db, Tabla, ColumnasNativas(), materiales.Select(m => (m.Id, $"#{m.Id}")));
+            await SincronizarTitulosAsync();
+        }
+        catch { motor = null; }
+        StateHasChanged();
+    }
+
+    private IEnumerable<CampoTabla> CamposEditables =>
+        motor?.Ordenados.Where(c => c.Origen != OrigenCampoTabla.Nativo && !c.Calculado) ?? Enumerable.Empty<CampoTabla>();
+
+    // Nombre que identifica el material fuera de esta pantalla (Papelera, Trazado, impacto): la primera
+    // columna cuyo nombre diga "material"; si no hay, la primera columna del listado.
+    private CampoTabla? CampoTitulo => motor?.Ordenados.Where(c => c.Origen != OrigenCampoTabla.Nativo)
+        .OrderByDescending(c => MigracionDocumentos.Normalizar(c.Nombre).Contains("material")).FirstOrDefault();
+
+    private string TituloDe(int id)
+    {
+        var c = CampoTitulo;
+        var t = c is null || motor is null ? "" : motor.Texto(id, c, out _);
+        return string.IsNullOrWhiteSpace(t) ? $"Material #{id}" : t;
+    }
+
+    // Guarda ese nombre en Material.NombreMaterial (lo leen Papelera, Trazado y el análisis de impacto).
+    private async Task SincronizarTitulosAsync()
+    {
+        if (motor is null || CampoTitulo is null) return;
+        var cambiar = materiales.Select(m => (m, t: TituloDe(m.Id))).Where(x => !x.t.StartsWith("Material #") && x.t != x.m.NombreMaterial).ToList();
+        if (cambiar.Count == 0) return;
+        var ids = cambiar.Select(x => x.m.Id).ToList();
+        var ents = await Db.Materiales.Where(m => ids.Contains(m.Id)).ToDictionaryAsync(m => m.Id);
+        foreach (var (m, t) in cambiar)
+        {
+            var corto = t.Length > 200 ? t[..200] : t;
+            if (ents.TryGetValue(m.Id, out var e)) e.NombreMaterial = corto;
+            m.NombreMaterial = corto;
+        }
+        await Db.SaveChangesAsync();
+        Db.ChangeTracker.Clear();
+    }
+
+    // Entrada según el tipo del campo (misma que Documentos).
+    private RenderFragment EntradaCampo(CampoTabla c, string? valor, Action<string?> alCambiar, string clase = "") => __builder =>
+    {
+        switch (c.Tipo)
+        {
+            case TipoCampoTabla.Numero:
+                <input type="number" step="any" class="form-control form-control-sm @clase" value="@valor" @onchange="@(e => alCambiar(e.Value?.ToString()))" />
+                break;
+            case TipoCampoTabla.Fecha:
+                <input type="date" class="form-control form-control-sm @clase" value="@valor" @onchange="@(e => alCambiar(e.Value?.ToString()))" />
+                break;
+            case TipoCampoTabla.Lista:
+                <select class="form-select form-select-sm @clase" value="@valor" @onchange="@(e => alCambiar(e.Value?.ToString()))">
+                    <option value=""></option>
+                    @foreach (var o in Con(motor!.OpcionesDe(c), valor)) { <option value="@o">@o</option> }
+                </select>
+                break;
+            case TipoCampoTabla.SiNo:
+                <div class="text-center"><input type="checkbox" class="form-check-input" checked="@(valor == "1")" @onchange="@(e => alCambiar((bool)e.Value! ? "1" : "0"))" /></div>
+                break;
+            default:
+                <input class="form-control form-control-sm @clase" value="@valor" @onchange="@(e => alCambiar(e.Value?.ToString()))" />
+                break;
+        }
+    };
+
+    private static IEnumerable<string> Con(IEnumerable<string> opciones, string? actual)
+    {
+        var l = opciones.ToList();
+        return string.IsNullOrWhiteSpace(actual) || l.Contains(actual, StringComparer.OrdinalIgnoreCase) ? l : l.Append(actual);
+    }
+
+    // ---------- Filtro y orden ----------
+    private string filtro = "";
+    private int? cargaFiltro;
+
+    private void LimpiarFiltros() { filtro = ""; cargaFiltro = null; }
+
+    private IEnumerable<Material> Mostrados
+    {
+        get
+        {
+            var q = materiales.Where(m => (cargaFiltro is null || m.CargaMaterialesId == cargaFiltro)
+                && (string.IsNullOrWhiteSpace(filtro)
+                    || (motor is not null && motor.TextoBusqueda(m.Id).Contains(filtro, StringComparison.OrdinalIgnoreCase))
+                    || AdjuntosDe(m.Id).Any(a => a.NombreOriginal.Contains(filtro, StringComparison.OrdinalIgnoreCase))));
+            return motor is not null && colOrden is not null ? motor.Ordenar(q, m => m.Id, colOrden, ordenAsc) : q;
+        }
+    }
+
+    private void OrdenarPor(string clave) { if (colOrden == clave) ordenAsc = !ordenAsc; else { colOrden = clave; ordenAsc = true; } }
+    private string Flecha(string clave) => colOrden == clave ? (ordenAsc ? " ▲" : " ▼") : "";
+
+    // ---------- Adjuntos: ícono → menú (por clase, máx. 3; editar/eliminar; Cargar; Ver todos) ----------
+    private int? menuAdj;
+    private int? verTodosDe;
+    private double menuX, menuY;
+
+    private RenderFragment CeldaAdjuntos(int id) => __builder =>
+    {
+        var n = AdjuntosDe(id).Count;
+        <button type="button" class="ens-mini @(n > 0 ? "" : "opacity-50")" title="@(n > 0 ? $"Adjuntos ({n})" : "Sin adjuntos")" disabled="@modoEdicion"
+                @onclick:stopPropagation="true" @onclick="@(e => AbrirMenu(id, e))"><Ico Nombre="documento" />@(n > 0 ? $" {n}" : "")</button>
+    };
+
+    private void AbrirMenu(int id, MouseEventArgs e)
+    {
+        menuUbic = null;
+        if (menuAdj == id) { menuAdj = null; return; }
+        menuAdj = id; menuX = e.ClientX; menuY = e.ClientY;
+    }
+
+    private RenderFragment MenuAdjuntos() => __builder =>
+    {
+        if (menuAdj is not int id) return;
+        var todos = AdjuntosDe(id);
+        var x = menuX.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        var y = (menuY + 8).ToString(System.Globalization.CultureInfo.InvariantCulture);
+        <div class="doc-menu-fondo" @onclick="() => menuAdj = null"></div>
+        <div class="doc-menu doc-menu-fijo" style="left:min(@(x)px, calc(100vw - 330px)); top:min(@(y)px, calc(100vh - 420px)); width:320px; max-height:410px; overflow:auto;">
+            <button type="button" class="doc-menu-op" @onclick="() => { menuAdj = null; verTodosDe = id; }">
+                <Ico Nombre="listado" /> <span>Ver todos</span> <span class="text-muted ms-auto">@todos.Count</span>
+            </button>
+            <div class="doc-menu-sep"></div>
+            @foreach (var cl in AdjuntoMaterial.Clases)
+            {
+                <text>@SeccionMenu(id, cl, todos.Where(a => a.Clase == cl).ToList())</text>
+            }
+            <div class="doc-menu-sep"></div>
+            <button type="button" class="doc-menu-op" @onclick="() => AbrirCargaAdjuntos(id)"><Ico Nombre="adjuntar" /> <span>Cargar adjuntos</span></button>
+        </div>
+    };
+
+    // Cada apartado admite varios archivos: el menú muestra los 3 más recientes; el resto, en "Ver todos".
+    private RenderFragment SeccionMenu(int materialId, string titulo, List<AdjuntoMaterial> lista) => __builder =>
+    {
+        <div class="doc-menu-sec d-flex align-items-center">
+            <span>@titulo@(lista.Count > MaxMenu ? $" ({MaxMenu} de {lista.Count})" : lista.Count > 0 ? $" ({lista.Count})" : "")</span>
+            <button type="button" class="ens-mini ms-auto" title="@($"Agregar a {titulo}")" @onclick="() => AbrirCargaAdjuntos(materialId, titulo)"><Ico Nombre="agregar" /></button>
+        </div>
+        if (lista.Count == 0) { <span class="doc-menu-op doc-menu-off"><Ico Nombre="documento" /> <span>—</span></span> return; }
+        foreach (var a in lista.Take(MaxMenu))
+        {
+            var adj = a;
+            <div class="doc-menu-fila">
+                <a class="doc-menu-op" href="@adj.RutaArchivo" target="_blank" rel="noopener" title="@adj.NombreOriginal" @onclick="() => menuAdj = null">
+                    <Ico Nombre="documento" /> <span class="text-truncate">@adj.NombreOriginal</span>
+                </a>
+                <button type="button" class="ens-mini" title="Editar (reemplazar archivo o clase)" @onclick="() => AbrirReemplazo(adj)"><Ico Nombre="editar" /></button>
+                <button type="button" class="ens-mini" title="Eliminar adjunto" @onclick="() => PedirEliminarAdjunto(adj)"><Ico Nombre="eliminar" /></button>
+            </div>
+        }
+    };
+
+    // ---------- Ubicación (trazabilidad: torre, elemento/pata o tiro donde se usó) ----------
+    private Dictionary<int, List<UbicacionMaterial>> ubicaciones = new();
+    private SigWeb.Data.ListadoMateriales.LugaresMaterial lugares = new();
+    private int? menuUbic;
+    private string tipoLugar = "torre", torreTexto = "";
+    private int? elementoSel, tiroSel;
+    private string mensajeUbic = "";
+
+    private List<UbicacionMaterial> UbicacionesDe(int id) => ubicaciones.TryGetValue(id, out var l) ? l : new();
+
+    private RenderFragment CeldaUbicacion(int id) => __builder =>
+    {
+        var l = UbicacionesDe(id);
+        <button type="button" class="doc-vinculo-suave" title="@(l.Count == 0 ? "Ubicar en una torre, elemento o tiro" : "Ubicaciones")" disabled="@modoEdicion"
+                @onclick:stopPropagation="true" @onclick="@(e => AbrirMenuUbic(id, e))">
+            @if (l.Count == 0) { <span class="text-muted"><Ico Nombre="ubicacion" /></span> }
+            else { <span>@string.Join(", ", l.Select(u => lugares.Etiqueta(u)))</span> }
+        </button>
+    };
+
+    private void AbrirMenuUbic(int id, MouseEventArgs e)
+    {
+        menuAdj = null;
+        if (menuUbic == id) { menuUbic = null; return; }
+        menuUbic = id; menuX = e.ClientX; menuY = e.ClientY; mensajeUbic = ""; torreTexto = ""; elementoSel = null; tiroSel = null;
+    }
+
+    private RenderFragment MenuUbicacion() => __builder =>
+    {
+        if (menuUbic is not int id) return;
+        var l = UbicacionesDe(id);
+        var torre = lugares.TorrePorCodigo(torreTexto);
+        var x = menuX.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        var y = (menuY + 8).ToString(System.Globalization.CultureInfo.InvariantCulture);
+        <div class="doc-menu-fondo" @onclick="() => menuUbic = null"></div>
+        <div class="doc-menu doc-menu-fijo" style="left:min(@(x)px, calc(100vw - 340px)); top:min(@(y)px, calc(100vh - 380px)); width:330px;">
+            <div class="doc-menu-sec">@TituloDe(id)</div>
+            @if (l.Count == 0) { <span class="doc-menu-op doc-menu-off"><Ico Nombre="ubicacion" /> <span>—</span></span> }
+            @foreach (var u in l)
+            {
+                var ub = u;
+                <div class="doc-menu-fila">
+                    <span class="doc-menu-op"><Ico Nombre="@(ub.TiroId is not null ? "tiro" : ub.ComponenteId is not null ? "pata" : "torre")" /> <span class="text-truncate">@lugares.Etiqueta(ub)</span></span>
+                    <button type="button" class="ens-mini" title="Quitar ubicación" @onclick="() => QuitarUbicacion(ub)">✕</button>
+                </div>
+            }
+            <div class="doc-menu-sep"></div>
+            <div class="p-1">
+                <div class="btn-group btn-group-sm w-100 mb-1" role="group">
+                    <button type="button" class="btn @(tipoLugar == "torre" ? "btn-dark" : "btn-outline-secondary")" title="Torre" @onclick='() => tipoLugar = "torre"'><Ico Nombre="torre" /></button>
+                    <button type="button" class="btn @(tipoLugar == "elemento" ? "btn-dark" : "btn-outline-secondary")" title="Elemento / pata" @onclick='() => tipoLugar = "elemento"'><Ico Nombre="pata" /></button>
+                    <button type="button" class="btn @(tipoLugar == "tiro" ? "btn-dark" : "btn-outline-secondary")" title="Tiro" @onclick='() => tipoLugar = "tiro"'><Ico Nombre="tiro" /></button>
+                </div>
+                @if (tipoLugar == "tiro")
+                {
+                    <select class="form-select form-select-sm mb-1" value="@(tiroSel?.ToString() ?? "")" @onchange="@(e => tiroSel = int.TryParse(e.Value?.ToString(), out var t) ? t : null)">
+                        <option value="">Tiro…</option>
+                        @foreach (var t in lugares.Tiros) { <option value="@t.Id">@t.Nombre</option> }
+                    </select>
+                }
+                else
+                {
+                    <input class="form-control form-control-sm mb-1 @(torreTexto != "" && torre is null ? "is-invalid" : "")" list="dl-torres-mat" placeholder="Torre…"
+                           value="@torreTexto" @oninput="@(e => { torreTexto = e.Value?.ToString() ?? ""; elementoSel = null; })" />
+                    <datalist id="dl-torres-mat">@foreach (var t in lugares.Torres) { <option value="@t.Codigo"></option> }</datalist>
+                    @if (tipoLugar == "elemento")
+                    {
+                        <select class="form-select form-select-sm mb-1" disabled="@(torre is null)" value="@(elementoSel?.ToString() ?? "")" @onchange="@(e => elementoSel = int.TryParse(e.Value?.ToString(), out var c) ? c : null)">
+                            <option value="">Elemento…</option>
+                            @foreach (var c in lugares.ElementosDe(torre?.Id)) { <option value="@c.Id">@c.Nombre</option> }
+                        </select>
+                    }
+                }
+                @if (!string.IsNullOrEmpty(mensajeUbic)) { <div class="small text-danger mb-1">@mensajeUbic</div> }
+                <div class="d-flex justify-content-end">
+                    <button type="button" class="btn btn-primary btn-sm" title="Agregar ubicación"
+                            disabled="@(tipoLugar == "tiro" ? tiroSel is null : torre is null || (tipoLugar == "elemento" && elementoSel is null))"
+                            @onclick="() => AgregarUbicacion(id)"><Ico Nombre="agregar" /></button>
+                </div>
+            </div>
+        </div>
+    };
+
+    private async Task AgregarUbicacion(int materialId)
+    {
+        var torre = lugares.TorrePorCodigo(torreTexto);
+        var u = new UbicacionMaterial { MaterialId = materialId };
+        if (tipoLugar == "tiro") u.TiroId = tiroSel;
+        else { u.ElementoTrazadoId = torre?.Id; if (tipoLugar == "elemento") u.ComponenteId = elementoSel; }
+        if (u.TiroId is null && u.ElementoTrazadoId is null) return;
+        if (UbicacionesDe(materialId).Any(x => x.TiroId == u.TiroId && x.ElementoTrazadoId == u.ElementoTrazadoId && x.ComponenteId == u.ComponenteId))
+        { mensajeUbic = "Ya está en esa ubicación."; return; }
+        try
+        {
+            Db.UbicacionesMaterial.Add(u);
+            await Db.SaveChangesAsync();
+            torreTexto = ""; elementoSel = null; tiroSel = null; mensajeUbic = "";
+            var abierto = menuUbic;
+            CargarLista();
+            menuUbic = abierto;
+        }
+        catch (Exception ex) { mensajeUbic = "No se pudo guardar (¿falta aplicar la migración?): " + ex.Message; }
+    }
+
+    private async Task QuitarUbicacion(UbicacionMaterial u)
+    {
+        var ent = await Db.UbicacionesMaterial.FirstOrDefaultAsync(x => x.Id == u.Id);
+        if (ent is not null) { Db.UbicacionesMaterial.Remove(ent); await Db.SaveChangesAsync(); }
+        var abierto = menuUbic;
+        CargarLista();
+        menuUbic = abierto;
+    }
+
+    // ---------- Cargar adjuntos ----------
+    private sealed class ArchivoAdj
+    {
+        public IBrowserFile Archivo = null!;
+        public string Clase = AdjuntoMaterial.Otros;
+    }
+
+    private sealed class CargaAdj
+    {
+        public int MaterialId;
+        public string Clase = AdjuntoMaterial.Remision;
+        public List<ArchivoAdj> Archivos = new();
+    }
+
+    private CargaAdj? cargaAdj;
+    private string mensajeAdj = "";
+
+    private void AbrirCargaAdjuntos(int id) => AbrirCargaAdjuntos(id, AdjuntoMaterial.Remision);
+
+    private void AbrirCargaAdjuntos(int id, string clase) { menuAdj = null; reemplazo = null; elimAdjunto = null; mensajeAdj = ""; cargaAdj = new CargaAdj { MaterialId = id, Clase = clase }; }
+
+    private void CambiarClaseCarga(string clase)
+    {
+        if (cargaAdj is null) return;
+        cargaAdj.Clase = clase;
+        foreach (var a in cargaAdj.Archivos) a.Clase = clase;
+    }
+
+    // Cada archivo toma la clase elegida arriba; se puede cambiar por archivo.
+    private void SeleccionarAdjuntos(InputFileChangeEventArgs e)
+    {
+        if (cargaAdj is null) return;
+        foreach (var f in e.GetMultipleFiles(100))
+        {
+            if (cargaAdj.Archivos.Any(x => x.Archivo.Name == f.Name && x.Archivo.Size == f.Size)) continue;
+            cargaAdj.Archivos.Add(new ArchivoAdj { Archivo = f, Clase = cargaAdj.Clase });
+        }
+    }
+
+    private async Task<string> GuardarArchivo(IBrowserFile archivo)
+    {
+        var carpeta = Path.Combine(Env.WebRootPath, "uploads", "materiales");
+        Directory.CreateDirectory(carpeta);
+        var nombre = $"{Guid.NewGuid()}{Path.GetExtension(archivo.Name)}";
+        await using (var s = archivo.OpenReadStream(MaxArchivo))
+        await using (var destino = File.Create(Path.Combine(carpeta, nombre)))
+            await s.CopyToAsync(destino);
+        return $"/uploads/materiales/{nombre}";
+    }
+
+    private async Task GuardarAdjuntos()
+    {
+        if (cargaAdj is null) return;
+        guardando = true; mensajeAdj = "";
+        int ok = 0; var fallos = new List<string>();
+        try
+        {
+            var momento = DateTime.Now;
+            foreach (var a in cargaAdj.Archivos)
+            {
+                if (a.Archivo.Size > MaxArchivo) { fallos.Add($"{a.Archivo.Name} (supera 50 MB)"); continue; }
+                try
+                {
+                    var ruta = await GuardarArchivo(a.Archivo);
+                    momento = momento.AddMilliseconds(10);
+                    Db.AdjuntosMaterial.Add(new AdjuntoMaterial { MaterialId = cargaAdj.MaterialId, Clase = a.Clase, NombreOriginal = a.Archivo.Name, RutaArchivo = ruta, FechaCarga = momento });
+                    await Db.SaveChangesAsync();
+                    ok++;
+                }
+                catch (Exception ex) { fallos.Add($"{a.Archivo.Name} ({ex.Message})"); }
+            }
+            mensaje = $"{ok} adjunto(s) cargado(s)." + (fallos.Count > 0 ? " No se cargaron: " + string.Join("; ", fallos) : "");
+            error = fallos.Count > 0;
+            cargaAdj = null;
+            CargarLista();
+        }
+        finally { guardando = false; }
+    }
+
+    // ---------- Editar / eliminar un adjunto ----------
+    private AdjuntoMaterial? reemplazo, elimAdjunto;
+    private IBrowserFile? archivoReemplazo;
+    private string claseReemplazo = AdjuntoMaterial.Otros;
+    private SigWeb.Data.Impacto.InformeImpacto? impactoAdj;
+    private bool impactoAdjOk;
+
+    private void AbrirReemplazo(AdjuntoMaterial a)
+    {
+        menuAdj = null; elimAdjunto = null; cargaAdj = null; reemplazo = a; archivoReemplazo = null; claseReemplazo = a.Clase; mensajeAdj = "";
+    }
+
+    // Mismo registro; cambia el archivo (el anterior se borra del disco) y/o la clase.
+    private async Task Reemplazar()
+    {
+        if (reemplazo is null) return;
+        if (archivoReemplazo is not null && archivoReemplazo.Size > MaxArchivo) { mensajeAdj = "El archivo supera 50 MB."; return; }
+        guardando = true;
+        try
+        {
+            var ent = await Db.AdjuntosMaterial.FirstAsync(x => x.Id == reemplazo.Id);
+            ent.Clase = claseReemplazo;
+            string? anterior = null;
+            if (archivoReemplazo is not null)
+            {
+                anterior = ent.RutaArchivo;
+                ent.RutaArchivo = await GuardarArchivo(archivoReemplazo);
+                ent.NombreOriginal = archivoReemplazo.Name;
+            }
+            await Db.SaveChangesAsync();
+            SigWeb.Data.Papelera.ProveedorPapeleraAdjuntosMaterial.BorrarFisico(Env, anterior);
+            mensaje = $"Adjunto actualizado: {ent.NombreOriginal}."; error = false;
+            reemplazo = null;
+            CargarLista();
+        }
+        catch (Exception ex) { mensajeAdj = "No se pudo guardar: " + ex.Message; }
+        finally { guardando = false; }
+    }
+
+    private void PedirEliminarAdjunto(AdjuntoMaterial a)
+    {
+        menuAdj = null; reemplazo = null; cargaAdj = null; elimAdjunto = a; impactoAdj = null; impactoAdjOk = false;
+        _ = CalcularImpactoAdjunto(a.Id);
+    }
+
+    private async Task CalcularImpactoAdjunto(int id)
+    {
+        try
+        {
+            using var scope = Scopes.CreateScope();
+            impactoAdj = await scope.ServiceProvider.GetRequiredService<SigWeb.Data.Impacto.AnalizadorImpacto>().AdjuntoDeMaterial(id);
+        }
+        catch { impactoAdj = new SigWeb.Data.Impacto.InformeImpacto { Elemento = "No se pudo calcular el impacto" }; }
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task ConfirmarEliminarAdjunto()
+    {
+        if (elimAdjunto is null) return;
+        var ent = await Db.AdjuntosMaterial.FirstOrDefaultAsync(x => x.Id == elimAdjunto.Id);
+        if (ent is not null) { ent.Eliminado = true; ent.FechaEliminacion = DateTime.Now; await Db.SaveChangesAsync(); }
+        mensaje = $"Adjunto {elimAdjunto.NombreOriginal} enviado a la Papelera."; error = false;
+        elimAdjunto = null;
+        CargarLista();
+    }
+
+    // ---------- Edición de la tabla (solo con Editar; nada se guarda hasta Guardar) ----------
+    private bool modoEdicion;
+    private Dictionary<(int Fila, int Campo), string?> cambios = new();
+
+    private string? ValorActual(int fila, CampoTabla c) => motor?.Registro(fila, c)?.Valor;
+    private string? ValorEdicion(int fila, CampoTabla c) => cambios.TryGetValue((fila, c.Id), out var v) ? v : ValorActual(fila, c);
+
+    private void Cambiar(int fila, CampoTabla c, string? valor)
+    {
+        valor = string.IsNullOrWhiteSpace(valor) ? null : valor.Trim();
+        if ((valor ?? "") == (ValorActual(fila, c) ?? "")) cambios.Remove((fila, c.Id));
+        else cambios[(fila, c.Id)] = valor;
+    }
+
+    private void EntrarEdicion()
+    {
+        modoEdicion = true; cambios.Clear(); menuAdj = null; menuUbic = null;
+        mostrarImportar = false; verCargas = false; form = null; elimId = null; verCampos = false; mensaje = "";
+    }
+
+    private void SalirEdicion() { modoEdicion = false; cambios.Clear(); }
+
+    private async Task GuardarEdicion()
+    {
+        if (motor is null || cambios.Count == 0) return;
+        guardando = true;
+        try
+        {
+            var porId = motor.Campos.ToDictionary(c => c.Id);
+            var filas = cambios.Keys.Select(k => k.Fila).Distinct().Count();
+            foreach (var ((fila, campoId), valor) in cambios.ToList())
+                if (porId.TryGetValue(campoId, out var campo)) await motor.GuardarValorAsync(Db, fila, campo, valor);
+            mensaje = $"{cambios.Count} cambio(s) guardado(s) en {filas} material(es)."; error = false;
+            modoEdicion = false; cambios.Clear();
+            CargarLista();
+        }
+        catch (Exception ex) { mensaje = "No se pudo guardar: " + ex.Message; error = true; }
+        finally { guardando = false; }
+    }
+
+    // ---------- Nuevo material ----------
+    private Dictionary<int, string?>? form;
+
+    private void Nuevo()
+    {
+        if (form is not null) { form = null; return; }
+        mostrarImportar = false; verCargas = false; elimId = null; mensaje = "";
+        form = new();
+    }
+
+    private async Task GuardarNuevo()
+    {
+        if (form is null || motor is null) return;
+        guardando = true;
+        try
+        {
+            var ent = new Material { Fecha = DateTime.Now, EnCampos = true };
+            Db.Materiales.Add(ent);
+            await Db.SaveChangesAsync();
+            foreach (var c in CamposEditables.ToList())
+                if (form.TryGetValue(c.Id, out var v) && !string.IsNullOrWhiteSpace(v))
+                    await motor.GuardarValorAsync(Db, ent.Id, c, v);
+            selId = ent.Id;
+            form = null;
+            CargarLista();
+        }
+        catch (Exception ex) { mensaje = "No se pudo guardar: " + ex.Message; error = true; }
+        finally { guardando = false; }
+    }
+
+    // ---------- Eliminar material (Papelera, con sus adjuntos) ----------
+    private int? elimId;
+    private SigWeb.Data.Impacto.InformeImpacto? impacto;
+    private bool impactoOk;
+
+    private void PedirEliminar(int? id)
+    {
+        if (id is not int i) return;
+        form = null; mostrarImportar = false; elimId = i; impacto = null; impactoOk = false;
+        _ = CalcularImpacto(i);
+    }
+
+    private async Task CalcularImpacto(int id)
+    {
+        try
+        {
+            using var scope = Scopes.CreateScope();
+            impacto = await scope.ServiceProvider.GetRequiredService<SigWeb.Data.Impacto.AnalizadorImpacto>().Material(id);
+        }
+        catch { impacto = new SigWeb.Data.Impacto.InformeImpacto { Elemento = "No se pudo calcular el impacto" }; }
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task ConfirmarEliminar()
+    {
+        if (elimId is not int id) return;
+        var titulo = TituloDe(id);
+        var m = await Db.Materiales.FirstOrDefaultAsync(x => x.Id == id);
+        if (m is not null) { m.Eliminado = true; m.FechaEliminacion = DateTime.Now; await Db.SaveChangesAsync(); }
+        mensaje = $"{titulo} enviado a la Papelera."; error = false;
+        elimId = null; selId = null;
+        CargarLista();
+    }
+
+    // ---------- Cargas (bases de datos Excel) ----------
+    private bool verCargas, mostrarImportar, importando;
+    private List<CargaMateriales> cargasMat = new();
+    private Dictionary<int, int> materialesPorCarga = new();
+    private HashSet<int> cargasSel = new();
+    private List<int>? elimCargas;
+    private SigWeb.Data.Impacto.InformeImpacto? impactoCargas;
+    private bool impactoCargasOk;
+
+    private void AlternarCargas() { verCargas = !verCargas; mostrarImportar = false; elimCargas = null; }
+    private void AlternarImportar() { mostrarImportar = !mostrarImportar; verCargas = false; form = null; mensaje = ""; }
+
+    private void PedirEliminarCargas()
+    {
+        if (cargasSel.Count == 0) return;
+        elimCargas = cargasSel.ToList(); impactoCargas = null; impactoCargasOk = false;
+        _ = CalcularImpactoCargas(elimCargas);
+    }
+
+    private async Task CalcularImpactoCargas(List<int> ids)
+    {
+        try
+        {
+            using var scope = Scopes.CreateScope();
+            impactoCargas = await scope.ServiceProvider.GetRequiredService<SigWeb.Data.Impacto.AnalizadorImpacto>().CargasMateriales(ids);
+        }
+        catch { impactoCargas = new SigWeb.Data.Impacto.InformeImpacto { Elemento = "No se pudo calcular el impacto" }; }
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task ConfirmarEliminarCargas()
+    {
+        if (elimCargas is null) return;
+        var ids = elimCargas;
+        // Misma marca de tiempo para la carga y sus materiales: la Papelera los restaura juntos.
+        var ahora = DateTime.Now; ahora = new DateTime(ahora.Year, ahora.Month, ahora.Day, ahora.Hour, ahora.Minute, ahora.Second);
+        foreach (var c in await Db.CargasMateriales.Where(c => ids.Contains(c.Id)).ToListAsync()) { c.Eliminado = true; c.FechaEliminacion = ahora; }
+        int n = 0;
+        foreach (var m in await Db.Materiales.Where(m => !m.Eliminado && m.CargaMaterialesId != null && ids.Contains(m.CargaMaterialesId.Value)).ToListAsync())
+        { m.Eliminado = true; m.FechaEliminacion = ahora; n++; }
+        await Db.SaveChangesAsync();
+        mensaje = $"{ids.Count} carga(s) y {n} material(es) enviados a la Papelera."; error = false;
+        elimCargas = null; cargasSel.Clear();
+        CargarLista();
+    }
+
+    // ---------- Importar listado (Excel), igual que Documentos ----------
+    // Cada columna del Excel va a una columna existente del listado o a una nueva con su encabezado.
+    private IReadOnlyList<DestinoColumna> DestinosImportacion =>
+        CamposEditables.Select(c => new DestinoColumna($"c:{c.Id}", c.Nombre)).ToList();
+
+    private async Task ImportarExcel(ImportacionExcel imp)
+    {
+        mensaje = "";
+        if (imp.Filas.Count == 0) { mensaje = "No hay filas con datos para importar."; error = true; return; }
+        importando = true;
+        try
+        {
+            var carga = new CargaMateriales { NombreArchivo = imp.NombreArchivo, Hoja = imp.Hoja, FilaEncabezados = imp.FilaEncabezados, Fecha = DateTime.Now, FilasCreadas = imp.Filas.Count };
+            Db.CargasMateriales.Add(carga);
+            await Db.SaveChangesAsync();
+            var nuevos = imp.Filas.Select(f => (M: new Material { Fecha = DateTime.Now, EnCampos = true, CargaMaterialesId = carga.Id }, F: f)).ToList();
+            Db.Materiales.AddRange(nuevos.Select(x => x.M));
+            await Db.SaveChangesAsync();
+
+            // A la columna existente elegida (toma su nombre) o a una nueva con el encabezado del Excel
+            // (si se llamaría como la columna propia "Adjuntos", se marca "(Excel)").
+            var porId = (motor?.Campos ?? new()).ToDictionary(c => c.Id);
+            var nombres = imp.Destinos.ToDictionary(kv => kv.Key, kv => kv.Value.StartsWith("c:") && porId.TryGetValue(int.Parse(kv.Value[2..]), out var campo)
+                ? campo.Nombre
+                : string.Equals(imp.Encabezados[kv.Key], ColAdjuntos, StringComparison.OrdinalIgnoreCase) ? imp.Encabezados[kv.Key] + " (Excel)" : imp.Encabezados[kv.Key]);
+            Db.ChangeTracker.Clear();
+            var extras = nuevos.ToDictionary(x => x.M.Id, x => nombres.ToDictionary(kv => kv.Value, kv => ImportacionExcel.Celda(x.F, kv.Key), StringComparer.OrdinalIgnoreCase));
+            await MotorTabla.GuardarExtrasExcelAsync(Db, Tabla, extras);
+            mensaje = $"{nuevos.Count} material(es) importado(s)."; error = false;
+            mostrarImportar = false;
+            CargarLista();
+        }
+        catch (Exception ex) { mensaje = "No se pudo importar: " + ex.Message; error = true; }
+        finally { importando = false; }
+    }
+}

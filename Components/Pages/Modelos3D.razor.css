@@ -1,0 +1,10 @@
+.m3d-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; height: calc(100vh - 190px); min-height: 480px; }
+.m3d-izq { overflow-y: auto; border: 1px solid #dee2e6; border-radius: 6px; padding: 8px; background: #fff; }
+.m3d-visor { border-radius: 6px; overflow: hidden; min-height: 400px; background: #14181f; }
+.m3d-chip { display: inline-block; width: 12px; height: 12px; border-radius: 3px; }
+.m3d-grupo { margin-bottom: 4px; }
+.m3d-lista { max-height: 220px; overflow-y: auto; border: 1px solid #eee; border-radius: 4px; }
+.m3d-item { font-size: .78rem; padding: 2px 6px; cursor: pointer; }
+.m3d-item:hover { background: #eef3fb; }
+.m3d-item.activo { background: #ffe680; }
+@media (max-width: 1000px) { .m3d-layout { grid-template-columns: 1fr; height: auto; } .m3d-visor { height: 60vh; } }

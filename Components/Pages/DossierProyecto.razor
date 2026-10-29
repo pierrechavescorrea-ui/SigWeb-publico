@@ -1,0 +1,481 @@
+@page "/dossier"
+@rendermode InteractiveServer
+@implements IDisposable
+@using SigWeb.Data
+@using SigWeb.Data.Dossier
+@using SigWeb.Models
+@inject IServiceScopeFactory Scopes
+@inject IWebHostEnvironment Env
+@inject AlmacenDossier Almacen
+@inject IJSRuntime JS
+
+@* Dossier: el usuario elige módulos (mosaicos, arrastrables para ordenar las carpetas), elementos, clases
+   de archivo y la forma de las carpetas; la estructura se ve en vivo y el ZIP se descarga por HTTP
+   (GET /api/dossier/{token}, streaming), nunca por el circuito. *@
+
+<EncabezadoPagina Titulo="Dossier" Icono="dossier" Subtitulo="@Subtitulo">
+    <Acciones>
+        <button type="button" class="pg-btn pg-btn-primario" title="Descargar dossier (ZIP)" aria-label="Descargar dossier"
+                disabled="@(cargando || plan is null || (plan.Archivos.Count == 0 && plan.Tablas.Count == 0))" @onclick="Descargar"><Ico Nombre="comprimir" /></button>
+    </Acciones>
+</EncabezadoPagina>
+
+@if (aviso != "")
+{
+    <div class="alert alert-success py-1 small">@aviso</div>
+}
+
+<div class="ens-grid dos-mods mb-3">
+    @foreach (var x in mods)
+    {
+        var mm = x;
+        var total = mm.Datos?.Elementos.Count ?? 0;
+        <div class="ens-cuadro dos-mod @(abierto == mm ? "activo" : "") @(mm.Datos is null ? "inactivo" : "") @(arrastrando == mm ? "ens-destino" : "")"
+             role="button" title="@(mm.Error ?? mm.Fuente.Nombre)" draggable="true" data-arrastre
+             @onclick="() => Abrir(mm)" @ondragstart="() => arrastrando = mm" @ondragend="() => arrastrando = null"
+             @ondragover:preventDefault="true" @ondrop="() => Soltar(mm)">
+            <span class="dos-mod-sel" @onclick:stopPropagation="true">
+                <input type="checkbox" title="Todo / nada" checked="@(mm.Sel.Count > 0)" disabled="@(mm.Datos is null || total == 0)"
+                       @onchange="e => SeleccionarModulo(mm, e.Value is true)" />
+            </span>
+            @if (mm.Incluido)
+            {
+                <span class="dos-mod-orden" title="Orden en el ZIP">@(Incluidos.IndexOf(mm) + 1)</span>
+            }
+            <svg viewBox="0 0 24 24" width="34" height="34" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">@((MarkupString)EncabezadoPagina.Trazos(mm.Fuente.Icono))</svg>
+            <div class="ens-nombre">@mm.Fuente.Nombre</div>
+            <div class="ens-cuenta">
+                @if (mm.Datos is null && mm.Error is null) { <span class="spinner-border spinner-border-sm"></span> }
+                else if (mm.Error is not null) { <span>—</span> }
+                else { <span>@mm.Sel.Count / @total</span> }
+            </div>
+        </div>
+    }
+</div>
+
+<div class="row g-3">
+    <div class="col-xl-8">
+        @if (abierto?.Datos is { } d)
+        {
+            var m = abierto!;
+            var clases = ClasesDe(m);
+            var lista = Filtrados(m);
+            <div class="dos-panel">
+                <div class="dos-panel-cab">
+                    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">@((MarkupString)EncabezadoPagina.Trazos(m.Fuente.Icono))</svg>
+                    <strong>@m.Fuente.Nombre</strong>
+                    <span class="dos-sep"></span>
+                    <button type="button" class="dos-chip @(m.Tabla ? "on" : "")" title="Tabla (Excel)" @onclick="() => { m.Tabla = !m.Tabla; Recalcular(); }"><Ico Nombre="excel" /></button>
+                    <button type="button" class="dos-chip @(m.Adjuntos ? "on" : "")" title="Adjuntos" @onclick="() => { m.Adjuntos = !m.Adjuntos; Recalcular(); }"><Ico Nombre="documento" /></button>
+                    @if (d.TieneVersiones)
+                    {
+                        <button type="button" class="dos-chip @(!m.SoloActuales ? "on" : "")" title="Incluir versiones anteriores" disabled="@(!m.Adjuntos)"
+                                @onclick="() => { m.SoloActuales = !m.SoloActuales; Recalcular(); }"><Ico Nombre="versiones" /></button>
+                    }
+                    @if (m.Adjuntos)
+                    {
+                        <span class="dos-sep"></span>
+                        @foreach (var c in clases)
+                        {
+                            var cc = c;
+                            <button type="button" class="dos-chip dos-chip-txt @(m.Clases.Contains(cc) ? "on" : "")" title="@cc"
+                                    @onclick="() => { if (!m.Clases.Remove(cc)) m.Clases.Add(cc); Recalcular(); }">@cc</button>
+                        }
+                    }
+                </div>
+
+                <div class="dos-filtros">
+                    <input class="form-control form-control-sm dos-buscar" placeholder="Buscar…" value="@m.Filtro"
+                           @oninput="e => { m.Filtro = e.Value?.ToString() ?? string.Empty; }" />
+                    @if (d.NombreGrupo is not null)
+                    {
+                        <select class="form-select form-select-sm dos-sel" title="@d.NombreGrupo" value="@(m.GrupoFiltro ?? "")"
+                                @onchange="e => m.GrupoFiltro = string.IsNullOrEmpty(e.Value?.ToString()) ? null : e.Value!.ToString()">
+                            <option value="">@d.NombreGrupo: todos</option>
+                            @foreach (var g in GruposDe(m))
+                            {
+                                <option value="@g">@g</option>
+                            }
+                        </select>
+                    }
+                    <span class="dos-campo" title="Nombre de la carpeta de cada elemento">
+                        <Ico Nombre="carpeta" />
+                        <select class="form-select form-select-sm dos-sel" value="@m.Col1" @onchange="e => CambiarColumna(m, 1, e.Value?.ToString())">
+                            @foreach (var c in d.Columnas(false))
+                            {
+                                <option value="@c.Clave">@c.Nombre</option>
+                            }
+                        </select>
+                        <select class="form-select form-select-sm dos-sel" value="@m.Col2" @onchange="e => CambiarColumna(m, 2, e.Value?.ToString())">
+                            <option value="">＋</option>
+                            @foreach (var c in d.Columnas(false))
+                            {
+                                <option value="@c.Clave">@c.Nombre</option>
+                            }
+                        </select>
+                    </span>
+                </div>
+
+                <div class="dos-lista">
+                    <table class="table table-sm tabla-compacta align-middle mb-0">
+                        <thead>
+                            <tr>
+                                <th class="dos-col-chk">
+                                    <input type="checkbox" title="Seleccionar lo filtrado" checked="@(lista.Count > 0 && lista.All(e => m.Sel.Contains(e.Id)))"
+                                           @onchange="e => SeleccionarLista(m, lista, e.Value is true)" />
+                                </th>
+                                <th>@(d.Motor.PorClave(m.Col1)?.Nombre ?? "Elemento")</th>
+                                @if (d.NombreGrupo is not null) { <th>@d.NombreGrupo</th> }
+                                <th class="text-end dos-col-num" title="Archivos"><Ico Nombre="documento" /></th>
+                                <th class="text-end dos-col-tam">MB</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <Virtualize Items="lista" Context="el" ItemSize="30" SpacerElement="tr" OverscanCount="25">
+                                @{ var (n, bytes, faltan) = InfoElemento(m, el); }
+                                <tr class="@(m.Sel.Contains(el.Id) ? "dos-fila-sel" : "")" @onclick="() => Alternar(m, el.Id)">
+                                    <td class="dos-col-chk"><input type="checkbox" checked="@m.Sel.Contains(el.Id)" @onclick:stopPropagation="true" @onchange="() => Alternar(m, el.Id)" /></td>
+                                    <td class="celda-truncada" title="@NombreDe(m, el.Id)">@NombreDe(m, el.Id)</td>
+                                    @if (d.NombreGrupo is not null) { <td class="celda-truncada text-muted">@el.Grupo</td> }
+                                    <td class="text-end">
+                                        @if (faltan > 0) { <span class="dos-falta" title="@($"{faltan} sin archivo en el servidor")">⚠</span> }
+                                        @(n > 0 ? n.ToString() : "")
+                                    </td>
+                                    <td class="text-end text-muted">@(n > 0 && bytes > 0 ? Mb(bytes) : "")</td>
+                                </tr>
+                            </Virtualize>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        }
+        else if (abierto?.Error is { } err)
+        {
+            <div class="alert alert-warning py-1 small">@err</div>
+        }
+    </div>
+
+    <div class="col-xl-4">
+        <div class="dos-panel">
+            <div class="dos-panel-cab">
+                <Ico Nombre="comprimir" />
+                <input class="form-control form-control-sm dos-nombre" title="Nombre del archivo" value="@nombreZip"
+                       @onchange="e => nombreZip = e.Value?.ToString() ?? string.Empty" />
+            </div>
+            <div class="dos-opciones">
+                <label class="form-check form-switch"><input class="form-check-input" type="checkbox" checked="@carpetaPorElemento" @onchange="e => { carpetaPorElemento = e.Value is true; Recalcular(); }" /><span class="form-check-label">Carpeta por elemento</span></label>
+                <label class="form-check form-switch"><input class="form-check-input" type="checkbox" checked="@subcarpetas" @onchange="e => { subcarpetas = e.Value is true; Recalcular(); }" /><span class="form-check-label">Subcarpetas por clase</span></label>
+                <label class="form-check form-switch"><input class="form-check-input" type="checkbox" checked="@porGrupo" @onchange="e => { porGrupo = e.Value is true; Recalcular(); }" /><span class="form-check-label">Carpetas por grupo</span></label>
+                <label class="form-check form-switch"><input class="form-check-input" type="checkbox" checked="@numerar" @onchange="e => { numerar = e.Value is true; Recalcular(); }" /><span class="form-check-label">Numerar módulos</span></label>
+                <label class="form-check form-switch"><input class="form-check-input" type="checkbox" checked="@libroUnico" @onchange="e => { libroUnico = e.Value is true; Recalcular(); }" /><span class="form-check-label">Tablas en un solo libro</span></label>
+                <label class="form-check form-switch"><input class="form-check-input" type="checkbox" checked="@soloVisibles" @onchange="e => { soloVisibles = e.Value is true; Recalcular(); }" /><span class="form-check-label">Solo columnas visibles</span></label>
+            </div>
+            <div class="dos-resumen">
+                <span title="Elementos"><Ico Nombre="listado" /> @resElementos</span>
+                <span title="Tablas"><Ico Nombre="excel" /> @(plan?.Tablas.Count ?? 0)</span>
+                <span title="Archivos"><Ico Nombre="documento" /> @(plan?.Archivos.Count ?? 0)</span>
+                <span title="Tamaño aproximado">@(midiendo ? "…" : Mb(resBytes)) MB</span>
+                @if (resFaltan > 0)
+                {
+                    <span class="dos-falta" title="Archivos que no están en el servidor (van a la hoja Faltantes del índice)">⚠ @resFaltan</span>
+                }
+            </div>
+            @if (arbol is not null)
+            {
+                <div class="dos-arbol">
+                    @NodoArbol(arbol, 0)
+                </div>
+            }
+        </div>
+    </div>
+</div>
+
+@code {
+    private sealed class Mod
+    {
+        public required IFuenteDossier Fuente { get; init; }
+        public FuenteCargada? Datos { get; set; }
+        public string? Error { get; set; }
+        public bool Tabla { get; set; } = true;
+        public bool Adjuntos { get; set; } = true;
+        public bool SoloActuales { get; set; } = true;
+        public HashSet<int> Sel { get; } = new();
+        public HashSet<string> Clases { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public string Col1 { get; set; } = "";
+        public string Col2 { get; set; } = "";
+        public string Filtro { get; set; } = "";
+        public string? GrupoFiltro { get; set; }
+        public Dictionary<int, string> Nombres { get; set; } = new();
+        public Dictionary<int, string>? Busqueda { get; set; }
+        public bool Incluido => Datos is not null && Sel.Count > 0 && (Tabla || Adjuntos);
+    }
+
+    private sealed class Nodo
+    {
+        public string Nombre { get; init; } = "";
+        public SortedDictionary<string, Nodo> Carpetas { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public List<string> Archivos { get; } = new();
+        public int Total;   // archivos debajo (todas las subcarpetas)
+    }
+
+    private readonly List<Mod> mods = FuentesDossier.Todas.Select(f => new Mod { Fuente = f }).ToList();
+    private Mod? abierto, arrastrando;
+    private bool cargando = true, midiendo;
+    private readonly CancellationTokenSource cts = new();
+    private readonly Dictionary<string, long> tamanos = new();   // ruta guardada → bytes (-1 = no está en el servidor)
+
+    private string nombreZip = "Dossier";
+    private bool carpetaPorElemento = true, subcarpetas = true, porGrupo, numerar = true, libroUnico, soloVisibles = true;
+
+    private PlanDossier? plan;
+    private Nodo? arbol;
+    private int resElementos, resFaltan;
+    private long resBytes;
+    private string aviso = "";
+
+    private List<Mod> Incluidos => mods.Where(m => m.Incluido).ToList();
+    private string Subtitulo => cargando ? $"{mods.Count(m => m.Datos is not null || m.Error is not null)} / {mods.Count}" : $"{Incluidos.Count} módulo(s)";
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        // Cada fuente con su propio contexto: una que falle (p. ej. migración pendiente) no tumba las demás.
+        foreach (var m in mods)
+        {
+            try
+            {
+                using var scope = Scopes.CreateScope();
+                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                m.Datos = await m.Fuente.CargarAsync(db, cts.Token);
+                m.Col1 = m.Datos.ColumnaNombre;
+                foreach (var c in ClasesDe(m)) m.Clases.Add(c);
+                CalcularNombres(m);
+            }
+            catch (OperationCanceledException) { return; }
+            catch (Exception ex) { m.Error = $"{m.Fuente.Nombre}: {ex.Message}"; }
+            StateHasChanged();
+        }
+        cargando = false;
+        abierto ??= mods.FirstOrDefault(m => m.Datos is not null);
+        Recalcular();
+        StateHasChanged();
+        _ = MedirAsync();
+    }
+
+    // Tamaño y existencia de cada archivo, fuera del hilo de la página.
+    private async Task MedirAsync()
+    {
+        midiendo = true;
+        var rutas = mods.Where(m => m.Datos is not null).SelectMany(m => m.Datos!.Elementos.SelectMany(e => e.Archivos))
+            .Where(a => !a.Enlace).Select(a => a.Ruta).Distinct().ToList();
+        var webRoot = Env.WebRootPath;
+        var ct = cts.Token;
+        try
+        {
+            var medidas = await Task.Run(() =>
+            {
+                var d = new Dictionary<string, long>();
+                foreach (var r in rutas)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    var f = PlanDossier.RutaFisica(webRoot, r);
+                    try { d[r] = f is not null && File.Exists(f) ? new FileInfo(f).Length : -1; }
+                    catch { d[r] = -1; }
+                }
+                return d;
+            }, ct);
+            foreach (var kv in medidas) tamanos[kv.Key] = kv.Value;
+        }
+        catch (OperationCanceledException) { return; }
+        midiendo = false;
+        await InvokeAsync(() => { Recalcular(); StateHasChanged(); });
+    }
+
+    // ---------- Módulos ----------
+
+    private void Abrir(Mod m) { abierto = m; aviso = ""; }
+
+    private void Soltar(Mod destino)
+    {
+        if (arrastrando is null || arrastrando == destino) return;
+        var i = mods.IndexOf(destino);
+        mods.Remove(arrastrando);
+        mods.Insert(i, arrastrando);
+        arrastrando = null;
+        Recalcular();
+    }
+
+    private void SeleccionarModulo(Mod m, bool todo)
+    {
+        m.Sel.Clear();
+        if (todo && m.Datos is not null) foreach (var e in m.Datos.Elementos) m.Sel.Add(e.Id);
+        abierto = m;
+        Recalcular();
+    }
+
+    private void SeleccionarLista(Mod m, List<ElementoDossier> lista, bool todo)
+    {
+        foreach (var e in lista) { if (todo) m.Sel.Add(e.Id); else m.Sel.Remove(e.Id); }
+        Recalcular();
+    }
+
+    private void Alternar(Mod m, int id)
+    {
+        if (!m.Sel.Remove(id)) m.Sel.Add(id);
+        Recalcular();
+    }
+
+    private static List<string> ClasesDe(Mod m) => m.Datos is null ? new() :
+        m.Datos.Clases.Concat(m.Datos.Elementos.SelectMany(e => e.Archivos).Select(a => a.Clase))
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+
+    private static List<string> GruposDe(Mod m) => m.Datos is null ? new() :
+        m.Datos.Elementos.Select(e => e.Grupo).Where(g => !string.IsNullOrWhiteSpace(g)).Select(g => g!)
+            .Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(g => g).ToList();
+
+    private void CambiarColumna(Mod m, int cual, string? clave)
+    {
+        if (cual == 1 && !string.IsNullOrEmpty(clave)) m.Col1 = clave;
+        if (cual == 2) m.Col2 = clave ?? "";
+        CalcularNombres(m);
+        Recalcular();
+    }
+
+    private static List<string> Columnas(Mod m) => new[] { m.Col1, m.Col2 }.Where(c => !string.IsNullOrEmpty(c)).Distinct().ToList();
+
+    private static void CalcularNombres(Mod m)
+    {
+        if (m.Datos is null) return;
+        var cols = Columnas(m);
+        m.Nombres = m.Datos.Elementos.ToDictionary(e => e.Id, e => PlanDossier.NombreElemento(m.Datos, e.Id, cols));
+    }
+
+    private static string NombreDe(Mod m, int id) => m.Nombres.TryGetValue(id, out var n) ? n : $"#{id}";
+
+    // Lista filtrada por grupo y texto (busca en todas las columnas; el índice se arma una sola vez).
+    private static List<ElementoDossier> Filtrados(Mod m)
+    {
+        if (m.Datos is null) return new();
+        IEnumerable<ElementoDossier> q = m.Datos.Elementos;
+        if (m.GrupoFiltro is { } g) q = q.Where(e => string.Equals(e.Grupo, g, StringComparison.OrdinalIgnoreCase));
+        var t = m.Filtro.Trim();
+        if (t.Length > 0)
+        {
+            var d = m.Datos;
+            m.Busqueda ??= d.Elementos.ToDictionary(e => e.Id, e => string.Join(" ", d.Columnas(false).Select(c => d.Motor.Texto(e.Id, c, out _))));
+            q = q.Where(e => m.Busqueda[e.Id].Contains(t, StringComparison.OrdinalIgnoreCase) || NombreDe(m, e.Id).Contains(t, StringComparison.OrdinalIgnoreCase));
+        }
+        return q.ToList();
+    }
+
+    private (int N, long Bytes, int Faltan) InfoElemento(Mod m, ElementoDossier e)
+    {
+        if (!m.Adjuntos) return (0, 0, 0);
+        int n = 0, faltan = 0;
+        long bytes = 0;
+        foreach (var a in e.Archivos)
+        {
+            if (!m.Clases.Contains(a.Clase) || (m.SoloActuales && !a.Actual)) continue;
+            n++;
+            if (a.Enlace) { if (!PlanDossier.EnlaceValido(a.Ruta)) faltan++; continue; }
+            if (tamanos.TryGetValue(a.Ruta, out var b)) { if (b < 0) faltan++; else bytes += b; }
+        }
+        return (n, bytes, faltan);
+    }
+
+    // ---------- Solicitud, plan y vista previa ----------
+
+    private SolicitudDossier Solicitud() => new()
+    {
+        Nombre = nombreZip, CarpetaPorElemento = carpetaPorElemento, Subcarpetas = subcarpetas, PorGrupo = porGrupo,
+        Numerar = numerar, LibroUnico = libroUnico, SoloVisibles = soloVisibles,
+        Modulos = Incluidos.Select(m => new ModuloSolicitado
+        {
+            Clave = m.Fuente.Clave, Tabla = m.Tabla, Adjuntos = m.Adjuntos, SoloActuales = m.SoloActuales,
+            // en el orden de la tabla del módulo
+            Elementos = m.Datos!.Elementos.Where(e => m.Sel.Contains(e.Id)).Select(e => e.Id).ToList(),
+            Clases = m.Clases.ToList(), ColumnasNombre = Columnas(m)
+        }).ToList()
+    };
+
+    private void Recalcular()
+    {
+        var fuentes = mods.Where(m => m.Datos is not null).ToDictionary(m => m.Fuente.Clave, m => m.Datos!);
+        plan = PlanDossier.Armar(Solicitud(), fuentes);
+        resElementos = Incluidos.Sum(m => m.Sel.Count);
+        resBytes = 0; resFaltan = 0;
+        foreach (var e in plan.Archivos)
+        {
+            if (e.Archivo.Enlace) { if (!PlanDossier.EnlaceValido(e.Archivo.Ruta)) resFaltan++; continue; }
+            if (tamanos.TryGetValue(e.Archivo.Ruta, out var b)) { if (b < 0) resFaltan++; else resBytes += b; }
+        }
+        arbol = Arbol(plan);
+    }
+
+    private static Nodo Arbol(PlanDossier p)
+    {
+        var raiz = new Nodo { Nombre = "" };
+        void Agregar(string ruta)
+        {
+            var partes = ruta.Split('/');
+            var n = raiz;
+            n.Total++;
+            for (var i = 0; i < partes.Length - 1; i++)
+            {
+                if (!n.Carpetas.TryGetValue(partes[i], out var h)) n.Carpetas[partes[i]] = h = new Nodo { Nombre = partes[i] };
+                n = h;
+                n.Total++;
+            }
+            n.Archivos.Add(partes[^1]);
+        }
+        Agregar(PlanDossier.NombreIndice);
+        if (p.RutaLibroUnico is not null) Agregar(p.RutaLibroUnico);
+        foreach (var t in p.Tablas) if (t.RutaZip is not null) Agregar(t.RutaZip);
+        foreach (var e in p.Archivos) Agregar(e.RutaZip);
+        return raiz;
+    }
+
+    private const int MaxHijos = 40, MaxArchivos = 8;
+
+    private RenderFragment NodoArbol(Nodo n, int nivel) => __builder =>
+    {
+        <ul class="dos-arbol-ul">
+            @foreach (var c in n.Carpetas.Values.Take(MaxHijos))
+            {
+                <li>
+                    <details open="@(nivel < 1)">
+                        <summary><Ico Nombre="carpeta" /> @c.Nombre <span class="text-muted">(@c.Total)</span></summary>
+                        @NodoArbol(c, nivel + 1)
+                    </details>
+                </li>
+            }
+            @if (n.Carpetas.Count > MaxHijos)
+            {
+                <li class="text-muted">+@(n.Carpetas.Count - MaxHijos)</li>
+            }
+            @foreach (var a in n.Archivos.Take(MaxArchivos))
+            {
+                <li class="dos-arch">@a</li>
+            }
+            @if (n.Archivos.Count > MaxArchivos)
+            {
+                <li class="text-muted">+@(n.Archivos.Count - MaxArchivos)</li>
+            }
+        </ul>
+    };
+
+    private static string Mb(long bytes) => (bytes / 1048576.0).ToString(bytes < 10485760 ? "N1" : "N0");
+
+    // ---------- Descarga ----------
+
+    private async Task Descargar()
+    {
+        Recalcular();
+        if (plan is null || (plan.Archivos.Count == 0 && plan.Tablas.Count == 0)) return;
+        var token = Almacen.Guardar(Solicitud());
+        await JS.InvokeVoidAsync("sigDescargarUrl", $"api/dossier/{token}");
+        aviso = $"⭳ {plan.Tablas.Count} tabla(s) · {plan.Archivos.Count} archivo(s) · {Mb(resBytes)} MB";
+    }
+
+    public void Dispose() => cts.Cancel();
+}

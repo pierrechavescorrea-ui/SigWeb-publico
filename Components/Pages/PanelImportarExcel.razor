@@ -1,0 +1,207 @@
+@* Importación de un Excel a un listado: libro → hoja → fila de encabezados → columnas → destino
+   de cada columna (columna propia, columna existente o nueva). Devuelve ImportacionExcel; la
+   página decide cómo crear/actualizar sus filas. *@
+@using SigWeb.Data.Documentos
+
+<div class="card panel-formulario mb-3">
+    <div class="card-body">
+        <div class="d-flex gap-2 align-items-center flex-wrap mb-2">
+            <InputFile class="form-control form-control-sm" style="max-width:340px;" OnChange="SeleccionarLibro" accept=".xlsx,.xlsm" />
+            @if (hojas.Count > 0)
+            {
+                <select class="form-select form-select-sm" style="max-width:220px;" title="Hoja" value="@hojaSel" @onchange="CambiarHoja">
+                    @foreach (var h in hojas) { <option value="@h">@h</option> }
+                </select>
+            }
+            @Extra
+            @if (leyendo) { <span class="spinner-border spinner-border-sm" role="status"></span> }
+            <button type="button" class="btn btn-secondary btn-sm ms-auto" title="Cancelar" @onclick="OnCancelar"><Ico Nombre="cancelar" /></button>
+            <button type="button" class="btn btn-primary btn-sm" title="@($"Importar {FilasDatos().Count} fila(s)")"
+                    disabled="@(filas.Count == 0 || colsSel.Count == 0 || Importando || Repetidos().Count > 0)" @onclick="Importar">
+                @if (Importando) { <span class="spinner-border spinner-border-sm" role="status"></span> }
+                else { <Ico Nombre="importar" /> <span class="small">@FilasDatos().Count</span> }
+            </button>
+        </div>
+        @if (!string.IsNullOrEmpty(mensaje))
+        {
+            <div class="alert alert-warning py-1">@mensaje</div>
+        }
+
+        @if (filas.Count > 0)
+        {
+            var enc = Encabezados();
+            <div class="tabla-scroll mb-2" style="max-height:300px;">
+                <table class="table table-sm table-bordered align-middle mb-0 doc-vista">
+                    <thead>
+                        <tr>
+                            <th title="Fila de encabezados">#</th>
+                            @for (int c = 0; c < enc.Count; c++)
+                            {
+                                var col = c;
+                                <th class="@(colsSel.Contains(col) ? "" : "doc-col-off")">
+                                    <label class="d-flex align-items-center gap-1 mb-0 text-nowrap" title="Incluir columna">
+                                        <input type="checkbox" class="form-check-input mt-0" checked="@colsSel.Contains(col)" @onchange="@(e => Alternar(col, (bool)e.Value!))" />
+                                        @LectorExcelGenerico.LetraColumna(col)
+                                    </label>
+                                </th>
+                            }
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @for (int f = 0; f < Math.Min(filas.Count, FilasVista); f++)
+                        {
+                            var fila = f;
+                            <tr class="@(fila == filaEnc ? "doc-fila-enc" : fila < filaEnc ? "doc-fila-off" : "")" role="button" title="Usar como fila de encabezados" @onclick="() => ElegirEncabezado(fila)">
+                                <td class="text-muted small"><input type="radio" class="form-check-input mt-0 me-1" name="filaEncImp" checked="@(fila == filaEnc)" />@(fila + 1)</td>
+                                @for (int c = 0; c < enc.Count; c++)
+                                {
+                                    <td class="small text-nowrap @(colsSel.Contains(c) ? "" : "doc-col-off")">@Recortar(ImportacionExcel.Celda(filas[fila], c))</td>
+                                }
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+
+            var repetidos = Repetidos();
+            <div class="tabla-scroll" style="max-height:260px;">
+                <table class="table table-sm table-bordered align-middle mb-0 doc-mapeo">
+                    <tbody>
+                        @foreach (var c in colsSel.OrderBy(x => x))
+                        {
+                            var col = c;
+                            var destino = destinos.TryGetValue(col, out var d0) ? d0 : ImportacionExcel.Nueva;
+                            <tr class="@(repetidos.Contains(destino) ? "table-danger" : "")">
+                                <td class="small text-nowrap" style="width:40%;"><span class="text-muted">@LectorExcelGenerico.LetraColumna(col)</span> @enc[col]</td>
+                                <td class="text-center text-muted" style="width:24px;">→</td>
+                                <td class="p-0">
+                                    <select class="form-select form-select-sm cc-input" value="@destino" @onchange="@(e => destinos[col] = e.Value?.ToString() ?? ImportacionExcel.Nueva)">
+                                        <option value="@ImportacionExcel.Nueva">＋ @enc[col]</option>
+                                        @foreach (var o in Destinos)
+                                        {
+                                            <option value="@o.Clave">@o.Nombre</option>
+                                        }
+                                    </select>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </div>
+</div>
+
+@code {
+    // Columnas propias y existentes del listado a las que puede ir una columna del Excel.
+    [Parameter] public IReadOnlyList<DestinoColumna> Destinos { get; set; } = Array.Empty<DestinoColumna>();
+    // Controles adicionales de la página (ej. tipo documental de la carga).
+    [Parameter] public RenderFragment? Extra { get; set; }
+    [Parameter] public bool Importando { get; set; }
+    [Parameter] public EventCallback<ImportacionExcel> OnImportar { get; set; }
+    [Parameter] public EventCallback OnCancelar { get; set; }
+
+    private const int FilasVista = 40;
+    private bool leyendo;
+    private string mensaje = "";
+    private byte[]? libro;
+    private string nombreLibro = "";
+    private List<string> hojas = new();
+    private string hojaSel = "";
+    private List<string[]> filas = new();
+    private int filaEnc;
+    private HashSet<int> colsSel = new();
+    private Dictionary<int, string> destinos = new();
+
+    private async Task SeleccionarLibro(InputFileChangeEventArgs e)
+    {
+        mensaje = ""; leyendo = true;
+        try
+        {
+            using var ms = new MemoryStream();
+            await using (var s = e.File.OpenReadStream(30 * 1024 * 1024)) await s.CopyToAsync(ms);
+            libro = ms.ToArray();
+            nombreLibro = e.File.Name;
+            hojas = LectorExcelGenerico.Hojas(libro);
+            hojaSel = hojas.FirstOrDefault() ?? "";
+            LeerHoja();
+        }
+        catch (Exception ex)
+        {
+            libro = null; hojas.Clear(); filas.Clear();
+            mensaje = "No se pudo leer el libro: " + ex.Message;
+        }
+        finally { leyendo = false; }
+    }
+
+    private void CambiarHoja(ChangeEventArgs e) { hojaSel = e.Value?.ToString() ?? ""; LeerHoja(); }
+
+    private void LeerHoja()
+    {
+        filas = libro is null || hojaSel == "" ? new() : LectorExcelGenerico.LeerHoja(libro, hojaSel);
+        // Por defecto, la primera fila con al menos dos celdas llenas.
+        ElegirEncabezado(Math.Max(0, filas.FindIndex(f => f.Count(x => !string.IsNullOrWhiteSpace(x)) >= 2)));
+    }
+
+    private void ElegirEncabezado(int fila)
+    {
+        filaEnc = fila;
+        destinos.Clear();
+        colsSel = new();
+        if (filas.Count == 0) return;
+        foreach (var c in Enumerable.Range(0, filas[fila].Length).Where(c => !string.IsNullOrWhiteSpace(filas[fila][c])))
+            Alternar(c, true);
+    }
+
+    private void Alternar(int col, bool incluir)
+    {
+        if (incluir) { colsSel.Add(col); destinos[col] = Sugerido(Encabezados()[col], col); }
+        else { colsSel.Remove(col); destinos.Remove(col); }
+    }
+
+    // Por nombre (o alias) del destino; nunca dos columnas al mismo destino.
+    private string Sugerido(string encabezado, int col)
+    {
+        var n = MigracionDocumentos.Normalizar(encabezado);
+        var d = Destinos.FirstOrDefault(o => MigracionDocumentos.Normalizar(o.Nombre) == n || o.Alias.Any(a => MigracionDocumentos.Normalizar(a) == n))?.Clave
+                ?? ImportacionExcel.Nueva;
+        if (d != ImportacionExcel.Nueva && destinos.Any(kv => kv.Key != col && colsSel.Contains(kv.Key) && kv.Value == d)) d = ImportacionExcel.Nueva;
+        return d;
+    }
+
+    private HashSet<string> Repetidos() =>
+        colsSel.Select(c => destinos.TryGetValue(c, out var d) ? d : ImportacionExcel.Nueva).Where(d => d != ImportacionExcel.Nueva)
+            .GroupBy(d => d).Where(g => g.Count() > 1).Select(g => g.Key).ToHashSet();
+
+    // Vacíos = "Columna X"; repetidos = "(2)", "(3)"…
+    private List<string> Encabezados()
+    {
+        if (filas.Count == 0) return new();
+        var fila = filas[filaEnc];
+        var vistos = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var r = new List<string>(fila.Length);
+        for (int c = 0; c < fila.Length; c++)
+        {
+            var n = string.IsNullOrWhiteSpace(fila[c]) ? $"Columna {LectorExcelGenerico.LetraColumna(c)}" : System.Text.RegularExpressions.Regex.Replace(fila[c], @"\s+", " ").Trim();
+            if (vistos.TryGetValue(n, out var k)) { vistos[n] = k + 1; n = $"{n} ({k + 1})"; } else vistos[n] = 1;
+            r.Add(n);
+        }
+        return r;
+    }
+
+    private static string Recortar(string s) => s.Length > 60 ? s[..57] + "…" : s;
+
+    private List<string[]> FilasDatos() =>
+        filas.Count == 0 ? new() : filas.Skip(filaEnc + 1).Where(f => colsSel.Any(c => !string.IsNullOrWhiteSpace(ImportacionExcel.Celda(f, c)))).ToList();
+
+    private async Task Importar()
+    {
+        if (libro is null || colsSel.Count == 0) return;
+        await OnImportar.InvokeAsync(new ImportacionExcel
+        {
+            NombreArchivo = nombreLibro, Hoja = hojaSel, FilaEncabezados = filaEnc + 1,
+            Encabezados = Encabezados(), Filas = FilasDatos(),
+            Destinos = colsSel.ToDictionary(c => c, c => destinos.TryGetValue(c, out var d) ? d : ImportacionExcel.Nueva)
+        });
+    }
+}

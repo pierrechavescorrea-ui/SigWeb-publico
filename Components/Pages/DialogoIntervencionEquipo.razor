@@ -1,0 +1,202 @@
+@using Microsoft.EntityFrameworkCore
+@using SigWeb.Data
+@using SigWeb.Data.Equipos
+@using SigWeb.Models
+@inject AppDbContext Db
+@inject IWebHostEnvironment Env
+
+<div class="modal-backdrop-custom">
+    <div class="modal-box-custom" style="max-width: 560px;">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+            <h5 class="mb-0">@Titulo</h5>
+            <button type="button" class="btn-close" aria-label="Cerrar" @onclick="Cancelar"></button>
+        </div>
+
+        <div class="row g-2">
+            @if (PermitirElegirTipo)
+            {
+                <div class="col-12">
+                    <label class="form-label mb-1 small">Tipo</label>
+                    <select class="form-select form-select-sm" @bind="tipo">
+                        <option value="@TipoIntervencionEquipo.Calibracion">Calibración</option>
+                        <option value="@TipoIntervencionEquipo.Mantenimiento">Mantenimiento</option>
+                    </select>
+                </div>
+            }
+            <div class="col-md-6">
+                <label class="form-label mb-1 small">Fecha</label>
+                <input type="date" class="form-control form-control-sm" value="@fecha.ToString("yyyy-MM-dd")" @onchange="CambioFecha" />
+            </div>
+            @if (tipo == TipoIntervencionEquipo.Calibracion)
+            {
+                <div class="col-md-6">
+                    <label class="form-label mb-1 small">Próxima calibración</label>
+                    <input type="date" class="form-control form-control-sm" value="@(proxima?.ToString("yyyy-MM-dd"))" @onchange="e => proxima = Fecha(e.Value)" />
+                </div>
+            }
+            <div class="col-md-6">
+                <label class="form-label mb-1 small">@(tipo == TipoIntervencionEquipo.Calibracion ? "Laboratorio" : "Realizado por")</label>
+                <input class="form-control form-control-sm" @bind="responsable" />
+            </div>
+            <div class="col-md-6">
+                <label class="form-label mb-1 small">@(tipo == TipoIntervencionEquipo.Calibracion ? "No. de certificado" : "No. de soporte")</label>
+                <input class="form-control form-control-sm" @bind="numero" />
+            </div>
+            @if (tipo == TipoIntervencionEquipo.Mantenimiento)
+            {
+                <div class="col-12">
+                    <label class="form-label mb-1 small">Descripción</label>
+                    <textarea class="form-control form-control-sm" rows="3" @bind="descripcion"></textarea>
+                </div>
+            }
+            <div class="col-12">
+                <label class="form-label mb-1 small">@(tipo == TipoIntervencionEquipo.Calibracion ? "Certificado (PDF o imagen)" : "Soporte (PDF o imagen)")</label>
+                @if (existente?.RutaCertificado is string rutaAct && !quitarArchivo && archivo is null)
+                {
+                    <div class="small d-flex justify-content-between mb-1">
+                        <a href="@rutaAct" target="_blank" rel="noopener" class="text-truncate">📄 @(existente.NombreCertificado ?? "Archivo actual")</a>
+                        <button type="button" class="btn btn-sm btn-link text-danger p-0" title="Quitar archivo" @onclick="() => quitarArchivo = true">✕</button>
+                    </div>
+                }
+                <InputFile class="form-control form-control-sm" accept=".pdf,image/*" OnChange="e => archivo = e.File" />
+            </div>
+        </div>
+
+        @if (!string.IsNullOrEmpty(error)) { <div class="text-danger small mt-2">@error</div> }
+        <div class="d-flex justify-content-end gap-2 mt-3">
+            <button type="button" class="btn btn-sm btn-secondary" @onclick="Cancelar" title="Cancelar"><Ico Nombre="cancelar" /></button>
+            <button type="button" class="btn btn-sm btn-primary" disabled="@guardando" @onclick="GuardarAsync" title="Guardar"><Ico Nombre="guardar" /></button>
+        </div>
+    </div>
+</div>
+
+@code {
+    [Parameter] public int EquipoId { get; set; }
+    [Parameter] public TipoIntervencionEquipo TipoInicial { get; set; } = TipoIntervencionEquipo.Calibracion;
+    [Parameter] public bool PermitirElegirTipo { get; set; }
+    // Si viene, se edita esa intervención en vez de crear una nueva.
+    [Parameter] public int? IntervencionId { get; set; }
+    [Parameter] public EventCallback OnGuardado { get; set; }
+    [Parameter] public EventCallback OnCerrar { get; set; }
+
+    private TipoIntervencionEquipo tipo;
+    private DateTime fecha = DateTime.Today;
+    private DateTime? proxima;
+    private string responsable = "", numero = "", descripcion = "", error = "";
+    private IBrowserFile? archivo;
+    private int? periodicidad;
+    private bool guardando;
+
+    private IntervencionEquipo? existente;
+    private bool quitarArchivo;
+
+    private string Titulo => IntervencionId is not null ? "Editar intervención"
+        : tipo == TipoIntervencionEquipo.Calibracion ? "Actualizar calibración" : "Registrar mantenimiento";
+
+    private void BorrarFisico(string? ruta)
+    {
+        if (string.IsNullOrEmpty(ruta)) return;
+        try
+        {
+            var fisica = Path.Combine(Env.WebRootPath, ruta.TrimStart('/').Replace('/', Path.DirectorySeparatorChar));
+            if (File.Exists(fisica)) File.Delete(fisica);
+        }
+        catch (IOException) { }
+    }
+
+    protected override void OnInitialized()
+    {
+        tipo = TipoInicial;
+        if (IntervencionId is int idEd && Db.IntervencionesEquipo.AsNoTracking().FirstOrDefault(i => i.Id == idEd && i.EquipoId == EquipoId) is { } ex)
+        {
+            existente = ex;
+            tipo = ex.Tipo; fecha = ex.Fecha; proxima = ex.ProximaFecha;
+            responsable = ex.Responsable ?? ""; numero = ex.NumeroCertificado ?? ""; descripcion = ex.Descripcion ?? "";
+            periodicidad = Db.Equipos.AsNoTracking().Where(e => e.Id == EquipoId).Select(e => e.PeriodicidadMeses).FirstOrDefault();
+            return;
+        }
+        var eq = Db.Equipos.AsNoTracking().FirstOrDefault(e => e.Id == EquipoId);
+        periodicidad = eq?.PeriodicidadMeses;
+        proxima = EstadoEquipo.ProponerProxima(fecha, periodicidad);
+        // el laboratorio suele repetirse: se propone el de la última calibración
+        responsable = Db.IntervencionesEquipo.AsNoTracking().Where(i => i.EquipoId == EquipoId && i.Tipo == TipoIntervencionEquipo.Calibracion)
+            .OrderByDescending(i => i.Fecha).Select(i => i.Responsable).FirstOrDefault() ?? "";
+    }
+
+    private static DateTime? Fecha(object? v) => DateTime.TryParse(v?.ToString(), out var d) ? d : null;
+
+    private void CambioFecha(ChangeEventArgs e)
+    {
+        if (Fecha(e.Value) is DateTime d)
+        {
+            fecha = d;
+            proxima = EstadoEquipo.ProponerProxima(d, periodicidad) ?? proxima;
+        }
+    }
+
+    private async Task Cancelar() => await OnCerrar.InvokeAsync();
+
+    private async Task GuardarAsync()
+    {
+        error = "";
+        guardando = true;
+        try
+        {
+            string? ruta = null, nombre = null;
+            if (archivo is not null)
+            {
+                const long max = 20 * 1024 * 1024;
+                if (archivo.Size > max) { error = "El archivo supera 20 MB."; return; }
+                var ext = Path.GetExtension(archivo.Name).ToLowerInvariant();
+                if (ext != ".pdf" && !archivo.ContentType.StartsWith("image/")) { error = "Solo PDF o imagen."; return; }
+                var carpeta = Path.Combine(Env.WebRootPath, "uploads", "equipos", "certificados");
+                Directory.CreateDirectory(carpeta);
+                var guid = $"{Guid.NewGuid()}{ext}";
+                await using (var s = archivo.OpenReadStream(max))
+                await using (var d = File.Create(Path.Combine(carpeta, guid)))
+                    await s.CopyToAsync(d);
+                ruta = $"/uploads/equipos/certificados/{guid}";
+                nombre = archivo.Name;
+            }
+
+            if (existente is not null)
+            {
+                var ed = await Db.IntervencionesEquipo.FirstAsync(i => i.Id == existente.Id);
+                ed.Fecha = fecha.Date;
+                ed.ProximaFecha = tipo == TipoIntervencionEquipo.Calibracion ? proxima?.Date : null;
+                ed.Responsable = string.IsNullOrWhiteSpace(responsable) ? null : responsable.Trim();
+                ed.NumeroCertificado = string.IsNullOrWhiteSpace(numero) ? null : numero.Trim();
+                ed.Descripcion = string.IsNullOrWhiteSpace(descripcion) ? null : descripcion.Trim();
+                if (ruta is not null || quitarArchivo)
+                {
+                    BorrarFisico(ed.RutaCertificado);
+                    ed.RutaCertificado = ruta; ed.NombreCertificado = nombre;
+                }
+                await Db.SaveChangesAsync();
+                Db.ChangeTracker.Clear();
+                await OnGuardado.InvokeAsync();
+                await OnCerrar.InvokeAsync();
+                return;
+            }
+
+            Db.IntervencionesEquipo.Add(new IntervencionEquipo
+            {
+                EquipoId = EquipoId,
+                Tipo = tipo,
+                Fecha = fecha.Date,
+                ProximaFecha = tipo == TipoIntervencionEquipo.Calibracion ? proxima?.Date : null,
+                Responsable = string.IsNullOrWhiteSpace(responsable) ? null : responsable.Trim(),
+                NumeroCertificado = string.IsNullOrWhiteSpace(numero) ? null : numero.Trim(),
+                Descripcion = string.IsNullOrWhiteSpace(descripcion) ? null : descripcion.Trim(),
+                RutaCertificado = ruta,
+                NombreCertificado = nombre,
+            });
+            await Db.SaveChangesAsync();
+            Db.ChangeTracker.Clear();
+            await OnGuardado.InvokeAsync();
+            await OnCerrar.InvokeAsync();
+        }
+        catch (Exception ex) { error = "No se pudo guardar: " + ex.Message; }
+        finally { guardando = false; }
+    }
+}

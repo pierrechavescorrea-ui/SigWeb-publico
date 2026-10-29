@@ -1,0 +1,52 @@
+﻿<!DOCTYPE html>
+<html lang="es-CO">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <base href="/" />
+    <ResourcePreloader />
+    <link rel="stylesheet" href="@Assets["lib/bootstrap/dist/css/bootstrap.min.css"]" />
+    <link rel="stylesheet" href="@Assets["app.css"]" />
+    <link rel="stylesheet" href="@Assets["SigWeb.styles.css"]" />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" />
+    <link rel="stylesheet" href="@Assets["css/temas.css"]" />
+    <link rel="stylesheet" href="@Assets["css/formularios.css"]" />
+    <link rel="stylesheet" href="@Assets["css/inicio.css"]" />
+    <link rel="stylesheet" href="@Assets["css/avance-obra.css"]" />
+    @* Aplica el tema guardado antes de pintar la página (evita el parpadeo del tema original). *@
+    <script>(function(){var c=true;try{var v=localStorage.getItem('sigweb.menu.contraido');if(v!==null)c=JSON.parse(v);}catch(e){}if(c)document.documentElement.setAttribute('data-menu','contraido');})();</script>
+    <script>(function(){try{var t=localStorage.getItem('sigweb.tema');if(t&&t!=='institucional'){var h=document.documentElement;h.setAttribute('data-tema',t);if(t==='oscuro')h.setAttribute('data-bs-theme','dark');}}catch(e){}})();</script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/chart.js@4/dist/chart.umd.js"></script>
+    <ImportMap />
+    <link rel="icon" type="image/png" href="favicon.png" />
+    <HeadOutlet />
+</head>
+
+<body>
+    <Routes />
+    <ReconnectModal />
+    <script src="@Assets["_framework/blazor.web.js"]"></script>
+    <script src="js/temas.js"></script>
+    <script src="js/menu.js"></script>
+    <script src="js/navegacion.js"></script>
+    <script src="js/inicio.js"></script>
+    <script src="js/downloadFile.js"></script>
+    <script src="js/exportarTabla.js"></script>
+    <script src="js/mapaTrazado.js"></script>
+    <script src="js/tablaFijar.js"></script>
+    <script src="js/tablaPin.js"></script>
+    <script src="js/tablaAlto.js"></script>
+    <script src="js/arrastre.js"></script>
+    <script src="js/formulaCampoEnsayo.js"></script>
+    @* hojaExcel.js es liviano: solo carga lib/univer/univer.bundle.min.js
+       (el motor de hoja de cálculo real, con fórmulas — varios MB) la
+       primera vez que el usuario abre la Vista Excel en Ensayos, no en
+       cada carga de página. *@
+    <script src="js/hojaExcel.js"></script>
+    <script src="js/graficoEnsayos.js"></script>
+</body>
+
+</html>

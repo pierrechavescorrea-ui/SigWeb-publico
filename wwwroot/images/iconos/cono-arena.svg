@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <!-- Ensayo de densidad in-situ con cono y arena: frasco, embudo/cono
+       calibrado y placa base con el hueco de ensayo -->
+  <rect x="12" y="2" width="8" height="10" rx="1" fill="#DCE7EE" stroke="#4b6b7a" stroke-width="1.3"/>
+  <path d="M9 12 L23 12 L18 21 L14 21 Z" fill="#B98A4A" stroke="#5b4326" stroke-width="1.3" stroke-linejoin="round"/>
+  <rect x="6" y="25" width="20" height="3" rx="0.6" fill="#8a8171" stroke="#5b5344" stroke-width="1.1"/>
+  <circle cx="16" cy="26.5" r="2.6" fill="#3a352c"/>
+  <!-- granitos de arena cayendo -->
+  <circle cx="15" cy="22.6" r="0.5" fill="#5b4326"/>
+  <circle cx="17" cy="23.4" r="0.5" fill="#5b4326"/>
+</svg>

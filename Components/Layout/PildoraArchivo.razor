@@ -1,0 +1,8 @@
+@* Archivo como píldora con ícono de documento (formato de los adjuntos en las hojas de vida). *@
+<a class="rg-chip pildora-archivo text-decoration-none" href="@Url" target="_blank" rel="noopener" title="@(Titulo ?? Nombre)"><Ico Nombre="documento" /> <span class="pildora-txt">@Nombre</span></a>
+
+@code {
+    [Parameter, EditorRequired] public string Url { get; set; } = "";
+    [Parameter, EditorRequired] public string Nombre { get; set; } = "";
+    [Parameter] public string? Titulo { get; set; }
+}

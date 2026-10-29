@@ -1,0 +1,1966 @@
+@page "/documentos"
+@rendermode InteractiveServer
+@using Microsoft.EntityFrameworkCore
+@using SigWeb.Data
+@using SigWeb.Data.Documentos
+@using SigWeb.Data.Tablas
+@using SigWeb.Models
+@inject AppDbContext Db
+@inject IServiceScopeFactory Scopes
+@inject IWebHostEnvironment Env
+@inject SigWeb.Data.Catalogos.EstilosCatalogo EstilosCat
+
+@if (formVer is not null && motor is not null)
+{
+    @* ---------- Actualizar un documento: datos + control de cambios con sus archivos (pantalla sola) ---------- *@
+    <EncabezadoPagina Titulo="@(string.IsNullOrWhiteSpace(formVer.CodigoAnterior) ? $"Documento #{formVer.Id}" : formVer.CodigoAnterior)" Icono="documentos"
+                      Subtitulo="Actualizar" OnAtras="() => formVer = null">
+        <Acciones>
+            <button type="button" class="pg-btn" title="Cancelar" @onclick="() => formVer = null"><Ico Nombre="cancelar" /></button>
+            <button type="button" class="pg-btn pg-btn-primario" title="Guardar" disabled="@guardando" @onclick="GuardarVersion">
+                @if (guardando) { <span class="spinner-border spinner-border-sm" role="status"></span> } else { <Ico Nombre="guardar" /> }
+            </button>
+        </Acciones>
+    </EncabezadoPagina>
+    @if (!string.IsNullOrEmpty(mensajeForm))
+    {
+        <div class="alert alert-warning py-1">@mensajeForm</div>
+    }
+    <div class="card panel-formulario frm mb-3">
+        <div class="card-body frm-cuerpo">
+            <div class="row g-3">
+                <div class="col-md-3 frm-destacado">
+                    <label class="form-label mb-1 small">Código</label>
+                    <input class="form-control form-control-sm" @bind="formVer.Codigo" />
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label mb-1 small">Tipo documental</label>
+                    <select class="form-select form-select-sm" @bind="formVer.Tipo">
+                        <option value=""></option>
+                        @foreach (var o in Con(opcionesTipo, formVer.Tipo)) { <option value="@o">@o</option> }
+                    </select>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label mb-1 small">Estado</label>
+                    <select class="form-select form-select-sm" @bind="formVer.Estado">
+                        <option value=""></option>
+                        @foreach (var o in Con(opcionesEstado, formVer.Estado)) { <option value="@o">@o</option> }
+                    </select>
+                </div>
+                @foreach (var c in CamposEditables.Where(c => c.Id != formVer.CampoVersionId && c.Id != formVer.CampoFechaId))
+                {
+                    var campo = c;
+                    <div class="col-md-3">
+                        <label class="form-label mb-1 small">@campo.Nombre</label>
+                        @EntradaCampo(campo, formVer.Valores.TryGetValue(campo.Id, out var v) ? v : null, val => formVer.Valores[campo.Id] = val)
+                    </div>
+                }
+            </div>
+        </div>
+    </div>
+
+    <div class="d-flex align-items-center gap-2 mb-1">
+        <span class="rg-bloque-tit mb-0">Control de cambios</span>
+        <span class="rg-chip">@formVer.Revisiones.Count(r => !r.Eliminar)</span>
+        <button type="button" class="ens-mini" title="Agregar revisión" @onclick="AgregarRevision"><Ico Nombre="agregar" /></button>
+    </div>
+    <div class="tabla-scroll">
+        <table class="table table-sm table-bordered align-middle mb-0 doc-cambios doc-revisiones">
+            <thead>
+                <tr>
+                    <th style="width:90px;">Versión</th><th style="width:140px;">Fecha</th><th>Cambio</th><th style="width:180px;">Responsable</th>
+                    <th style="width:24%;">Vigente</th><th style="width:24%;">Editable</th><th style="width:36px;"></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var rv in formVer.Revisiones)
+                {
+                    var fila = rv;
+                    <tr class="@(fila.Eliminar ? "doc-rev-quitada" : "") @(fila == formVer.Revisiones.FirstOrDefault(r => !r.Eliminar) ? "doc-rev-actual" : "")">
+                        <td class="p-0"><input class="form-control form-control-sm cc-input" @bind="fila.Version" disabled="@fila.Eliminar" /></td>
+                        <td class="p-0"><input type="date" class="form-control form-control-sm cc-input" @bind="fila.Fecha" disabled="@fila.Eliminar" /></td>
+                        <td class="p-0"><textarea class="form-control form-control-sm cc-input" rows="2" @bind="fila.Cambio" disabled="@fila.Eliminar"></textarea></td>
+                        <td class="p-0"><input class="form-control form-control-sm cc-input" @bind="fila.Responsable" disabled="@fila.Eliminar" /></td>
+                        <td>@CeldaArchivosRevision(fila, ClaseArchivoDocumento.Vigente)</td>
+                        <td>@CeldaArchivosRevision(fila, ClaseArchivoDocumento.Editable)</td>
+                        <td class="text-center">
+                            @if (fila.Eliminar)
+                            {
+                                <button type="button" class="ens-mini" title="Deshacer" @onclick="() => fila.Eliminar = false"><Ico Nombre="restaurar" /></button>
+                            }
+                            else
+                            {
+                                <button type="button" class="ens-mini" title="@(fila.Id is null ? "Quitar" : "Quitar revisión (sus archivos van a la Papelera)")" @onclick="() => QuitarRevision(fila)"><Ico Nombre="eliminar" /></button>
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+else if (verVersionesDe is int vdId && docs.FirstOrDefault(x => x.Id == vdId) is { } docVer)
+{
+    var anteriores = verTodos ? ArchivosDe(vdId) : AnterioresDe(vdId);
+    var vigVer = ActualesDe(vdId, ClaseArchivoDocumento.Vigente).ToHashSet();
+    var ediVer = ActualesDe(vdId, ClaseArchivoDocumento.Editable).ToHashSet();
+    <EncabezadoPagina Titulo="@(string.IsNullOrWhiteSpace(docVer.Codigo) ? $"Documento #{docVer.Id}" : docVer.Codigo)" Icono="documentos"
+                      Subtitulo="@($"{(verTodos ? "Todos los archivos" : "Obsoletos")} ({anteriores.Count})")" OnAtras="() => verVersionesDe = null" />
+    <div class="tabla-scroll tabla-auto"><table class="table table-sm table-bordered table-hover tabla-compacta align-middle mb-0 tabla-pin">
+        <thead>
+            <tr><th>Versión</th><th>Clase</th><th>Fecha</th><th>Archivo</th><th>Control de cambios</th><th>Cargado</th><th style="width:130px;"></th></tr>
+        </thead>
+        <tbody>
+            @foreach (var v in anteriores)
+            {
+                <tr>
+                    <td class="small fw-bold">@v.Version</td>
+                    <td class="small">@(vigVer.Contains(v) ? "Vigente" : ediVer.Contains(v) ? "Editable" : v.Clase == ClaseArchivoDocumento.Obsoleta ? "Obsoleta" : v.Clase == ClaseArchivoDocumento.Vigente ? "Vigente reemplazada" : "Editable anterior")</td>
+                    <td class="small text-nowrap">@(v.Fecha?.ToString("dd/MM/yyyy"))</td>
+                    <td class="small">@v.NombreOriginal</td>
+                    <td class="small">
+                        @if (v.RevisionDocumentoId is int rvId && revisionPorId.TryGetValue(rvId, out var rv))
+                        {
+                            <div style="white-space:pre-line">@rv.Cambio</div>
+                            @if (!string.IsNullOrWhiteSpace(rv.Responsable)) { <span class="text-muted">— @rv.Responsable</span> }
+                        }
+                        else if (cambiosPorVersion.TryGetValue(v.Id, out var cc) && cc.Count > 0)
+                        {
+                            <ul class="doc-cc mb-0">
+                                @foreach (var x in cc)
+                                {
+                                    <li><span class="text-muted">@(x.Fecha?.ToString("dd/MM/yyyy"))</span> @x.Cambio @if (!string.IsNullOrWhiteSpace(x.Responsable)) { <span class="text-muted">— @x.Responsable</span> }</li>
+                                }
+                            </ul>
+                        }
+                        else if (!string.IsNullOrWhiteSpace(v.Observaciones)) { <span>@v.Observaciones</span> }
+                    </td>
+                    <td class="small text-nowrap text-muted">@v.FechaCarga.ToString("dd/MM/yyyy HH:mm")</td>
+                    <td class="text-nowrap">
+                        <a class="ens-mini" href="@v.RutaArchivo" target="_blank" rel="noopener" title="Ver"><Ico Nombre="ubicar" /></a>
+                        <a class="ens-mini" href="@v.RutaArchivo" download="@v.NombreOriginal" title="Descargar"><Ico Nombre="importar" /></a>
+                        <button type="button" class="ens-mini" title="Reemplazar archivo" @onclick="() => AbrirReemplazo(v)"><Ico Nombre="editar" /></button>
+                        <button type="button" class="ens-mini" title="Eliminar archivo" @onclick="() => PedirEliminarArchivo(v)"><Ico Nombre="eliminar" /></button>
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table></div>
+}
+else
+{
+<div class="doc-listado @(pantallaCompleta ? "ens-pantalla" : "")">
+<EncabezadoPagina Titulo="Listado maestro de documentos" Icono="documentos" Subtitulo="@($"{docs.Count} documento{(docs.Count == 1 ? "" : "s")}")" OnAtras="AtrasPantalla">
+    <Acciones>
+        <button type="button" class="pg-btn @(pantallaCompleta ? "activo" : "")" title="@(pantallaCompleta ? "Salir de pantalla completa" : "Pantalla completa")" @onclick="() => pantallaCompleta = !pantallaCompleta"><Ico Nombre="pantalla-completa" /></button>
+        <button type="button" class="pg-btn @(verCargas ? "activo" : "")" title="@($"Cargas: {cargas.Count} de listado, {cargasArchivos.Count} de archivos")" @onclick="AlternarCargas"><Ico Nombre="cargas" />@(cargas.Count + cargasArchivos.Count > 0 ? $" {cargas.Count + cargasArchivos.Count}" : "")</button>
+        <span class="pg-sep"></span>
+        <BotonCampos Activo="verCampos" Deshabilitado="motor is null || modoEdicion" OnClick="() => verCampos = true" />
+        <button type="button" class="pg-btn @(verImportar ? "activo" : "")" title="Importar listado (Excel)" disabled="@modoEdicion" @onclick="AlternarImportar"><Ico Nombre="cargar-excel" /></button>
+        <button type="button" class="pg-btn @(verLote ? "activo" : "")" title="Cargar documentos (PDF, Word, Excel)" disabled="@(modoEdicion || motor is null)" @onclick="AlternarLote"><Ico Nombre="cargar-pdf" /></button>
+        <BotonExportar Titulo="Listado maestro de documentos" Motor="motor" Filas="() => Mostrados.Select(d => d.Id)" Deshabilitado="motor is null" />
+        <span class="pg-sep"></span>
+        @if (!modoEdicion)
+        {
+            <button type="button" class="pg-btn pg-btn-peligro" title="Eliminar documento seleccionado" disabled="@(selId is null)" @onclick="PedirEliminar"><Ico Nombre="eliminar" /></button>
+            <button type="button" class="pg-btn" title="Editar" disabled="@(motor is null)" @onclick="EntrarEdicion"><Ico Nombre="editar" /></button>
+            <button type="button" class="pg-btn pg-btn-primario @(form is not null ? "activo" : "")" title="Nuevo documento" disabled="@(motor is null)" @onclick="Nuevo"><Ico Nombre="agregar" /></button>
+        }
+        else
+        {
+            <button type="button" class="pg-btn" title="Descartar cambios y salir de edición" @onclick="SalirEdicion"><Ico Nombre="cancelar" /></button>
+            <button type="button" class="pg-btn pg-btn-primario" title="Guardar cambios" disabled="@(cambios.Count == 0 || guardando)" @onclick="GuardarEdicion"><Ico Nombre="guardar" />@(cambios.Count > 0 ? $" {cambios.Count}" : "")</button>
+        }
+    </Acciones>
+</EncabezadoPagina>
+
+@if (verCampos && motor is not null)
+{
+    <PanelCampos Motor="motor" OnCerrar="() => verCampos = false" OnCambio="StateHasChanged" />
+}
+
+@if (!string.IsNullOrEmpty(mensaje))
+{
+    <div class="alert @(error ? "alert-warning" : "alert-success") py-1">@mensaje</div>
+}
+
+@* ---------- Cargas (bases de datos Excel que alimentan el listado) ---------- *@
+@if (verCargas)
+{
+    <div class="card panel-formulario mb-3">
+        <div class="card-body">
+            <div class="btn-group btn-group-sm mb-2" role="group">
+                <button type="button" class="btn @(pestanaCargas == "listado" ? "btn-dark" : "btn-outline-secondary")" title="Bases de datos Excel del listado" @onclick='() => { pestanaCargas = "listado"; elimCargas = null; elimCargasArch = null; }'><Ico Nombre="listado" /> @cargas.Count</button>
+                <button type="button" class="btn @(pestanaCargas == "archivos" ? "btn-dark" : "btn-outline-secondary")" title="Cargas de archivos adjuntos" @onclick='() => { pestanaCargas = "archivos"; elimCargas = null; elimCargasArch = null; }'><Ico Nombre="adjuntar" /> @cargasArchivos.Count</button>
+            </div>
+            @if (pestanaCargas == "archivos")
+            {
+                <text>@PanelCargasArchivos()</text>
+            }
+            else if (cargas.Count == 0)
+            {
+                <div class="text-muted small">—</div>
+            }
+            else
+            {
+                <div class="tabla-scroll mb-2" style="max-height:260px;">
+                    <table class="table table-sm table-bordered align-middle mb-0">
+                        <thead>
+                            <tr>
+                                <th style="width:32px;"><input type="checkbox" class="form-check-input" title="Todas" checked="@(cargasSel.Count == cargas.Count)" @onchange="@(e => { cargasSel = (bool)e.Value! ? cargas.Select(c => c.Id).ToHashSet() : new(); elimCargas = null; })" /></th>
+                                <th>Archivo</th>
+                                <th>Hoja</th>
+                                <th>Fecha</th>
+                                <th title="Documentos vigentes de esta carga">Doc.</th>
+                                <th title="Filas de otras cargas actualizadas por código">Act.</th>
+                                <th style="width:40px;"></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var c in cargas)
+                            {
+                                var id = c.Id;
+                                <tr class="@(cargaFiltro == id ? "table-active" : "")">
+                                    <td><input type="checkbox" class="form-check-input" checked="@cargasSel.Contains(id)" @onchange="@(e => { if ((bool)e.Value!) cargasSel.Add(id); else cargasSel.Remove(id); elimCargas = null; })" /></td>
+                                    <td class="small">@c.NombreArchivo</td>
+                                    <td class="small">@c.Hoja</td>
+                                    <td class="small text-nowrap">@c.Fecha.ToString("dd/MM/yyyy HH:mm")</td>
+                                    <td class="small text-end">@(docsPorCarga.TryGetValue(id, out var n) ? n : 0)</td>
+                                    <td class="small text-end">@c.FilasActualizadas</td>
+                                    <td><button type="button" class="ens-mini @(cargaFiltro == id ? "activo" : "")" title="Ver solo esta carga" @onclick="() => cargaFiltro = cargaFiltro == id ? null : id"><Ico Nombre="ubicar" /></button></td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+                <div class="d-flex justify-content-end">
+                    <button type="button" class="btn btn-danger btn-sm" title="@($"Eliminar cargas seleccionadas ({cargasSel.Count})")" disabled="@(cargasSel.Count == 0)" @onclick="PedirEliminarCargas"><Ico Nombre="eliminar" /> @cargasSel.Count</button>
+                </div>
+            }
+
+            @if (pestanaCargas == "listado" && elimCargas is not null)
+            {
+                <div class="border border-danger rounded p-2 mt-2">
+                    <PanelImpacto Informe="impactoCargas" OnEntendido="@(v => impactoCargasOk = v)" />
+                    <div class="d-flex gap-2">
+                        <button class="btn btn-secondary btn-sm" type="button" title="Cancelar" @onclick="() => elimCargas = null"><Ico Nombre="cancelar" /></button>
+                        <button class="btn btn-danger btn-sm" type="button" title="Eliminar cargas y sus documentos (van a la Papelera)" disabled="@BloqueadoCargas" @onclick="ConfirmarEliminarCargas"><Ico Nombre="eliminar" /></button>
+                    </div>
+                </div>
+            }
+        </div>
+    </div>
+}
+
+@* ---------- Importar Excel: libro → hoja → fila de encabezados → columnas ---------- *@
+@if (verImportar)
+{
+    <div class="card panel-formulario mb-3">
+        <div class="card-body">
+            <div class="d-flex gap-2 align-items-center flex-wrap mb-2">
+                <InputFile class="form-control form-control-sm" style="max-width:340px;" OnChange="SeleccionarLibro" accept=".xlsx,.xlsm" />
+                @if (hojas.Count > 0)
+                {
+                    <select class="form-select form-select-sm" style="max-width:220px;" title="Hoja" value="@hojaSel" @onchange="CambiarHoja">
+                        @foreach (var h in hojas) { <option value="@h">@h</option> }
+                    </select>
+                    <select class="form-select form-select-sm" style="max-width:240px;" title="Tipo documental de las filas de esta carga (si el Excel no trae la columna)" @bind="tipoCarga">
+                        <option value="">Tipo documental: —</option>
+                        @foreach (var o in opcionesTipo) { <option value="@o">@o</option> }
+                    </select>
+                }
+                @if (leyendo) { <span class="spinner-border spinner-border-sm" role="status"></span> }
+                <button type="button" class="btn btn-secondary btn-sm ms-auto" title="Cancelar" @onclick="CerrarImportar"><Ico Nombre="cancelar" /></button>
+                <button type="button" class="btn btn-primary btn-sm" title="@($"Importar {FilasDatos().Count} fila(s)")"
+                        disabled="@(filasHoja.Count == 0 || colsSel.Count == 0 || importando || DestinosRepetidos().Count > 0)" @onclick="Importar">
+                    @if (importando) { <span class="spinner-border spinner-border-sm" role="status"></span> }
+                    else { <Ico Nombre="importar" /> <span class="small">@FilasDatos().Count</span> }
+                </button>
+            </div>
+
+            @if (filasHoja.Count > 0)
+            {
+                var enc = Encabezados();
+                <div class="tabla-scroll mb-2" style="max-height:300px;">
+                    <table class="table table-sm table-bordered align-middle mb-0 doc-vista">
+                        <thead>
+                            <tr>
+                                <th title="Fila de encabezados">#</th>
+                                @for (int c = 0; c < enc.Count; c++)
+                                {
+                                    var col = c;
+                                    <th class="@(colsSel.Contains(col) ? "" : "doc-col-off")">
+                                        <label class="d-flex align-items-center gap-1 mb-0 text-nowrap" title="Incluir columna">
+                                            <input type="checkbox" class="form-check-input mt-0" checked="@colsSel.Contains(col)"
+                                                   @onchange="@(e => AlternarColumna(col, (bool)e.Value!))" />
+                                            @LectorExcelGenerico.LetraColumna(col)
+                                        </label>
+                                    </th>
+                                }
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @for (int f = 0; f < Math.Min(filasHoja.Count, FilasVista); f++)
+                            {
+                                var fila = f;
+                                <tr class="@(fila == filaEnc ? "doc-fila-enc" : fila < filaEnc ? "doc-fila-off" : "")" role="button" title="Usar como fila de encabezados" @onclick="() => ElegirEncabezado(fila)">
+                                    <td class="text-muted small">
+                                        <input type="radio" class="form-check-input mt-0 me-1" name="filaEnc" checked="@(fila == filaEnc)" />@(fila + 1)
+                                    </td>
+                                    @for (int c = 0; c < enc.Count; c++)
+                                    {
+                                        <td class="small text-nowrap @(colsSel.Contains(c) ? "" : "doc-col-off")">@Recortar(Celda(filasHoja[fila], c))</td>
+                                    }
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+
+                @* Cada columna elegida del Excel → columna del listado (existente, propia o nueva). *@
+                var repetidos = DestinosRepetidos();
+                <div class="tabla-scroll" style="max-height:260px;">
+                    <table class="table table-sm table-bordered align-middle mb-0 doc-mapeo">
+                        <tbody>
+                            @foreach (var c in colsSel.OrderBy(x => x))
+                            {
+                                var col = c;
+                                var destino = destinos.TryGetValue(col, out var d0) ? d0 : DestinoNuevo;
+                                <tr class="@(repetidos.Contains(destino) ? "table-danger" : "")">
+                                    <td class="small text-nowrap" style="width:40%;"><span class="text-muted">@LectorExcelGenerico.LetraColumna(col)</span> @enc[col]</td>
+                                    <td class="text-center text-muted" style="width:24px;">→</td>
+                                    <td class="p-0">
+                                        <select class="form-select form-select-sm cc-input" value="@destino" @onchange="@(e => destinos[col] = e.Value?.ToString() ?? DestinoNuevo)">
+                                            <option value="@DestinoNuevo">＋ @enc[col]</option>
+                                            <option value="nat:Codigo">Código</option>
+                                            <option value="nat:TipoDocumental">Tipo documental</option>
+                                            <option value="nat:Estado">Estado</option>
+                                            @foreach (var campo in CamposDestino)
+                                            {
+                                                <option value="@($"c:{campo.Id}")">@campo.Nombre</option>
+                                            }
+                                        </select>
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        </div>
+    </div>
+}
+
+@* ---------- Carga masiva de archivos: sugiere el documento por código/nombre ---------- *@
+@if (verLote)
+{
+    <div class="card panel-formulario mb-3">
+        <div class="card-body">
+            <div class="d-flex gap-2 align-items-center flex-wrap mb-2">
+                <div class="btn-group btn-group-sm" role="group" title="¿Qué estás cargando?">
+                    @foreach (var cl in ClasesArchivo)
+                    {
+                        var clase = cl;
+                        <button type="button" class="btn @(claseLote == clase ? "btn-dark" : "btn-outline-secondary")" title="@NombreClase(clase, true)" @onclick="() => CambiarClaseLote(clase)">@NombreClase(clase, true)</button>
+                    }
+                </div>
+                <InputFile class="form-control form-control-sm" style="max-width:340px;" multiple OnChange="SeleccionarArchivos" accept=".pdf,.doc,.docx,.xls,.xlsx,.xlsm" />
+                <input type="date" class="form-control form-control-sm" style="max-width:160px;" title="Fecha de las versiones" @bind="fechaLote" />
+                @if (lote.Count > 0)
+                {
+                    <span class="text-muted small">@lote.Count(x => x.DocId is not null) / @lote.Count</span>
+                }
+                <button type="button" class="btn btn-secondary btn-sm ms-auto" title="Cancelar" @onclick="CerrarLote"><Ico Nombre="cancelar" /></button>
+                <button type="button" class="btn btn-primary btn-sm" title="@($"Cargar {LoteListos.Count} archivo(s)")" disabled="@(LoteListos.Count == 0 || cargandoLote)" @onclick="CargarLote">
+                    @if (cargandoLote) { <span class="spinner-border spinner-border-sm" role="status"></span> }
+                    else { <Ico Nombre="guardar" /> <span class="small">@LoteListos.Count</span> }
+                </button>
+            </div>
+            @if (lote.Count > 0)
+            {
+                // Dos archivos vigentes (o dos editables) para el mismo documento: el último cargado queda como actual.
+                var repetidos = lote.Where(x => x.Incluir && x.DocId is not null && x.Clase != ClaseArchivoDocumento.Obsoleta)
+                    .GroupBy(x => (x.DocId, x.Clase)).Where(g => g.Count() > 1).Select(g => g.Key).ToHashSet();
+                <div class="tabla-scroll" style="max-height:420px;">
+                    <table class="table table-sm table-bordered align-middle mb-0">
+                        <thead>
+                            <tr>
+                                <th style="width:32px;"></th>
+                                <th>Archivo</th>
+                                <th style="min-width:340px;">Documento</th>
+                                <th style="width:130px;">Clase</th>
+                                <th style="width:110px;">Versión</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var a in lote)
+                            {
+                                var it = a;
+                                <tr class="@(it.DocId is null ? "doc-lote-sin" : "") @(it.Incluir ? "" : "doc-fila-off")">
+                                    <td><input type="checkbox" class="form-check-input" checked="@it.Incluir" @onchange="@(e => it.Incluir = (bool)e.Value!)" /></td>
+                                    <td class="small">
+                                        <div class="text-truncate" style="max-width:320px;" title="@it.Archivo.Name">@it.Archivo.Name</div>
+                                        <span class="text-muted">@((it.Archivo.Size / 1024.0).ToString("0")) KB</span>
+                                    </td>
+                                    <td class="small">
+                                        <div class="d-flex gap-1">
+                                            <input class="form-control form-control-sm" style="max-width:130px;" placeholder="Buscar..." value="@it.Busqueda" @oninput="@(e => it.Busqueda = e.Value?.ToString() ?? "")" />
+                                            <select class="form-select form-select-sm" value="@(it.DocId?.ToString() ?? "")" @onchange="@(e => ElegirDocLote(it, e.Value?.ToString()))">
+                                                <option value="">—</option>
+                                                @foreach (var (id, etiqueta, puntos) in OpcionesLote(it))
+                                                {
+                                                    <option value="@id">@etiqueta@(puntos > 0 ? $"  ({Coincidencia(puntos)})" : "")</option>
+                                                }
+                                            </select>
+                                        </div>
+                                        @if (it.DocId is not null && repetidos.Contains((it.DocId, it.Clase)))
+                                        {
+                                            <span class="text-danger">Otro archivo de la misma clase va al mismo documento</span>
+                                        }
+                                    </td>
+                                    <td class="p-0">
+                                        <select class="form-select form-select-sm cc-input" value="@((int)it.Clase)" @onchange="@(e => { it.Clase = (ClaseArchivoDocumento)int.Parse(e.Value!.ToString()!); it.Version = it.DocId is int dd ? VersionSugerida(dd, it.Clase) : null; })">
+                                            @foreach (var cl in ClasesArchivo) { <option value="@((int)cl)">@NombreClase(cl, false)</option> }
+                                        </select>
+                                    </td>
+                                    <td class="p-0"><input class="form-control form-control-sm cc-input @(string.IsNullOrWhiteSpace(it.Version) && it.DocId is not null ? "is-invalid" : "")" @bind="it.Version" /></td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        </div>
+    </div>
+}
+
+@* ---------- Nuevo documento ---------- *@
+@if (form is not null && motor is not null)
+{
+    <FormularioSig Titulo="Nuevo documento" Icono="agregar" Clase="mb-3" OnCerrar="() => form = null">
+        <ChildContent>
+            <SeccionFormulario Titulo="Documento">
+                <CampoFormulario Etiqueta="Código" Ancho="col-md-4" Destacado="true">
+                    <input class="form-control" @bind="form.Codigo" />
+                </CampoFormulario>
+                <CampoFormulario Etiqueta="Tipo documental" Ancho="col-md-4">
+                    <select class="form-select" @bind="form.Tipo">
+                        <option value=""></option>
+                        @foreach (var o in opcionesTipo) { <option value="@o">@o</option> }
+                    </select>
+                </CampoFormulario>
+                <CampoFormulario Etiqueta="Estado" Ancho="col-md-4">
+                    <select class="form-select" @bind="form.Estado">
+                        <option value=""></option>
+                        @foreach (var o in opcionesEstado) { <option value="@o">@o</option> }
+                    </select>
+                </CampoFormulario>
+            </SeccionFormulario>
+            @if (CamposEditables.Any())
+            {
+                <SeccionFormulario Titulo="Datos del documento">
+                    @foreach (var c in CamposEditables)
+                    {
+                        var campo = c;
+                        <CampoFormulario Etiqueta="@campo.Nombre" Ancho="col-md-3">
+                            @EntradaCampo(campo, form.Valores.TryGetValue(campo.Id, out var v) ? v : null, val => form.Valores[campo.Id] = val)
+                        </CampoFormulario>
+                    }
+                </SeccionFormulario>
+            }
+            @if (!string.IsNullOrEmpty(mensajeForm))
+            {
+                <div class="alert alert-warning py-1 mt-3 mb-0">@mensajeForm</div>
+            }
+        </ChildContent>
+        <Acciones>
+            <button type="button" class="btn btn-secondary btn-sm" title="Cancelar" @onclick="() => form = null"><Ico Nombre="cancelar" /></button>
+            <button type="button" class="btn btn-primary btn-sm" title="Guardar" disabled="@guardando" @onclick="GuardarNuevo"><Ico Nombre="guardar" /></button>
+        </Acciones>
+    </FormularioSig>
+}
+
+@if (elim is not null)
+{
+    <div class="card panel-formulario mb-3 border-danger">
+        <div class="card-body">
+            <div class="mb-2"><Ico Nombre="eliminar" /> <strong>@(string.IsNullOrWhiteSpace(elim.Codigo) ? $"Documento #{elim.Id}" : elim.Codigo)</strong></div>
+            <PanelImpacto Informe="impacto" OnEntendido="@(v => impactoOk = v)" />
+            <div class="d-flex gap-2">
+                <button class="btn btn-secondary btn-sm" type="button" title="Cancelar" @onclick="() => elim = null"><Ico Nombre="cancelar" /></button>
+                <button class="btn btn-danger btn-sm" type="button" title="Eliminar (va a la Papelera)" disabled="@BloqueadoPorImpacto" @onclick="ConfirmarEliminar"><Ico Nombre="eliminar" /></button>
+            </div>
+        </div>
+    </div>
+}
+
+@* ---------- Filtros ---------- *@
+<div class="mpie-barra mb-2">
+    <input class="form-control form-control-sm" style="max-width:240px;" placeholder="Buscar documento..." @bind="filtro" @bind:event="oninput" />
+    @FiltroLista("tipo", "Tipo documental", ValoresFiltro(d => d.TipoDocumental), tiposSel)
+    @FiltroLista("estado", "Estado", ValoresFiltro(d => d.Estado), estadosSel)
+    @if (cargaFiltro is int cf && cargas.FirstOrDefault(c => c.Id == cf) is { } cg)
+    {
+        <span class="rg-chip"><Ico Nombre="cargas" /> @cg.NombreArchivo <button type="button" class="rg-chip-x" title="Quitar" @onclick="() => cargaFiltro = null">✕</button></span>
+    }
+    @if (cargaArchFiltro is int caf && cargasArchivos.FirstOrDefault(c => c.Id == caf) is { } ca)
+    {
+        <span class="rg-chip"><Ico Nombre="adjuntar" /> @ca.Origen @ca.Fecha.ToString("dd/MM HH:mm") <button type="button" class="rg-chip-x" title="Quitar" @onclick="() => cargaArchFiltro = null">✕</button></span>
+    }
+    @if (tiposSel.Count + estadosSel.Count > 0 || cargaFiltro is not null || cargaArchFiltro is not null || !string.IsNullOrWhiteSpace(filtro))
+    {
+        <button type="button" class="btn btn-sm btn-outline-secondary" title="Quitar filtros" @onclick="LimpiarFiltros">✕</button>
+        <span class="text-muted small">@Mostrados.Count() / @docs.Count</span>
+    }
+</div>
+
+<div class="tabla-scroll tabla-auto"><table class="table table-sm table-bordered @(modoEdicion ? "" : "table-hover") tabla-compacta align-middle mb-0 tabla-pin tabla-docs @(modoEdicion ? "doc-editando" : "")">
+    <thead>
+        <tr>
+            @foreach (var c in Columnas)
+            {
+                <th class="th-ordenable" @onclick="() => OrdenarPor(c.Clave)">@c.Nombre@(Flecha(c.Clave))</th>
+            }
+            <th style="width:80px;"></th>
+        </tr>
+    </thead>
+    <tbody>
+        @if (motor is not null)
+        {
+            @foreach (var d in Mostrados)
+            {
+                var doc = d;
+                var id = d.Id;
+                <tr class="@(!modoEdicion && selId == id ? "table-active" : "")" @onclick="() => { if (!modoEdicion) selId = id; }">
+                    @foreach (var c in Columnas)
+                    {
+                        var campo = c;
+                        if (modoEdicion && EsEditable(campo))
+                        {
+                            var clave = ClaveCambio(campo);
+                            <td class="small p-0 @(cambios.ContainsKey((id, clave)) ? "doc-cambio" : "")">
+                                @if (campo.Origen == OrigenCampoTabla.Nativo)
+                                {
+                                    var actual = ValorEdicion(doc, campo);
+                                    if (campo.Clave == "Codigo")
+                                    {
+                                        <input class="form-control form-control-sm cc-input" value="@actual" @onchange="@(e => Cambiar(doc, campo, e.Value?.ToString()))" />
+                                    }
+                                    else
+                                    {
+                                        <select class="form-select form-select-sm cc-input" value="@actual" @onchange="@(e => Cambiar(doc, campo, e.Value?.ToString()))">
+                                            <option value=""></option>
+                                            @foreach (var o in Con(campo.Clave == "TipoDocumental" ? opcionesTipo : opcionesEstado, actual)) { <option value="@o">@o</option> }
+                                        </select>
+                                    }
+                                }
+                                else
+                                {
+                                    <text>@EntradaCampo(campo, ValorEdicion(doc, campo), val => Cambiar(doc, campo, val), "cc-input")</text>
+                                }
+                            </td>
+                        }
+                        else if (campo.Origen == OrigenCampoTabla.Nativo && campo.Clave == "Codigo")
+                        {
+                            <td class="small fw-bold doc-adj">@CeldaCodigo(doc)</td>
+                        }
+                        // Tipo documental y Estado: el formato del catálogo, salvo que la columna tenga un formato
+                        // condicional (Campos › Formatos) que aplique a esta celda; ese manda.
+                        else if (campo.Origen == OrigenCampoTabla.Nativo && campo.Clave is "TipoDocumental" or "Estado" && Motor.Estilo(id, campo) is null)
+                        {
+                            <td class="small"><ValorCatalogo Tipo="@(campo.Clave == "TipoDocumental" ? MigracionDocumentos.CatTipo : MigracionDocumentos.CatEstado)" Valor="@(campo.Clave == "TipoDocumental" ? doc.TipoDocumental : doc.Estado)" /></td>
+                        }
+                        else
+                        {
+                            <CeldaCampo Motor="Motor" Campo="campo" Fila="id" SoloLectura="true" Clase="@(campo.Clave == "Codigo" ? "fw-bold" : null)" OnCambio="StateHasChanged" />
+                        }
+                    }
+                    <td class="text-nowrap text-end">
+                        <button type="button" class="ens-mini" title="Actualizar" disabled="@modoEdicion" @onclick:stopPropagation="true" @onclick="() => AbrirVersion(doc)"><Ico Nombre="nueva-version" /></button>
+                        <button type="button" class="btn btn-sm btn-outline-danger py-0" title="Eliminar (va a la Papelera)" disabled="@modoEdicion" @onclick:stopPropagation="true" @onclick="() => { selId = doc.Id; PedirEliminar(); }"><Ico Nombre="eliminar" /></button>
+                    </td>
+                </tr>
+            }
+        }
+    </tbody>
+</table></div>
+@MenuCodigo()
+</div>
+}
+
+@if (reemplazo is not null)
+{
+    <div class="modal-backdrop-custom">
+        <div class="modal-box-custom" style="max-width:520px;">
+            <h5 class="mb-2"><Ico Nombre="editar" /> @CodigoDoc(reemplazo.DocumentoMaestroId) · v@(reemplazo.Version) · @NombreClase(reemplazo.Clase, false)</h5>
+            <div class="small text-muted mb-2">@reemplazo.NombreOriginal</div>
+            <InputFile class="form-control form-control-sm mb-2" OnChange="@(e => archivoReemplazo = e.File)" />
+            @if (!string.IsNullOrEmpty(mensajeReemplazo)) { <div class="alert alert-warning py-1">@mensajeReemplazo</div> }
+            <div class="d-flex justify-content-end gap-2">
+                <button class="btn btn-secondary btn-sm" title="Cancelar" @onclick="() => reemplazo = null"><Ico Nombre="cancelar" /></button>
+                <button class="btn btn-primary btn-sm" title="Reemplazar" disabled="@(archivoReemplazo is null || guardando)" @onclick="Reemplazar"><Ico Nombre="guardar" /></button>
+            </div>
+        </div>
+    </div>
+}
+
+@if (elimArchivo is not null)
+{
+    <div class="modal-backdrop-custom">
+        <div class="modal-box-custom" style="max-width:520px;">
+            <h5 class="mb-2"><Ico Nombre="eliminar" /> @CodigoDoc(elimArchivo.DocumentoMaestroId) · v@(elimArchivo.Version) · @NombreClase(elimArchivo.Clase, false)</h5>
+            <div class="small text-muted mb-2">@elimArchivo.NombreOriginal</div>
+            <PanelImpacto Informe="impactoArchivo" OnEntendido="@(v => impactoArchivoOk = v)" />
+            <div class="d-flex justify-content-end gap-2">
+                <button class="btn btn-secondary btn-sm" title="Cancelar" @onclick="() => elimArchivo = null"><Ico Nombre="cancelar" /></button>
+                <button class="btn btn-danger btn-sm" title="Eliminar (va a la Papelera)" disabled="@(impactoArchivo is null || (impactoArchivo.RequiereEntender && !impactoArchivoOk))" @onclick="ConfirmarEliminarArchivo"><Ico Nombre="eliminar" /></button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    // ---------- Pantalla completa (igual que Ensayos): la tabla ocupa la ventana y todo sigue funcionando ----------
+    private bool pantallaCompleta;
+    private EventCallback AtrasPantalla => pantallaCompleta ? EventCallback.Factory.Create(this, () => pantallaCompleta = false) : default;
+
+    private const string Tabla = MigracionDocumentos.Tabla;
+    private const int FilasVista = 40;
+
+    private List<DocumentoMaestro> docs = new();
+    private List<CargaDocumentos> cargas = new();
+    private Dictionary<int, int> docsPorCarga = new();
+    private Dictionary<int, List<VersionDocumento>> versiones = new();   // documento → versiones, la vigente primero
+    private Dictionary<int, List<ControlCambioVersion>> cambiosPorVersion = new();
+    private Dictionary<int, List<RevisionDocumento>> revisiones = new();   // documento → control de cambios, la más reciente primero
+    private Dictionary<int, RevisionDocumento> revisionPorId = new();
+    private List<string> opcionesTipo = new(), opcionesEstado = new();
+    private int? selId;
+    private string mensaje = "";
+    private bool error;
+
+    // ?buscar=texto (buscador rápido Ctrl + K): llega como filtro de la lista.
+    [SupplyParameterFromQuery(Name = "buscar")] public string? BuscarQ { get; set; }
+    private string? buscarAplicado;
+    protected override void OnParametersSet()
+    {
+        if (BuscarQ == buscarAplicado) return;
+        buscarAplicado = BuscarQ;
+        if (!string.IsNullOrWhiteSpace(BuscarQ)) filtro = BuscarQ;
+    }
+
+    protected override void OnInitialized() => Cargar();
+
+    private void Cargar()
+    {
+        motorPendiente = true;
+        Db.ChangeTracker.Clear();
+        docs = Db.DocumentosMaestro.AsNoTracking().OrderBy(d => d.Id).ToList();
+        cargas = Db.CargasDocumentos.AsNoTracking().OrderByDescending(c => c.Fecha).ToList();
+        docsPorCarga = docs.Where(d => d.CargaDocumentosId != null).GroupBy(d => d.CargaDocumentosId!.Value).ToDictionary(g => g.Key, g => g.Count());
+        var ids = docs.Select(d => d.Id).ToList();
+        // Control de cambios: la revisión más reciente primero (mayor fecha; a igual fecha, la última creada).
+        revisiones = Db.RevisionesDocumento.AsNoTracking().Where(r => ids.Contains(r.DocumentoMaestroId)).ToList()
+            .GroupBy(r => r.DocumentoMaestroId)
+            .ToDictionary(g => g.Key, g => g.OrderByDescending(r => r.Fecha ?? DateTime.MinValue).ThenByDescending(r => r.Creada).ThenByDescending(r => r.Id).ToList());
+        var rango = revisiones.Values.SelectMany(l => l.Select((r, i) => (r.Id, i))).ToDictionary(x => x.Id, x => x.i);
+        revisionPorId = revisiones.Values.SelectMany(l => l).ToDictionary(r => r.Id);
+        // Archivos en el orden de la trazabilidad: los de la revisión más reciente primero; los que no
+        // tienen revisión (obsoletos o anteriores), después, por fecha de carga.
+        versiones = Db.VersionesDocumento.AsNoTracking().Where(v => ids.Contains(v.DocumentoMaestroId)).ToList()
+            .GroupBy(v => v.DocumentoMaestroId)
+            .ToDictionary(g => g.Key, g => g
+                .OrderBy(v => v.RevisionDocumentoId is int r && rango.TryGetValue(r, out var i) ? i : int.MaxValue)
+                .ThenByDescending(v => v.FechaCarga).ThenByDescending(v => v.Id).ToList());
+        opcionesTipo = Opciones(MigracionDocumentos.CatTipo);
+        opcionesEstado = Opciones(MigracionDocumentos.CatEstado);
+        var idsVer = versiones.Values.SelectMany(l => l.Select(v => v.Id)).ToList();
+        cambiosPorVersion = Db.ControlesCambioVersion.AsNoTracking().Where(c => idsVer.Contains(c.VersionDocumentoId)).ToList()
+            .GroupBy(c => c.VersionDocumentoId).ToDictionary(g => g.Key, g => g.OrderBy(c => c.Orden).ThenBy(c => c.Id).ToList());
+        cargasArchivos = Db.CargasArchivosDocumentos.AsNoTracking().OrderByDescending(c => c.Fecha).ToList();
+        archivosPorCarga = versiones.Values.SelectMany(l => l).Where(v => v.CargaArchivosDocumentosId != null)
+            .GroupBy(v => v.CargaArchivosDocumentosId!.Value).ToDictionary(g => g.Key, g => g.ToList());
+        cargasArchSel.RemoveWhere(id => cargasArchivos.All(c => c.Id != id));
+        if (cargaArchFiltro is int caf && cargasArchivos.All(c => c.Id != caf)) cargaArchFiltro = null;
+        cargasSel.RemoveWhere(id => cargas.All(c => c.Id != id));
+        if (cargaFiltro is int cf && cargas.All(c => c.Id != cf)) cargaFiltro = null;
+        if (selId is int s && docs.All(d => d.Id != s)) selId = null;
+    }
+
+    // Las listas de Tipo documental y Estado salen solo del catálogo (en su orden); un valor guardado
+    // que no esté en él se sigue mostrando en su celda (ver Con) para poder corregirlo.
+    private List<string> Opciones(string catalogo) =>
+        Db.Catalogos.AsNoTracking().Where(i => i.Tipo == catalogo && i.Activo).OrderBy(i => i.Id).Select(i => i.Nombre).ToList()
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+
+    // Lista de opciones que incluye el valor actual aunque ya no esté en el catálogo.
+    private static IEnumerable<string> Con(List<string> opciones, string? actual) =>
+        string.IsNullOrWhiteSpace(actual) || opciones.Contains(actual, StringComparer.OrdinalIgnoreCase) ? opciones : opciones.Append(actual);
+
+    private List<VersionDocumento> ArchivosDe(int docId) => versiones.TryGetValue(docId, out var l) ? l : new();
+    // Actual = vigente más reciente; editable = editable más reciente; el resto son versiones anteriores.
+    private VersionDocumento? VigenteDe(int docId) => ArchivosDe(docId).FirstOrDefault(v => v.Clase == ClaseArchivoDocumento.Vigente);
+    private VersionDocumento? EditableDe(int docId) => ArchivosDe(docId).FirstOrDefault(v => v.Clase == ClaseArchivoDocumento.Editable);
+    // Un elemento puede tener varios archivos vigentes (o editables) de la misma versión: son
+    // todos los de esa clase con la versión del más reciente.
+    // Con control de cambios: todos los de esa clase de la revisión más reciente que tenga archivos de esa clase.
+    private List<VersionDocumento> ActualesDe(int docId, ClaseArchivoDocumento clase)
+    {
+        var l = ArchivosDe(docId).Where(v => v.Clase == clase).ToList();
+        if (l.Count == 0) return l;
+        if (l[0].RevisionDocumentoId is int rev) return l.Where(v => v.RevisionDocumentoId == rev).ToList();
+        var ver = (l[0].Version ?? "").Trim();
+        return l.Where(v => v.RevisionDocumentoId is null && string.Equals((v.Version ?? "").Trim(), ver, StringComparison.OrdinalIgnoreCase)).ToList();
+    }
+
+    private List<RevisionDocumento> RevisionesDe(int docId) => revisiones.TryGetValue(docId, out var l) ? l : new();
+
+    private List<VersionDocumento> AnterioresDe(int docId)
+    {
+        var act = ActualesDe(docId, ClaseArchivoDocumento.Vigente).Concat(ActualesDe(docId, ClaseArchivoDocumento.Editable)).ToHashSet();
+        return ArchivosDe(docId).Where(v => !act.Contains(v)).ToList();
+    }
+
+    private static readonly ClaseArchivoDocumento[] ClasesArchivo = { ClaseArchivoDocumento.Vigente, ClaseArchivoDocumento.Editable, ClaseArchivoDocumento.Obsoleta };
+    private static string NombreClase(ClaseArchivoDocumento c, bool plural) => c switch
+    {
+        ClaseArchivoDocumento.Vigente => plural ? "Vigentes" : "Vigente",
+        ClaseArchivoDocumento.Editable => plural ? "Editables" : "Editable",
+        _ => plural ? "Obsoletas" : "Obsoleta"
+    };
+
+    // ---------- Campos (columnas visibles, campos creados, fórmulas y formatos) ----------
+    private MotorTabla? motor;
+    private MotorTabla Motor => motor!;
+    private bool verCampos, motorPendiente = true;
+    private string? colOrden;
+    private bool ordenAsc = true;
+
+    private IEnumerable<CampoTabla> Columnas => motor?.Visibles ?? Enumerable.Empty<CampoTabla>();
+
+    private IEnumerable<ColumnaNativa> ColumnasNativas()
+    {
+        var porId = docs.ToDictionary(d => d.Id);
+        var nombreCarga = cargas.ToDictionary(c => c.Id, c => c.NombreArchivo + (string.IsNullOrWhiteSpace(c.Hoja) ? "" : " › " + c.Hoja));
+        DocumentoMaestro? D(int id) => porId.TryGetValue(id, out var d) ? d : null;
+        return new[]
+        {
+            new ColumnaNativa("Codigo", "Código", TipoCampoTabla.Texto, id => D(id)?.Codigo),
+            new ColumnaNativa("TipoDocumental", "Tipo documental", TipoCampoTabla.Texto, id => D(id)?.TipoDocumental),
+            new ColumnaNativa("Estado", "Estado", TipoCampoTabla.Texto, id => D(id)?.Estado),
+            new ColumnaNativa("FechaCreacion", "Creado", TipoCampoTabla.Fecha, id => D(id)?.FechaCreacion, visiblePorDefecto: false),
+            new ColumnaNativa("Carga", "Carga", TipoCampoTabla.Texto, id => D(id)?.CargaDocumentosId is int c && nombreCarga.TryGetValue(c, out var n) ? n : null, visiblePorDefecto: false),
+        };
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!motorPendiente) return;
+        motorPendiente = false;
+        try { motor = await MotorTabla.CargarAsync(Db, Tabla, ColumnasNativas(), docs.Select(d => (d.Id, d.Codigo ?? $"#{d.Id}"))); }
+        catch { motor = null; }
+        StateHasChanged();
+    }
+
+    // Campos que se digitan (ni nativos ni calculados).
+    private IEnumerable<CampoTabla> CamposEditables =>
+        motor?.Ordenados.Where(c => c.Origen != OrigenCampoTabla.Nativo && !c.Calculado) ?? Enumerable.Empty<CampoTabla>();
+
+    // Entrada según el tipo del campo (misma que CeldaCampo).
+    private RenderFragment EntradaCampo(CampoTabla c, string? valor, Action<string?> alCambiar, string clase = "") => __builder =>
+    {
+        switch (c.Tipo)
+        {
+            case TipoCampoTabla.Numero:
+                <input type="number" step="any" class="form-control form-control-sm @clase" value="@valor" @onchange="@(e => alCambiar(e.Value?.ToString()))" />
+                break;
+            case TipoCampoTabla.Fecha:
+                <input type="date" class="form-control form-control-sm @clase" value="@valor" @onchange="@(e => alCambiar(e.Value?.ToString()))" />
+                break;
+            case TipoCampoTabla.Lista:
+                <select class="form-select form-select-sm @clase" value="@valor" @onchange="@(e => alCambiar(e.Value?.ToString()))">
+                    <option value=""></option>
+                    @foreach (var o in Con(motor!.OpcionesDe(c), valor)) { <option value="@o">@o</option> }
+                </select>
+                break;
+            case TipoCampoTabla.SiNo:
+                <div class="text-center"><input type="checkbox" class="form-check-input" checked="@(valor == "1")" @onchange="@(e => alCambiar((bool)e.Value! ? "1" : "0"))" /></div>
+                break;
+            default:
+                <input class="form-control form-control-sm @clase" value="@valor" @onchange="@(e => alCambiar(e.Value?.ToString()))" />
+                break;
+        }
+    };
+
+    // ---------- Código como vínculo: actual, editable y versiones anteriores ----------
+    private int? menuCodigo;
+    private int? verVersionesDe;
+    private bool verTodos;   // pantalla de archivos: todos (true) o solo versiones anteriores
+
+    // El menú se dibuja fuera de la tabla, en posición fija junto al clic: dentro de la celda quedaba
+    // tapado por las columnas inmovilizadas (sticky) y recortado por el contenedor con scroll.
+    private double menuX, menuY;
+
+    private RenderFragment CeldaCodigo(DocumentoMaestro d) => __builder =>
+    {
+        var texto = string.IsNullOrWhiteSpace(d.Codigo) ? "—" : d.Codigo;
+        if (ArchivosDe(d.Id).Count == 0) { <span>@texto</span> return; }
+        var actual = VigenteDe(d.Id);
+        <button type="button" class="doc-vinculo" title="@(actual is null ? "Sin versión vigente" : $"v{actual.Version} — {actual.NombreOriginal}")"
+                @onclick:stopPropagation="true" @onclick="@(e => AbrirMenuCodigo(d.Id, e))">@texto</button>
+    };
+
+    private void AbrirMenuCodigo(int id, MouseEventArgs e)
+    {
+        if (menuCodigo == id) { menuCodigo = null; return; }
+        menuCodigo = id; menuX = e.ClientX; menuY = e.ClientY;
+    }
+
+    // Máximo de archivos que se listan por sección en el menú; el resto, con "Ver todos".
+    private const int MaxMenu = 3;
+
+    private RenderFragment MenuCodigo() => __builder =>
+    {
+        if (menuCodigo is not int id) return;
+        var vigentes = ActualesDe(id, ClaseArchivoDocumento.Vigente);
+        var editables = ActualesDe(id, ClaseArchivoDocumento.Editable);
+        var anteriores = AnterioresDe(id).Count;
+        var total = ArchivosDe(id).Count;
+        var x = menuX.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        var y = (menuY + 8).ToString(System.Globalization.CultureInfo.InvariantCulture);
+        <div class="doc-menu-fondo" @onclick="() => menuCodigo = null"></div>
+        <div class="doc-menu doc-menu-fijo" style="left:min(@(x)px, calc(100vw - 330px)); top:min(@(y)px, calc(100vh - 330px)); width:320px;">
+            <button type="button" class="doc-menu-op" @onclick="() => { menuCodigo = null; verVersionesDe = id; verTodos = true; }">
+                <Ico Nombre="listado" /> <span>Ver todos</span> <span class="text-muted ms-auto">@total</span>
+            </button>
+            <div class="doc-menu-sep"></div>
+            @SeccionMenu("Vigente", vigentes, false)
+            @SeccionMenu("Editable", editables, true)
+            <div class="doc-menu-sep"></div>
+            @if (anteriores > 0)
+            {
+                <button type="button" class="doc-menu-op" @onclick="() => { menuCodigo = null; verVersionesDe = id; verTodos = false; }">
+                    <Ico Nombre="versiones" /> <span>Obsoletos</span> <span class="text-muted ms-auto">@anteriores</span>
+                </button>
+            }
+            else { <span class="doc-menu-op doc-menu-off"><Ico Nombre="versiones" /> <span>Obsoletos</span></span> }
+        </div>
+    };
+
+    // Una sección del menú (Vigente / Editable): hasta MaxMenu archivos, cada uno con reemplazar y eliminar.
+    private RenderFragment SeccionMenu(string titulo, List<VersionDocumento> lista, bool descargar) => __builder =>
+    {
+        <div class="doc-menu-sec">@titulo@(lista.Count > MaxMenu ? $" ({MaxMenu} de {lista.Count})" : "")</div>
+        if (lista.Count == 0) { <span class="doc-menu-op doc-menu-off"><Ico Nombre="documento" /> <span>—</span></span> return; }
+        foreach (var v in lista.Take(MaxMenu))
+        {
+            var arch = v;
+            <div class="doc-menu-fila">
+                @if (descargar)
+                {
+                    <a class="doc-menu-op" href="@arch.RutaArchivo" download="@arch.NombreOriginal" title="@arch.NombreOriginal" @onclick="() => menuCodigo = null">
+                        <Ico Nombre="documento" /> <span class="text-truncate">@arch.NombreOriginal</span> <span class="text-muted ms-auto">v@(arch.Version)</span>
+                    </a>
+                }
+                else
+                {
+                    <a class="doc-menu-op" href="@arch.RutaArchivo" target="_blank" rel="noopener" title="@arch.NombreOriginal" @onclick="() => menuCodigo = null">
+                        <Ico Nombre="documento" /> <span class="text-truncate">@arch.NombreOriginal</span> <span class="text-muted ms-auto">v@(arch.Version)</span>
+                    </a>
+                }
+                <button type="button" class="ens-mini" title="Reemplazar archivo" @onclick="() => AbrirReemplazo(arch)"><Ico Nombre="editar" /></button>
+                <button type="button" class="ens-mini" title="Eliminar archivo" @onclick="() => PedirEliminarArchivo(arch)"><Ico Nombre="eliminar" /></button>
+            </div>
+        }
+    };
+
+    // ---------- Filtros ----------
+    private string filtro = "";
+    private string? filtroAbierto;
+    private HashSet<string> tiposSel = new(StringComparer.OrdinalIgnoreCase), estadosSel = new(StringComparer.OrdinalIgnoreCase);
+    private int? cargaFiltro;
+    private const string SinValor = "(vacío)";
+
+    private List<string> ValoresFiltro(Func<DocumentoMaestro, string?> v) =>
+        docs.Select(d => string.IsNullOrWhiteSpace(v(d)) ? SinValor : v(d)!.Trim()).Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(x => x == SinValor ? 1 : 0).ThenBy(x => x).ToList();
+
+    private static bool Pasa(HashSet<string> sel, string? v) =>
+        sel.Count == 0 || sel.Contains(string.IsNullOrWhiteSpace(v) ? SinValor : v.Trim());
+
+    private void LimpiarFiltros() { tiposSel.Clear(); estadosSel.Clear(); cargaFiltro = null; cargaArchFiltro = null; filtro = ""; filtroAbierto = null; }
+
+    private RenderFragment FiltroLista(string clave, string titulo, List<string> valores, HashSet<string> sel) => __builder =>
+    {
+        <div class="mpie-filtro">
+            <button type="button" class="btn btn-sm @(sel.Count > 0 ? "btn-dark" : "btn-outline-secondary")" title="@titulo" @onclick="() => filtroAbierto = filtroAbierto == clave ? null : clave">
+                <Ico Nombre="filtro" /> @titulo@(sel.Count > 0 ? $" ({sel.Count})" : "") ▾
+            </button>
+            @if (filtroAbierto == clave)
+            {
+                <div class="mpie-back" @onclick="() => filtroAbierto = null"></div>
+                <div class="mpie-pop">
+                    <div class="d-flex justify-content-end mb-1">
+                        <button type="button" class="btn btn-sm btn-outline-secondary" title="Quitar selección" @onclick="() => sel.Clear()">✕</button>
+                    </div>
+                    <div class="mpie-lista">
+                        @foreach (var v in valores)
+                        {
+                            var val = v;
+                            <label class="mpie-op">
+                                <input type="checkbox" checked="@sel.Contains(val)" @onchange="@(e => { if ((bool)e.Value!) sel.Add(val); else sel.Remove(val); })" />
+                                @if (val == SinValor) { <span class="text-muted">@val</span> }
+                                else { <ValorCatalogo Tipo="@(clave == "tipo" ? MigracionDocumentos.CatTipo : MigracionDocumentos.CatEstado)" Valor="@val" /> }
+                                <span class="text-muted small ms-auto">@docs.Count(d => string.Equals(string.IsNullOrWhiteSpace(clave == "tipo" ? d.TipoDocumental : d.Estado) ? SinValor : (clave == "tipo" ? d.TipoDocumental : d.Estado)!.Trim(), val, StringComparison.OrdinalIgnoreCase))</span>
+                            </label>
+                        }
+                    </div>
+                </div>
+            }
+        </div>
+    };
+
+    private IEnumerable<DocumentoMaestro> Mostrados
+    {
+        get
+        {
+            var q = docs.Where(d => Pasa(tiposSel, d.TipoDocumental) && Pasa(estadosSel, d.Estado)
+                                    && (cargaFiltro is null || d.CargaDocumentosId == cargaFiltro)
+                                    && (cargaArchFiltro is null || ArchivosDe(d.Id).Any(v => v.CargaArchivosDocumentosId == cargaArchFiltro))
+                                    && (string.IsNullOrWhiteSpace(filtro)
+                                        || (d.Codigo?.Contains(filtro, StringComparison.OrdinalIgnoreCase) ?? false)
+                                        || (motor is not null && motor.TextoBusqueda(d.Id).Contains(filtro, StringComparison.OrdinalIgnoreCase))));
+            return motor is not null && colOrden is not null ? motor.Ordenar(q, d => d.Id, colOrden, ordenAsc) : q;
+        }
+    }
+
+    private void OrdenarPor(string clave) { if (colOrden == clave) ordenAsc = !ordenAsc; else { colOrden = clave; ordenAsc = true; } }
+    private string Flecha(string clave) => colOrden == clave ? (ordenAsc ? " ▲" : " ▼") : "";
+
+    // ---------- Edición de la tabla (solo con el botón Editar; nada se guarda hasta Guardar) ----------
+    private bool modoEdicion, guardando;
+    private Dictionary<(int Fila, string Clave), string?> cambios = new();
+
+    private static bool EsEditable(CampoTabla c) =>
+        c.Origen == OrigenCampoTabla.Nativo ? c.Clave is "Codigo" or "TipoDocumental" or "Estado" : !c.Calculado;
+
+    private static string ClaveCambio(CampoTabla c) => c.Origen == OrigenCampoTabla.Nativo ? c.Clave : "c:" + c.Id;
+
+    private string? ValorActual(DocumentoMaestro d, CampoTabla c) => c.Origen == OrigenCampoTabla.Nativo
+        ? c.Clave switch { "Codigo" => d.Codigo, "TipoDocumental" => d.TipoDocumental, "Estado" => d.Estado, _ => null }
+        : motor?.Registro(d.Id, c)?.Valor;
+
+    private string? ValorEdicion(DocumentoMaestro d, CampoTabla c) =>
+        cambios.TryGetValue((d.Id, ClaveCambio(c)), out var v) ? v : ValorActual(d, c);
+
+    private void Cambiar(DocumentoMaestro d, CampoTabla c, string? valor)
+    {
+        valor = string.IsNullOrWhiteSpace(valor) ? null : valor.Trim();
+        var clave = (d.Id, ClaveCambio(c));
+        if ((valor ?? "") == (ValorActual(d, c) ?? "")) cambios.Remove(clave);
+        else cambios[clave] = valor;
+    }
+
+    private void EntrarEdicion()
+    {
+        modoEdicion = true; cambios.Clear();
+        verImportar = false; form = null; formVer = null; elim = null; verCampos = false; mensaje = "";
+    }
+
+    private void SalirEdicion() { modoEdicion = false; cambios.Clear(); }
+
+    private async Task GuardarEdicion()
+    {
+        if (motor is null || cambios.Count == 0) return;
+        // Códigos repetidos (contra lo guardado y contra lo editado).
+        var codigos = docs.ToDictionary(d => d.Id, d => cambios.TryGetValue((d.Id, "Codigo"), out var c) ? c : d.Codigo);
+        var repetido = codigos.Values.Where(c => !string.IsNullOrWhiteSpace(c)).GroupBy(c => c!.Trim(), StringComparer.OrdinalIgnoreCase).FirstOrDefault(g => g.Count() > 1);
+        if (repetido is not null && cambios.Keys.Any(k => k.Clave == "Codigo" && string.Equals(codigos[k.Fila]?.Trim(), repetido.Key, StringComparison.OrdinalIgnoreCase)))
+        {
+            mensaje = $"El código {repetido.Key} quedaría repetido."; error = true;
+            return;
+        }
+        guardando = true;
+        try
+        {
+            var filas = cambios.Keys.Select(k => k.Fila).Distinct().ToList();
+            var ents = await Db.DocumentosMaestro.Where(d => filas.Contains(d.Id)).ToDictionaryAsync(d => d.Id);
+            foreach (var ((fila, clave), valor) in cambios.Where(k => !k.Key.Clave.StartsWith("c:")))
+            {
+                if (!ents.TryGetValue(fila, out var e)) continue;
+                switch (clave)
+                {
+                    case "Codigo": e.Codigo = valor; break;
+                    case "TipoDocumental": e.TipoDocumental = valor; break;
+                    case "Estado": e.Estado = valor; break;
+                }
+            }
+            await Db.SaveChangesAsync();
+            var porId = motor.Campos.ToDictionary(c => c.Id);
+            foreach (var ((fila, clave), valor) in cambios.Where(k => k.Key.Clave.StartsWith("c:")).ToList())
+                if (porId.TryGetValue(int.Parse(clave[2..]), out var campo))
+                    await motor.GuardarValorAsync(Db, fila, campo, valor);
+            MigracionDocumentos.AjustarACatalogo(Db);
+            EstilosCat.Recargar();
+            mensaje = $"{cambios.Count} cambio(s) guardado(s) en {filas.Count} documento(s)."; error = false;
+            modoEdicion = false; cambios.Clear();
+            Cargar();
+        }
+        catch (Exception ex) { mensaje = "No se pudo guardar: " + ex.Message; error = true; }
+        finally { guardando = false; }
+    }
+
+    // ---------- Cargas ----------
+    private bool verCargas;
+    private HashSet<int> cargasSel = new();
+    private List<int>? elimCargas;
+    private SigWeb.Data.Impacto.InformeImpacto? impactoCargas;
+    private bool impactoCargasOk;
+    private bool BloqueadoCargas => impactoCargas is null || (impactoCargas.RequiereEntender && !impactoCargasOk);
+
+    private void AlternarCargas() { verCargas = !verCargas; elimCargas = null; }
+
+    private void PedirEliminarCargas()
+    {
+        if (cargasSel.Count == 0) return;
+        elimCargas = cargasSel.ToList(); impactoCargas = null; impactoCargasOk = false;
+        _ = CalcularImpactoCargas(elimCargas);
+    }
+
+    private async Task CalcularImpactoCargas(List<int> ids)
+    {
+        try
+        {
+            using var scope = Scopes.CreateScope();
+            var an = scope.ServiceProvider.GetRequiredService<SigWeb.Data.Impacto.AnalizadorImpacto>();
+            impactoCargas = await an.CargasDocumentos(ids);
+        }
+        catch { impactoCargas = new SigWeb.Data.Impacto.InformeImpacto { Elemento = "No se pudo calcular el impacto" }; }
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task ConfirmarEliminarCargas()
+    {
+        if (elimCargas is null || BloqueadoCargas) return;
+        // Misma marca de tiempo para la carga y sus filas: así la Papelera las restaura juntas.
+        var ahora = DateTime.Now; ahora = new DateTime(ahora.Year, ahora.Month, ahora.Day, ahora.Hour, ahora.Minute, ahora.Second);
+        var ids = elimCargas;
+        foreach (var c in await Db.CargasDocumentos.Where(c => ids.Contains(c.Id)).ToListAsync()) { c.Eliminado = true; c.FechaEliminacion = ahora; }
+        var n = 0;
+        foreach (var d in await Db.DocumentosMaestro.Where(d => d.CargaDocumentosId != null && ids.Contains(d.CargaDocumentosId.Value)).ToListAsync())
+        { d.Eliminado = true; d.FechaEliminacion = ahora; n++; }
+        await Db.SaveChangesAsync();
+        mensaje = $"{ids.Count} carga(s) y {n} documento(s) enviados a la Papelera."; error = false;
+        elimCargas = null; cargasSel.Clear();
+        Cargar();
+    }
+
+    // ---------- Cargas de archivos (cada carga masiva o "Nueva versión") ----------
+    private string pestanaCargas = "listado";
+    private List<CargaArchivosDocumentos> cargasArchivos = new();
+    private Dictionary<int, List<VersionDocumento>> archivosPorCarga = new();   // carga → sus archivos vigentes en la app
+    private HashSet<int> cargasArchSel = new();
+    private int? cargaArchFiltro, cargaArchAbierta;
+    private List<int>? elimCargasArch;
+    private SigWeb.Data.Impacto.InformeImpacto? impactoCargasArch;
+    private bool impactoCargasArchOk;
+    private bool BloqueadoCargasArch => impactoCargasArch is null || (impactoCargasArch.RequiereEntender && !impactoCargasArchOk);
+
+    private string CodigoDoc(int docId) => docs.FirstOrDefault(d => d.Id == docId) is { } d ? (string.IsNullOrWhiteSpace(d.Codigo) ? $"#{d.Id}" : d.Codigo!) : $"#{docId}";
+
+    private RenderFragment PanelCargasArchivos() => __builder =>
+    {
+        if (cargasArchivos.Count == 0) { <div class="text-muted small">—</div> return; }
+        <div class="tabla-scroll mb-2" style="max-height:320px;">
+            <table class="table table-sm table-bordered align-middle mb-0">
+                <thead>
+                    <tr>
+                        <th style="width:32px;"><input type="checkbox" class="form-check-input" title="Todas" checked="@(cargasArchSel.Count == cargasArchivos.Count)" @onchange="@(e => { cargasArchSel = (bool)e.Value! ? cargasArchivos.Select(c => c.Id).ToHashSet() : new(); elimCargasArch = null; })" /></th>
+                        <th>Fecha</th>
+                        <th>Origen</th>
+                        <th>Descripción</th>
+                        <th title="Archivos">Arch.</th>
+                        <th title="Documentos">Doc.</th>
+                        <th style="width:70px;"></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var c in cargasArchivos)
+                    {
+                        var id = c.Id;
+                        var lista = archivosPorCarga.TryGetValue(id, out var l) ? l : new List<VersionDocumento>();
+                        <tr class="@(cargaArchFiltro == id ? "table-active" : "")">
+                            <td><input type="checkbox" class="form-check-input" checked="@cargasArchSel.Contains(id)" @onchange="@(e => { if ((bool)e.Value!) cargasArchSel.Add(id); else cargasArchSel.Remove(id); elimCargasArch = null; })" /></td>
+                            <td class="small text-nowrap">@c.Fecha.ToString("dd/MM/yyyy HH:mm")</td>
+                            <td class="small">@c.Origen</td>
+                            <td class="small">@c.Descripcion</td>
+                            <td class="small text-end">@lista.Count</td>
+                            <td class="small text-end">@lista.Select(v => v.DocumentoMaestroId).Distinct().Count()</td>
+                            <td class="text-nowrap">
+                                <button type="button" class="ens-mini @(cargaArchAbierta == id ? "activo" : "")" title="Archivos de esta carga" @onclick="() => cargaArchAbierta = cargaArchAbierta == id ? null : id"><Ico Nombre="listado" /></button>
+                                <button type="button" class="ens-mini @(cargaArchFiltro == id ? "activo" : "")" title="Ver solo sus documentos" @onclick="() => cargaArchFiltro = cargaArchFiltro == id ? null : id"><Ico Nombre="ubicar" /></button>
+                            </td>
+                        </tr>
+                        if (cargaArchAbierta == id)
+                        {
+                            <tr>
+                                <td></td>
+                                <td colspan="6" class="p-0">
+                                    <table class="table table-sm mb-0 doc-sub">
+                                        @foreach (var v in lista.OrderBy(v => CodigoDoc(v.DocumentoMaestroId)))
+                                        {
+                                            <tr>
+                                                <td class="small fw-bold">@CodigoDoc(v.DocumentoMaestroId)</td>
+                                                <td class="small">@NombreClase(v.Clase, false)</td>
+                                                <td class="small">v@(v.Version)</td>
+                                                <td class="small">@v.NombreOriginal</td>
+                                                <td class="text-nowrap"><a class="ens-mini" href="@v.RutaArchivo" target="_blank" rel="noopener" title="Ver"><Ico Nombre="ubicar" /></a></td>
+                                            </tr>
+                                        }
+                                    </table>
+                                </td>
+                            </tr>
+                        }
+                    }
+                </tbody>
+            </table>
+        </div>
+        <div class="d-flex justify-content-end">
+            <button type="button" class="btn btn-danger btn-sm" title="@($"Eliminar cargas de archivos seleccionadas ({cargasArchSel.Count})")" disabled="@(cargasArchSel.Count == 0)" @onclick="PedirEliminarCargasArch"><Ico Nombre="eliminar" /> @cargasArchSel.Count</button>
+        </div>
+        @if (elimCargasArch is not null)
+        {
+            <div class="border border-danger rounded p-2 mt-2">
+                <PanelImpacto Informe="impactoCargasArch" OnEntendido="@(v => impactoCargasArchOk = v)" />
+                <div class="d-flex gap-2">
+                    <button class="btn btn-secondary btn-sm" type="button" title="Cancelar" @onclick="() => elimCargasArch = null"><Ico Nombre="cancelar" /></button>
+                    <button class="btn btn-danger btn-sm" type="button" title="Eliminar cargas y sus archivos (van a la Papelera)" disabled="@BloqueadoCargasArch" @onclick="ConfirmarEliminarCargasArch"><Ico Nombre="eliminar" /></button>
+                </div>
+            </div>
+        }
+    };
+
+    private void PedirEliminarCargasArch()
+    {
+        if (cargasArchSel.Count == 0) return;
+        elimCargasArch = cargasArchSel.ToList(); impactoCargasArch = null; impactoCargasArchOk = false;
+        _ = CalcularImpactoCargasArch(elimCargasArch);
+    }
+
+    private async Task CalcularImpactoCargasArch(List<int> ids)
+    {
+        try
+        {
+            using var scope = Scopes.CreateScope();
+            var an = scope.ServiceProvider.GetRequiredService<SigWeb.Data.Impacto.AnalizadorImpacto>();
+            impactoCargasArch = await an.CargasArchivosDocumentos(ids);
+        }
+        catch { impactoCargasArch = new SigWeb.Data.Impacto.InformeImpacto { Elemento = "No se pudo calcular el impacto" }; }
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task ConfirmarEliminarCargasArch()
+    {
+        if (elimCargasArch is null || BloqueadoCargasArch) return;
+        // Misma marca de tiempo para la carga y sus archivos: así la Papelera los restaura juntos.
+        var ahora = DateTime.Now; ahora = new DateTime(ahora.Year, ahora.Month, ahora.Day, ahora.Hour, ahora.Minute, ahora.Second);
+        var ids = elimCargasArch;
+        foreach (var c in await Db.CargasArchivosDocumentos.Where(c => ids.Contains(c.Id)).ToListAsync()) { c.Eliminado = true; c.FechaEliminacion = ahora; }
+        var n = 0;
+        foreach (var v in await Db.VersionesDocumento.Where(v => v.CargaArchivosDocumentosId != null && ids.Contains(v.CargaArchivosDocumentosId.Value)).ToListAsync())
+        { v.Eliminado = true; v.FechaEliminacion = ahora; n++; }
+        await Db.SaveChangesAsync();
+        mensaje = $"{ids.Count} carga(s) y {n} archivo(s) enviados a la Papelera."; error = false;
+        elimCargasArch = null; cargasArchSel.Clear();
+        Cargar();
+    }
+
+    // ---------- Importar ----------
+    private bool verImportar, leyendo, importando;
+    private byte[]? libro;
+    private string nombreLibro = "";
+    private List<string> hojas = new();
+    private string hojaSel = "";
+    private string tipoCarga = "";
+    private List<string[]> filasHoja = new();
+    private int filaEnc;
+    private HashSet<int> colsSel = new();
+    // Columna del Excel → destino: "nueva" (columna nueva con el encabezado), "nat:Codigo|TipoDocumental|Estado"
+    // (columnas propias) o "c:{id}" (columna existente del listado, que conserva su nombre).
+    private Dictionary<int, string> destinos = new();
+    private const string DestinoNuevo = "nueva";
+    private int? colCodigo => destinos.Where(kv => colsSel.Contains(kv.Key) && kv.Value == "nat:Codigo").Select(kv => (int?)kv.Key).FirstOrDefault();
+
+    // Columnas existentes que pueden recibir datos del Excel (ni propias ni calculadas).
+    private IEnumerable<CampoTabla> CamposDestino => CamposEditables;
+
+    private HashSet<string> DestinosRepetidos() =>
+        colsSel.Select(c => destinos.TryGetValue(c, out var d) ? d : DestinoNuevo).Where(d => d != DestinoNuevo)
+            .GroupBy(d => d).Where(g => g.Count() > 1).Select(g => g.Key).ToHashSet();
+
+    private void AlternarColumna(int col, bool incluir)
+    {
+        if (incluir) { colsSel.Add(col); destinos[col] = DestinoSugerido(Encabezados()[col], col); }
+        else { colsSel.Remove(col); destinos.Remove(col); }
+    }
+
+    // Por nombre: Código/Tipo documental/Estado van a las propias; si el encabezado se llama como una
+    // columna existente, a esa; si no, columna nueva. Nunca dos columnas al mismo destino.
+    private string DestinoSugerido(string encabezado, int col)
+    {
+        var n = MigracionDocumentos.Normalizar(encabezado);
+        string d = n is "codigo" or "cod" or "cod." or "codigo del documento" ? "nat:Codigo"
+            : MigracionDocumentos.Nativo(encabezado) is string nat ? "nat:" + nat
+            : CamposDestino.FirstOrDefault(c => MigracionDocumentos.Normalizar(c.Nombre) == n) is { } campo ? $"c:{campo.Id}"
+            : DestinoNuevo;
+        if (d != DestinoNuevo && destinos.Any(kv => kv.Key != col && colsSel.Contains(kv.Key) && kv.Value == d)) d = DestinoNuevo;
+        return d;
+    }
+
+    private void AlternarImportar()
+    {
+        if (verImportar) { CerrarImportar(); return; }
+        verImportar = true; form = null; formVer = null; elim = null; mensaje = "";
+    }
+
+    private void CerrarImportar()
+    {
+        verImportar = false; libro = null; hojas.Clear(); filasHoja.Clear(); colsSel.Clear(); destinos.Clear(); filaEnc = 0; tipoCarga = "";
+    }
+
+    private async Task SeleccionarLibro(InputFileChangeEventArgs e)
+    {
+        mensaje = ""; error = false; leyendo = true;
+        try
+        {
+            using var ms = new MemoryStream();
+            await using (var s = e.File.OpenReadStream(30 * 1024 * 1024)) await s.CopyToAsync(ms);
+            libro = ms.ToArray();
+            nombreLibro = e.File.Name;
+            hojas = LectorExcelGenerico.Hojas(libro);
+            hojaSel = hojas.FirstOrDefault() ?? "";
+            LeerHoja();
+        }
+        catch (Exception ex)
+        {
+            libro = null; hojas.Clear(); filasHoja.Clear();
+            mensaje = "No se pudo leer el libro: " + ex.Message; error = true;
+        }
+        finally { leyendo = false; }
+    }
+
+    private void CambiarHoja(ChangeEventArgs e)
+    {
+        hojaSel = e.Value?.ToString() ?? "";
+        LeerHoja();
+    }
+
+    private void LeerHoja()
+    {
+        filasHoja = libro is null || hojaSel == "" ? new() : LectorExcelGenerico.LeerHoja(libro, hojaSel);
+        // Por defecto, la primera fila con al menos dos celdas llenas.
+        filaEnc = Math.Max(0, filasHoja.FindIndex(f => f.Count(x => !string.IsNullOrWhiteSpace(x)) >= 2));
+        ElegirEncabezado(filaEnc);
+    }
+
+    private void ElegirEncabezado(int fila)
+    {
+        filaEnc = fila;
+        destinos.Clear();
+        colsSel = new();
+        if (filasHoja.Count == 0) return;
+        foreach (var c in Enumerable.Range(0, filasHoja[fila].Length).Where(c => !string.IsNullOrWhiteSpace(filasHoja[fila][c])))
+            AlternarColumna(c, true);
+    }
+
+    // Nombres de columna desde la fila elegida: vacíos = letra de la columna; repetidos = "(2)", "(3)"…
+    private List<string> Encabezados()
+    {
+        if (filasHoja.Count == 0) return new();
+        var fila = filasHoja[filaEnc];
+        var vistos = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var r = new List<string>(fila.Length);
+        for (int c = 0; c < fila.Length; c++)
+        {
+            var n = string.IsNullOrWhiteSpace(fila[c]) ? $"Columna {LectorExcelGenerico.LetraColumna(c)}" : System.Text.RegularExpressions.Regex.Replace(fila[c], @"\s+", " ").Trim();
+            if (vistos.TryGetValue(n, out var k)) { vistos[n] = k + 1; n = $"{n} ({k + 1})"; } else vistos[n] = 1;
+            r.Add(n);
+        }
+        return r;
+    }
+
+    private static string Celda(string[] fila, int c) => c < fila.Length ? fila[c] : "";
+    private static string Recortar(string s) => s.Length > 60 ? s[..57] + "…" : s;
+
+    // Filas bajo los encabezados con algún dato en las columnas elegidas.
+    private List<string[]> FilasDatos() =>
+        filasHoja.Count == 0 ? new() :
+        filasHoja.Skip(filaEnc + 1).Where(f => colsSel.Any(c => !string.IsNullOrWhiteSpace(Celda(f, c)))).ToList();
+
+    private async Task Importar()
+    {
+        if (libro is null || colsSel.Count == 0) return;
+        importando = true; mensaje = ""; error = false;
+        try
+        {
+            var enc = Encabezados();
+            var datos = FilasDatos();
+            string Destino(int c) => destinos.TryGetValue(c, out var d) ? d : DestinoNuevo;
+            // Columnas propias (Código, Tipo documental, Estado) según el mapeo.
+            int? colEstado = colsSel.Where(c => Destino(c) == "nat:Estado").Cast<int?>().FirstOrDefault();
+            int? colTipo = colsSel.Where(c => Destino(c) == "nat:TipoDocumental").Cast<int?>().FirstOrDefault();
+            // Las demás: a la columna existente elegida (sus valores toman su nombre) o a una nueva con el
+            // encabezado del Excel (si se llamaría como una columna propia, se marca "(Excel)").
+            var nativos = new HashSet<string>(ColumnasNativas().Select(n => n.Nombre), StringComparer.OrdinalIgnoreCase);
+            var porId = CamposDestino.ToDictionary(c => c.Id);
+            var nombres = colsSel.Where(c => !Destino(c).StartsWith("nat:"))
+                .ToDictionary(c => c, c => Destino(c).StartsWith("c:") && porId.TryGetValue(int.Parse(Destino(c)[2..]), out var campo)
+                    ? campo.Nombre
+                    : nativos.Contains(enc[c]) ? enc[c] + " (Excel)" : enc[c]);
+
+            var carga = new CargaDocumentos { NombreArchivo = nombreLibro, Hoja = hojaSel, FilaEncabezados = filaEnc + 1, Fecha = DateTime.Now };
+            Db.CargasDocumentos.Add(carga);
+            await Db.SaveChangesAsync();
+            var origen = $"{nombreLibro} › {hojaSel}";
+
+            var existentes = new Dictionary<string, DocumentoMaestro>(StringComparer.OrdinalIgnoreCase);
+            if (colCodigo is not null)
+                foreach (var d in await Db.DocumentosMaestro.Where(d => d.Codigo != null).ToListAsync())
+                    existentes.TryAdd(d.Codigo!.Trim(), d);
+
+            int nuevos = 0, actualizados = 0;
+            var porFila = new List<(DocumentoMaestro Doc, string[] Fila)>();
+            foreach (var f in datos)
+            {
+                var codigo = colCodigo is int cc ? Celda(f, cc).Trim() : "";
+                DocumentoMaestro? doc = null;
+                if (codigo.Length > 0 && existentes.TryGetValue(codigo, out var ex)) { doc = ex; if (doc.Id != 0) actualizados++; }
+                if (doc is null)
+                {
+                    doc = new DocumentoMaestro { Codigo = codigo.Length > 0 ? codigo : null, FechaCreacion = DateTime.Now, OrigenImportacion = origen };
+                    Db.DocumentosMaestro.Add(doc);
+                    if (codigo.Length > 0) existentes[codigo] = doc;
+                    nuevos++;
+                }
+                if (doc.Id == 0) doc.CargaDocumentosId = carga.Id;
+                if (colEstado is int ce && Celda(f, ce).Trim() is { Length: > 0 } est) doc.Estado = est;
+                if (colTipo is int ct && Celda(f, ct).Trim() is { Length: > 0 } tip) doc.TipoDocumental = tip;
+                else if (string.IsNullOrWhiteSpace(doc.TipoDocumental) && tipoCarga != "") doc.TipoDocumental = tipoCarga;
+                porFila.Add((doc, f));
+            }
+            carga.FilasCreadas = nuevos;
+            carga.FilasActualizadas = actualizados;
+            await Db.SaveChangesAsync();
+
+            // Si el mismo código se repite en el libro, gana la última fila.
+            var extras = new Dictionary<int, Dictionary<string, string>>();
+            foreach (var (doc, f) in porFila)
+                extras[doc.Id] = nombres.ToDictionary(kv => kv.Value, kv => Celda(f, kv.Key), StringComparer.OrdinalIgnoreCase);
+            await MotorTabla.GuardarExtrasExcelAsync(Db, Tabla, extras);
+            MigracionDocumentos.AjustarACatalogo(Db);
+            EstilosCat.Recargar();
+
+            mensaje = $"{nuevos} documento(s) nuevo(s), {actualizados} actualizado(s)."; error = false;
+            CerrarImportar();
+            Cargar();
+        }
+        catch (Exception ex)
+        {
+            mensaje = "No se pudo importar: " + ex.Message; error = true;
+        }
+        finally { importando = false; }
+    }
+
+    // ---------- Nuevo documento ----------
+    private sealed class FormDoc
+    {
+        public string? Codigo, Tipo, Estado;
+        public Dictionary<int, string?> Valores = new();
+    }
+
+    private FormDoc? form;
+    private string mensajeForm = "";
+
+    private bool CodigoRepetido(string? codigo, int idPropio) =>
+        !string.IsNullOrWhiteSpace(codigo) && docs.Any(d => d.Id != idPropio && string.Equals(d.Codigo?.Trim(), codigo.Trim(), StringComparison.OrdinalIgnoreCase));
+
+    private void Nuevo()
+    {
+        if (form is not null) { form = null; return; }
+        verImportar = false; formVer = null; elim = null; mensajeForm = "";
+        form = new FormDoc();
+    }
+
+    private async Task GuardarNuevo()
+    {
+        if (form is null || motor is null) return;
+        var codigo = string.IsNullOrWhiteSpace(form.Codigo) ? null : form.Codigo.Trim();
+        if (CodigoRepetido(codigo, 0)) { mensajeForm = $"Ya existe un documento con el código {codigo}."; return; }
+        guardando = true;
+        try
+        {
+            var ent = new DocumentoMaestro
+            {
+                Codigo = codigo, FechaCreacion = DateTime.Now,
+                TipoDocumental = string.IsNullOrWhiteSpace(form.Tipo) ? null : form.Tipo,
+                Estado = string.IsNullOrWhiteSpace(form.Estado) ? null : form.Estado
+            };
+            Db.DocumentosMaestro.Add(ent);
+            await Db.SaveChangesAsync();
+            foreach (var c in CamposEditables.ToList())
+                if (form.Valores.TryGetValue(c.Id, out var v) && !string.IsNullOrWhiteSpace(v))
+                    await motor.GuardarValorAsync(Db, ent.Id, c, v);
+            selId = ent.Id;
+            form = null;
+            Cargar();
+        }
+        finally { guardando = false; }
+    }
+
+    // ---------- Nueva versión (sube versión, fecha, datos de la fila y el archivo) ----------
+    // ---------- Actualizar un documento: datos + control de cambios (revisiones con sus archivos) ----------
+    private sealed class FormVersion
+    {
+        public int Id;
+        public string? CodigoAnterior, Codigo, Tipo, Estado;
+        public int? CampoVersionId, CampoFechaId;   // columnas del listado "Versión"/"Fecha": toman las de la revisión más reciente
+        public Dictionary<int, string?> Valores = new();
+        public List<FilaRevision> Revisiones = new();   // la más reciente primero
+    }
+
+    // Archivo elegido y ya leído en memoria (el InputFile puede volver a usarse sin perderlo).
+    private sealed record ArchivoNuevo(string Nombre, byte[] Datos);
+
+    private sealed class FilaRevision
+    {
+        public int? Id;   // null = revisión nueva
+        public string? Version { get; set; }
+        public DateTime? Fecha { get; set; } = DateTime.Today;
+        public string? Cambio { get; set; }
+        public string? Responsable { get; set; }
+        public List<VersionDocumento> Existentes = new();
+        public HashSet<int> Quitar = new();   // archivos existentes que van a la Papelera al guardar
+        public List<(ClaseArchivoDocumento Clase, ArchivoNuevo Archivo)> Nuevos = new();
+        public bool Eliminar;
+    }
+
+    private FormVersion? formVer;
+    private const long MaxArchivo = 50L * 1024 * 1024;
+
+    private static bool EsCampoVersion(string nombre) =>
+        MigracionDocumentos.Normalizar(nombre).TrimEnd('.') is "version" or "ver" or "rev" or "revision" or "no. version" or "n° version" or "version actual" or "edicion";
+
+    private static bool EsCampoFecha(string nombre) =>
+        MigracionDocumentos.Normalizar(nombre).TrimEnd('.') is "fecha" or "fecha de version" or "fecha version" or "fecha de emision" or "fecha emision" or "fecha de actualizacion" or "fecha de aprobacion";
+
+    private void AbrirVersion(DocumentoMaestro d)
+    {
+        if (motor is null) return;
+        verImportar = false; form = null; elim = null; mensajeForm = ""; selId = d.Id; menuCodigo = null;
+        var f = new FormVersion { Id = d.Id, CodigoAnterior = d.Codigo, Codigo = d.Codigo, Tipo = d.TipoDocumental, Estado = d.Estado };
+        foreach (var c in CamposEditables) f.Valores[c.Id] = motor.Registro(d.Id, c)?.Valor;
+        f.CampoVersionId = CamposEditables.FirstOrDefault(c => EsCampoVersion(c.Nombre))?.Id;
+        f.CampoFechaId = CamposEditables.FirstOrDefault(c => EsCampoFecha(c.Nombre))?.Id;
+        var archivos = ArchivosDe(d.Id);
+        foreach (var r in RevisionesDe(d.Id))
+            f.Revisiones.Add(new FilaRevision
+            {
+                Id = r.Id, Version = r.Version, Fecha = r.Fecha, Cambio = r.Cambio, Responsable = r.Responsable,
+                Existentes = archivos.Where(a => a.RevisionDocumentoId == r.Id).ToList()
+            });
+        formVer = f;
+        // Sin revisiones: la primera nace con la versión del listado (o 1).
+        if (f.Revisiones.Count == 0) AgregarRevision();
+    }
+
+    private void AgregarRevision()
+    {
+        if (formVer is null) return;
+        var ultima = formVer.Revisiones.FirstOrDefault(r => !r.Eliminar);
+        string? version;
+        if (ultima is not null) version = MigracionDocumentos.SiguienteVersion(ultima.Version);
+        else
+        {
+            var enListado = formVer.CampoVersionId is int cv && formVer.Valores.TryGetValue(cv, out var x) ? x : null;
+            version = string.IsNullOrWhiteSpace(enListado) ? "1" : enListado.Trim();
+        }
+        formVer.Revisiones.Insert(0, new FilaRevision { Version = version });
+    }
+
+    private void QuitarRevision(FilaRevision r)
+    {
+        if (formVer is null) return;
+        if (r.Id is null) formVer.Revisiones.Remove(r); else r.Eliminar = true;
+    }
+
+    private async Task ElegirArchivosRevision(FilaRevision r, ClaseArchivoDocumento clase, InputFileChangeEventArgs e)
+    {
+        mensajeForm = "";
+        foreach (var f in e.GetMultipleFiles(50))
+        {
+            if (f.Size > MaxArchivo) { mensajeForm = $"{f.Name} supera 50 MB."; continue; }
+            using var ms = new MemoryStream();
+            await using (var s = f.OpenReadStream(MaxArchivo)) await s.CopyToAsync(ms);
+            r.Nuevos.Add((clase, new ArchivoNuevo(f.Name, ms.ToArray())));
+        }
+    }
+
+    // Celda Vigente / Editable de una revisión: sus archivos (píldora, ✕ = a la Papelera al guardar) + cargar.
+    private RenderFragment CeldaArchivosRevision(FilaRevision r, ClaseArchivoDocumento clase) => __builder =>
+    {
+        <div class="doc-rev-archivos">
+            @foreach (var a in r.Existentes.Where(a => a.Clase == clase))
+            {
+                var arch = a;
+                var quitado = r.Quitar.Contains(arch.Id) || r.Eliminar;
+                <span class="doc-rev-arch @(quitado ? "doc-rev-arch-off" : "")">
+                    <PildoraArchivo Url="@arch.RutaArchivo" Nombre="@arch.NombreOriginal" />
+                    @if (!r.Eliminar)
+                    {
+                        <button type="button" class="rg-chip-x" title="@(quitado ? "Deshacer" : "Quitar (va a la Papelera)")"
+                                @onclick="() => { if (!r.Quitar.Remove(arch.Id)) r.Quitar.Add(arch.Id); }">@(quitado ? "↺" : "✕")</button>
+                    }
+                </span>
+            }
+            @foreach (var n in r.Nuevos.Where(n => n.Clase == clase).ToList())
+            {
+                var nuevo = n;
+                <span class="rg-chip doc-rev-nuevo" title="Se carga al guardar"><Ico Nombre="adjuntar" /> <span class="pildora-txt">@nuevo.Archivo.Nombre</span>
+                    <button type="button" class="rg-chip-x" title="Quitar" @onclick="() => r.Nuevos.Remove(nuevo)">✕</button></span>
+            }
+            @if (!r.Eliminar)
+            {
+                <label class="ens-mini mb-0" title="@(clase == ClaseArchivoDocumento.Vigente ? "Cargar vigente" : "Cargar editable")">
+                    <Ico Nombre="adjuntar" />
+                    <InputFile class="d-none" multiple OnChange="@(e => ElegirArchivosRevision(r, clase, e))"
+                               accept="@(clase == ClaseArchivoDocumento.Editable ? ".doc,.docx,.xls,.xlsx,.xlsm,.dwg,.dxf,.ppt,.pptx" : null)" />
+                </label>
+            }
+        </div>
+    };
+
+    // Guarda el archivo en wwwroot/uploads/documentos con nombre único y devuelve su ruta web.
+    private async Task<string> GuardarArchivo(Microsoft.AspNetCore.Components.Forms.IBrowserFile archivo)
+    {
+        var carpeta = Path.Combine(Env.WebRootPath, "uploads", "documentos");
+        Directory.CreateDirectory(carpeta);
+        var nombre = $"{Guid.NewGuid()}{Path.GetExtension(archivo.Name)}";
+        await using (var s = archivo.OpenReadStream(MaxArchivo))
+        await using (var destino = File.Create(Path.Combine(carpeta, nombre)))
+            await s.CopyToAsync(destino);
+        return $"/uploads/documentos/{nombre}";
+    }
+
+    private async Task<string> GuardarArchivo(ArchivoNuevo archivo)
+    {
+        var carpeta = Path.Combine(Env.WebRootPath, "uploads", "documentos");
+        Directory.CreateDirectory(carpeta);
+        var nombre = $"{Guid.NewGuid()}{Path.GetExtension(archivo.Nombre)}";
+        await File.WriteAllBytesAsync(Path.Combine(carpeta, nombre), archivo.Datos);
+        return $"/uploads/documentos/{nombre}";
+    }
+
+    private async Task GuardarVersion()
+    {
+        if (formVer is null || motor is null) return;
+        var f = formVer;
+        var codigo = string.IsNullOrWhiteSpace(f.Codigo) ? null : f.Codigo.Trim();
+        if (CodigoRepetido(codigo, f.Id)) { mensajeForm = $"Ya existe un documento con el código {codigo}."; return; }
+        var vivas = f.Revisiones.Where(r => !r.Eliminar).ToList();
+        if (vivas.Any(r => string.IsNullOrWhiteSpace(r.Version) && (r.Id is not null || r.Nuevos.Count > 0 || !string.IsNullOrWhiteSpace(r.Cambio))))
+        { mensajeForm = "Cada revisión del control de cambios necesita su versión."; return; }
+        guardando = true;
+        try
+        {
+            var ahora = DateTime.Now; ahora = new DateTime(ahora.Year, ahora.Month, ahora.Day, ahora.Hour, ahora.Minute, ahora.Second);
+            var nNuevos = vivas.Sum(r => r.Nuevos.Count);
+            CargaArchivosDocumentos? cargaArch = null;
+            if (nNuevos > 0)
+            {
+                cargaArch = new CargaArchivosDocumentos { Fecha = ahora, Origen = "Actualización", Descripcion = codigo ?? f.CodigoAnterior ?? "#" + f.Id, Archivos = nNuevos };
+                Db.CargasArchivosDocumentos.Add(cargaArch);
+                await Db.SaveChangesAsync();
+            }
+
+            // Revisiones quitadas: sus archivos a la Papelera (misma marca de tiempo) y la fila se borra.
+            var idsQuitadas = f.Revisiones.Where(r => r.Eliminar && r.Id is not null).Select(r => r.Id!.Value).ToList();
+            if (idsQuitadas.Count > 0)
+            {
+                foreach (var a in await Db.VersionesDocumento.Where(a => a.RevisionDocumentoId != null && idsQuitadas.Contains(a.RevisionDocumentoId.Value)).ToListAsync())
+                { a.Eliminado = true; a.FechaEliminacion = ahora; a.RevisionDocumentoId = null; }
+                Db.RevisionesDocumento.RemoveRange(await Db.RevisionesDocumento.Where(r => idsQuitadas.Contains(r.Id)).ToListAsync());
+                await Db.SaveChangesAsync();
+            }
+
+            var momento = ahora;
+            foreach (var r in vivas.AsEnumerable().Reverse())   // de la más antigua a la más reciente
+            {
+                var vacia = r.Id is null && r.Nuevos.Count == 0 && string.IsNullOrWhiteSpace(r.Cambio) && string.IsNullOrWhiteSpace(r.Responsable);
+                if (vacia) continue;
+                RevisionDocumento ent;
+                if (r.Id is int rid) ent = await Db.RevisionesDocumento.FirstAsync(x => x.Id == rid);
+                else { ent = new RevisionDocumento { DocumentoMaestroId = f.Id, Creada = momento }; Db.RevisionesDocumento.Add(ent); }
+                ent.Version = r.Version?.Trim();
+                ent.Fecha = r.Fecha;
+                ent.Cambio = string.IsNullOrWhiteSpace(r.Cambio) ? null : r.Cambio.Trim();
+                ent.Responsable = string.IsNullOrWhiteSpace(r.Responsable) ? null : r.Responsable.Trim();
+                await Db.SaveChangesAsync();
+                // Los archivos ya cargados siguen la versión y fecha de su revisión.
+                var idsExist = r.Existentes.Select(a => a.Id).ToList();
+                foreach (var a in await Db.VersionesDocumento.Where(a => idsExist.Contains(a.Id)).ToListAsync())
+                {
+                    if (r.Quitar.Contains(a.Id)) { a.Eliminado = true; a.FechaEliminacion = ahora; continue; }
+                    a.Version = ent.Version; a.Fecha = ent.Fecha;
+                }
+                foreach (var (clase, archivo) in r.Nuevos)
+                {
+                    momento = momento.AddMilliseconds(10);
+                    Db.VersionesDocumento.Add(new VersionDocumento
+                    {
+                        DocumentoMaestroId = f.Id, RevisionDocumentoId = ent.Id, Clase = clase, Version = ent.Version, Fecha = ent.Fecha,
+                        CargaArchivosDocumentosId = cargaArch?.Id, NombreOriginal = archivo.Nombre, RutaArchivo = await GuardarArchivo(archivo), FechaCarga = momento
+                    });
+                }
+                await Db.SaveChangesAsync();
+            }
+
+            var doc = await Db.DocumentosMaestro.FirstAsync(d => d.Id == f.Id);
+            doc.Codigo = codigo;
+            doc.TipoDocumental = string.IsNullOrWhiteSpace(f.Tipo) ? null : f.Tipo;
+            doc.Estado = string.IsNullOrWhiteSpace(f.Estado) ? null : f.Estado;
+            await Db.SaveChangesAsync();
+
+            // Columnas "Versión"/"Fecha" del listado = las de la revisión más reciente.
+            var ultima = (await Db.RevisionesDocumento.AsNoTracking().Where(r => r.DocumentoMaestroId == f.Id).ToListAsync())
+                .OrderByDescending(r => r.Fecha ?? DateTime.MinValue).ThenByDescending(r => r.Creada).ThenByDescending(r => r.Id).FirstOrDefault();
+            if (ultima is not null)
+            {
+                if (f.CampoVersionId is int cv) f.Valores[cv] = ultima.Version;
+                if (f.CampoFechaId is int cf)
+                {
+                    var campoF = motor.Campos.First(c => c.Id == cf);
+                    f.Valores[cf] = ultima.Fecha is null ? null : campoF.Tipo == TipoCampoTabla.Fecha ? ultima.Fecha.Value.ToString("yyyy-MM-dd") : ultima.Fecha.Value.ToString("dd/MM/yyyy");
+                }
+            }
+            foreach (var c in CamposEditables.ToList())
+            {
+                var nuevo = f.Valores.TryGetValue(c.Id, out var v) ? (string.IsNullOrWhiteSpace(v) ? null : v.Trim()) : null;
+                if ((nuevo ?? "") != (motor.Registro(f.Id, c)?.Valor ?? "")) await motor.GuardarValorAsync(Db, f.Id, c, nuevo);
+            }
+            MigracionDocumentos.AjustarACatalogo(Db);
+            EstilosCat.Recargar();
+            mensaje = $"{codigo ?? f.CodigoAnterior ?? "Documento"} actualizado" + (nNuevos > 0 ? $" ({nNuevos} archivo(s) cargado(s))." : "."); error = false;
+            formVer = null;
+            Cargar();
+        }
+        catch (Exception ex) { mensajeForm = "No se pudo guardar: " + ex.Message; }
+        finally { guardando = false; }
+    }
+
+    // ---------- Carga masiva de archivos ----------
+    // Por cada archivo se sugiere el documento comparando su nombre con el código de cada fila
+    // (código completo contenido en el nombre → números del código → palabras del nombre del
+    // documento). El usuario confirma o cambia la sugerencia; cada archivo queda como versión.
+    private sealed class ArchivoLote
+    {
+        public Microsoft.AspNetCore.Components.Forms.IBrowserFile Archivo = null!;
+        public List<(int Id, string Etiqueta, int Puntos)> Candidatos = new();
+        public int? DocId;
+        public string? Version;
+        public ClaseArchivoDocumento Clase;
+        public bool Incluir = true;
+        public string Busqueda = "";
+    }
+
+    private sealed record IndiceDoc(int Id, string Etiqueta, string CodigoAlfa, List<string> Numeros, HashSet<string> Palabras);
+
+    private bool verLote, cargandoLote;
+    private List<ArchivoLote> lote = new();
+    private DateTime? fechaLote = DateTime.Today;
+    private ClaseArchivoDocumento claseLote = ClaseArchivoDocumento.Vigente;
+
+    // Lo que se carga en el lote (vigentes, editables u obsoletas); cambia todas las filas.
+    private void CambiarClaseLote(ClaseArchivoDocumento c)
+    {
+        claseLote = c;
+        foreach (var a in lote) { a.Clase = c; a.Version = a.DocId is int d ? VersionSugerida(d, c) : null; }
+    }
+    private List<IndiceDoc> indice = new();
+
+    private List<ArchivoLote> LoteListos => lote.Where(x => x.Incluir && x.DocId is not null && !string.IsNullOrWhiteSpace(x.Version)).ToList();
+
+    private void AlternarLote()
+    {
+        if (verLote) { CerrarLote(); return; }
+        verLote = true; verImportar = false; form = null; formVer = null; elim = null; mensaje = "";
+        indice = docs.Select(d => new IndiceDoc(d.Id, EtiquetaDoc(d), Alfa(d.Codigo ?? ""), Numeros(d.Codigo ?? ""), Palabras(NombreDoc(d)))).ToList();
+    }
+
+    private void CerrarLote() { verLote = false; lote.Clear(); }
+
+    // Texto que describe la fila: la primera columna del listado cuyo nombre diga nombre/título/descripción.
+    private string NombreDoc(DocumentoMaestro d)
+    {
+        if (motor is null) return "";
+        var c = motor.Ordenados.FirstOrDefault(c => c.Origen != OrigenCampoTabla.Nativo &&
+            MigracionDocumentos.Normalizar(c.Nombre) is var n && (n.Contains("nombre") || n.Contains("titulo") || n.Contains("descripcion")));
+        return c is null ? "" : motor.Texto(d.Id, c, out _);
+    }
+
+    private string EtiquetaDoc(DocumentoMaestro d)
+    {
+        var n = NombreDoc(d);
+        var e = string.IsNullOrWhiteSpace(d.Codigo) ? $"#{d.Id}" : d.Codigo!;
+        if (!string.IsNullOrWhiteSpace(n)) e += " · " + (n.Length > 60 ? n[..57] + "…" : n);
+        return e;
+    }
+
+    private static string Alfa(string s) => new string(MigracionDocumentos.Normalizar(s).Where(char.IsLetterOrDigit).ToArray());
+
+    private static List<string> Numeros(string s) =>
+        System.Text.RegularExpressions.Regex.Matches(s, @"\d+").Select(m => m.Value.TrimStart('0')).Where(x => x.Length > 0).ToList();
+
+    private static HashSet<string> Palabras(string s) =>
+        System.Text.RegularExpressions.Regex.Split(MigracionDocumentos.Normalizar(s), @"[^a-z0-9]+").Where(w => w.Length >= 4 && !w.All(char.IsDigit)).ToHashSet();
+
+    private List<(int Id, string Etiqueta, int Puntos)> Sugerir(string archivo)
+    {
+        var nombre = Path.GetFileNameWithoutExtension(archivo);
+        var alfa = Alfa(nombre);
+        var nums = Numeros(nombre);
+        var palabras = Palabras(nombre);
+        var r = new List<(int, string, int)>();
+        foreach (var d in indice)
+        {
+            int p = 0;
+            if (d.CodigoAlfa.Length >= 3 && alfa.Contains(d.CodigoAlfa)) p = 1000 + d.CodigoAlfa.Length;
+            else if (d.Numeros.Count > 0)
+            {
+                var iguales = d.Numeros.Where(n => nums.Contains(n)).ToList();
+                if (iguales.Count == d.Numeros.Count) p = 500 + iguales.Sum(n => n.Length) * 10;
+                else p = iguales.Sum(n => n.Length) * 15;
+            }
+            p += d.Palabras.Count(w => palabras.Contains(w)) * 20;
+            if (p > 0) r.Add((d.Id, d.Etiqueta, p));
+        }
+        return r.OrderByDescending(x => x.Item3).ThenBy(x => x.Item2).Take(8).ToList();
+    }
+
+    private static string Coincidencia(int puntos) => puntos >= 1000 ? "código" : puntos >= 500 ? "números del código" : puntos >= 40 ? "parcial" : "débil";
+
+    private IEnumerable<(int Id, string Etiqueta, int Puntos)> OpcionesLote(ArchivoLote a)
+    {
+        IEnumerable<(int, string, int)> lista = string.IsNullOrWhiteSpace(a.Busqueda)
+            ? a.Candidatos
+            : indice.Where(d => d.Etiqueta.Contains(a.Busqueda.Trim(), StringComparison.OrdinalIgnoreCase)).Take(30).Select(d => (d.Id, d.Etiqueta, 0));
+        var l = lista.ToList();
+        if (a.DocId is int id && l.All(x => x.Item1 != id) && indice.FirstOrDefault(d => d.Id == id) is { } sel) l.Insert(0, (sel.Id, sel.Etiqueta, 0));
+        return l;
+    }
+
+    private void ElegirDocLote(ArchivoLote a, string? valor)
+    {
+        a.DocId = int.TryParse(valor, out var id) ? id : null;
+        a.Version = a.DocId is int d ? VersionSugerida(d, a.Clase) : null;
+    }
+
+    // Vigente: si ya hay una vigente, la siguiente; si no, la del listado (columna "Versión") o 1.
+    // Editable: la misma de la vigente actual (o la del listado). Obsoleta: la escribe el usuario.
+    private string? VersionSugerida(int docId, ClaseArchivoDocumento clase)
+    {
+        if (clase == ClaseArchivoDocumento.Obsoleta) return null;
+        var vig = VigenteDe(docId);
+        if (vig is not null) return clase == ClaseArchivoDocumento.Vigente ? MigracionDocumentos.SiguienteVersion(vig.Version) : vig.Version;
+        var campo = CamposEditables.FirstOrDefault(c => EsCampoVersion(c.Nombre));
+        var enListado = campo is null ? null : motor?.Registro(docId, campo)?.Valor;
+        return string.IsNullOrWhiteSpace(enListado) ? "1" : enListado.Trim();
+    }
+
+    private void SeleccionarArchivos(InputFileChangeEventArgs e)
+    {
+        mensaje = "";
+        foreach (var f in e.GetMultipleFiles(300))
+        {
+            if (lote.Any(x => x.Archivo.Name == f.Name && x.Archivo.Size == f.Size)) continue;
+            var a = new ArchivoLote { Archivo = f, Candidatos = Sugerir(f.Name), Clase = claseLote };
+            // Se preselecciona solo si la coincidencia es clara (código o todos los números del código).
+            if (a.Candidatos.Count > 0 && a.Candidatos[0].Puntos >= 500
+                && (a.Candidatos.Count == 1 || a.Candidatos[1].Puntos < a.Candidatos[0].Puntos))
+                ElegirDocLote(a, a.Candidatos[0].Id.ToString());
+            if (f.Size > MaxArchivo) a.Incluir = false;
+            lote.Add(a);
+        }
+    }
+
+    private async Task CargarLote()
+    {
+        if (motor is null) return;
+        var listos = LoteListos;
+        if (listos.Count == 0) return;
+        cargandoLote = true;
+        int ok = 0; var fallos = new List<string>();
+        try
+        {
+            var carpeta = Path.Combine(Env.WebRootPath, "uploads", "documentos");
+            Directory.CreateDirectory(carpeta);
+            var campoVer = CamposEditables.FirstOrDefault(c => EsCampoVersion(c.Nombre));
+            var campoFecha = CamposEditables.FirstOrDefault(c => EsCampoFecha(c.Nombre));
+            var momento = DateTime.Now;
+            var clases = string.Join(", ", listos.Select(a => NombreClase(a.Clase, true).ToLowerInvariant()).Distinct());
+            var cargaArch = new CargaArchivosDocumentos { Fecha = momento, Origen = "Carga masiva", Descripcion = clases };
+            Db.CargasArchivosDocumentos.Add(cargaArch);
+            await Db.SaveChangesAsync();
+            foreach (var a in listos)
+            {
+                if (a.Archivo.Size > MaxArchivo) { fallos.Add($"{a.Archivo.Name} (supera 50 MB)"); continue; }
+                try
+                {
+                    var ruta = await GuardarArchivo(a.Archivo);
+                    // Mismo orden de la lista: si dos archivos de la misma clase van al mismo documento, el último queda como actual.
+                    momento = momento.AddMilliseconds(10);
+                    // Vigentes y editables entran en la fila del control de cambios de su versión (si no existe, se crea).
+                    int? revId = null;
+                    if (a.Clase != ClaseArchivoDocumento.Obsoleta)
+                    {
+                        var verTxt = a.Version!.Trim();
+                        var rev = Db.RevisionesDocumento.Local.FirstOrDefault(r => r.DocumentoMaestroId == a.DocId!.Value && string.Equals((r.Version ?? "").Trim(), verTxt, StringComparison.OrdinalIgnoreCase))
+                            ?? (await Db.RevisionesDocumento.Where(r => r.DocumentoMaestroId == a.DocId!.Value).ToListAsync())
+                                .FirstOrDefault(r => string.Equals((r.Version ?? "").Trim(), verTxt, StringComparison.OrdinalIgnoreCase));
+                        if (rev is null)
+                        {
+                            rev = new RevisionDocumento { DocumentoMaestroId = a.DocId!.Value, Version = verTxt, Fecha = fechaLote, Creada = momento };
+                            Db.RevisionesDocumento.Add(rev);
+                            await Db.SaveChangesAsync();
+                        }
+                        revId = rev.Id;
+                    }
+                    Db.VersionesDocumento.Add(new VersionDocumento
+                    {
+                        DocumentoMaestroId = a.DocId!.Value, RevisionDocumentoId = revId, Clase = a.Clase, Version = a.Version!.Trim(), Fecha = fechaLote, CargaArchivosDocumentosId = cargaArch.Id,
+                        NombreOriginal = a.Archivo.Name, RutaArchivo = ruta, FechaCarga = momento
+                    });
+                    await Db.SaveChangesAsync();
+                    // Solo una versión vigente nueva actualiza las columnas "Versión"/"Fecha" del listado.
+                    if (a.Clase != ClaseArchivoDocumento.Vigente) { ok++; continue; }
+                    if (campoVer is not null) await motor.GuardarValorAsync(Db, a.DocId.Value, campoVer, a.Version.Trim());
+                    if (campoFecha is not null && fechaLote is DateTime fl)
+                        await motor.GuardarValorAsync(Db, a.DocId.Value, campoFecha, campoFecha.Tipo == TipoCampoTabla.Fecha ? fl.ToString("yyyy-MM-dd") : fl.ToString("dd/MM/yyyy"));
+                    ok++;
+                }
+                catch (Exception ex) { fallos.Add($"{a.Archivo.Name} ({ex.Message})"); }
+            }
+            // La carga queda con los archivos que sí entraron; si no entró ninguno, se descarta.
+            var cg = await Db.CargasArchivosDocumentos.FirstAsync(c => c.Id == cargaArch.Id);
+            if (ok == 0) Db.CargasArchivosDocumentos.Remove(cg); else cg.Archivos = ok;
+            await Db.SaveChangesAsync();
+            mensaje = $"{ok} archivo(s) cargado(s)." + (fallos.Count > 0 ? " No se cargaron: " + string.Join("; ", fallos) : "");
+            error = fallos.Count > 0;
+            CerrarLote();
+            Cargar();
+        }
+        finally { cargandoLote = false; }
+    }
+
+    // ---------- Reemplazar / eliminar un archivo de un documento ----------
+    private VersionDocumento? reemplazo, elimArchivo;
+    private Microsoft.AspNetCore.Components.Forms.IBrowserFile? archivoReemplazo;
+    private string mensajeReemplazo = "";
+    private SigWeb.Data.Impacto.InformeImpacto? impactoArchivo;
+    private bool impactoArchivoOk;
+
+    private void AbrirReemplazo(VersionDocumento v)
+    {
+        menuCodigo = null; elimArchivo = null; reemplazo = v; archivoReemplazo = null; mensajeReemplazo = "";
+    }
+
+    // Mismo registro (versión, clase, fecha, control de cambios); cambia el archivo. El anterior se borra del disco.
+    private async Task Reemplazar()
+    {
+        if (reemplazo is null || archivoReemplazo is null) return;
+        if (archivoReemplazo.Size > MaxArchivo) { mensajeReemplazo = "El archivo supera 50 MB."; return; }
+        guardando = true;
+        try
+        {
+            var ruta = await GuardarArchivo(archivoReemplazo);
+            var ent = await Db.VersionesDocumento.FirstAsync(x => x.Id == reemplazo.Id);
+            var anterior = ent.RutaArchivo;
+            ent.RutaArchivo = ruta;
+            ent.NombreOriginal = archivoReemplazo.Name;
+            await Db.SaveChangesAsync();
+            try
+            {
+                var fisica = Path.Combine(Env.WebRootPath, anterior.TrimStart('/').Replace('/', Path.DirectorySeparatorChar));
+                if (File.Exists(fisica)) File.Delete(fisica);
+            }
+            catch { }
+            mensaje = $"Archivo reemplazado: {archivoReemplazo.Name}."; error = false;
+            reemplazo = null;
+            Cargar();
+        }
+        catch (Exception ex) { mensajeReemplazo = "No se pudo reemplazar: " + ex.Message; }
+        finally { guardando = false; }
+    }
+
+    private void PedirEliminarArchivo(VersionDocumento v)
+    {
+        menuCodigo = null; reemplazo = null; elimArchivo = v; impactoArchivo = null; impactoArchivoOk = false;
+        _ = CalcularImpactoArchivo(v.Id);
+    }
+
+    private async Task CalcularImpactoArchivo(int id)
+    {
+        try
+        {
+            using var scope = Scopes.CreateScope();
+            impactoArchivo = await scope.ServiceProvider.GetRequiredService<SigWeb.Data.Impacto.AnalizadorImpacto>().ArchivoDocumento(id);
+        }
+        catch { impactoArchivo = new SigWeb.Data.Impacto.InformeImpacto { Elemento = "No se pudo calcular el impacto" }; }
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task ConfirmarEliminarArchivo()
+    {
+        if (elimArchivo is null) return;
+        var ent = await Db.VersionesDocumento.FirstOrDefaultAsync(x => x.Id == elimArchivo.Id);
+        if (ent is not null) { ent.Eliminado = true; ent.FechaEliminacion = DateTime.Now; await Db.SaveChangesAsync(); }
+        mensaje = $"Archivo {elimArchivo.NombreOriginal} enviado a la Papelera."; error = false;
+        elimArchivo = null;
+        Cargar();
+    }
+
+    // ---------- Eliminar documento (Papelera) ----------
+    private DocumentoMaestro? elim;
+    private SigWeb.Data.Impacto.InformeImpacto? impacto;
+    private bool impactoOk;
+    private bool BloqueadoPorImpacto => impacto is null || (impacto.RequiereEntender && !impactoOk);
+
+    private void PedirEliminar()
+    {
+        if (selId is not int id) return;
+        elim = docs.FirstOrDefault(d => d.Id == id);
+        if (elim is null) return;
+        form = null; formVer = null; verImportar = false; impacto = null; impactoOk = false;
+        _ = CalcularImpacto(id);
+    }
+
+    private async Task CalcularImpacto(int id)
+    {
+        try
+        {
+            using var scope = Scopes.CreateScope();
+            var an = scope.ServiceProvider.GetRequiredService<SigWeb.Data.Impacto.AnalizadorImpacto>();
+            impacto = await an.Documento(id);
+        }
+        catch { impacto = new SigWeb.Data.Impacto.InformeImpacto { Elemento = "No se pudo calcular el impacto" }; }
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task ConfirmarEliminar()
+    {
+        if (elim is null) return;
+        var ent = await Db.DocumentosMaestro.FirstOrDefaultAsync(d => d.Id == elim.Id);
+        if (ent is not null) { ent.Eliminado = true; ent.FechaEliminacion = DateTime.Now; await Db.SaveChangesAsync(); }
+        elim = null; selId = null;
+        Cargar();
+    }
+}

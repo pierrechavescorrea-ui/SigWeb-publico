@@ -1,0 +1,453 @@
+@page "/papelera"
+@rendermode InteractiveServer
+@using SigWeb.Data.Papelera
+@using SigWeb.Data
+@using SigWeb.Data.Tablas
+@using SigWeb.Models
+@inject AppDbContext Db
+@inject IEnumerable<IProveedorPapelera> Proveedores
+
+<EncabezadoPagina Titulo="Papelera de reciclaje" Icono="papelera" Subtitulo="@($"{registrosTotales.Count} registro{(registrosTotales.Count == 1 ? "" : "s")}")">
+    <Acciones>
+        <BotonCampos Activo="verCampos" Deshabilitado="motor is null" OnClick="() => verCampos = true" />
+        <BotonExportar Titulo="Papelera" />
+        <span class="pg-sep"></span>
+        <button class="pg-btn pg-btn-peligro" title="@($"Vaciar seleccionados ({seleccionados.Count})")" aria-label="Vaciar seleccionados"
+                disabled="@(seleccionados.Count == 0)" @onclick="PedirVaciarSeleccionados">☑ 🗑</button>
+        <button class="pg-btn pg-btn-peligro" title="@($"Vaciar TODO ({registrosTotales.Count})")" aria-label="Vaciar todo"
+                disabled="@(registrosTotales.Count == 0)" @onclick="PedirVaciarTodo"><Ico Nombre="eliminar" /></button>
+    </Acciones>
+</EncabezadoPagina>
+
+@if (verCampos && motor is not null)
+{
+    <PanelCampos Motor="motor" OnCerrar="() => verCampos = false" OnCambio="StateHasChanged" />
+}
+
+@if (mensaje != "")
+{
+    <div class="alert @(errorMsg ? "alert-warning" : "alert-success") py-1" style="white-space:pre-line">@mensaje</div>
+}
+
+<div class="row g-2 mb-3 align-items-end">
+    @if (modulosDisponibles.Count > 1)
+    {
+        <div class="col-md-3">
+            <label class="form-label mb-1 small text-muted">Módulo</label>
+            <select class="form-select form-select-sm" value="@moduloSeleccionado" @onchange="CambiarModulo">
+                <option value="">Todos</option>
+                @foreach (var m in modulosDisponibles)
+                {
+                    <option value="@m">@m</option>
+                }
+            </select>
+        </div>
+    }
+    <div class="col-md-4">
+        <label class="form-label mb-1 small text-muted">Buscar</label>
+        <input class="form-control form-control-sm" placeholder="Buscar por módulo, registro o detalle..."
+               value="@filtro" @oninput="CambiarFiltro" />
+    </div>
+</div>
+
+@if (registros.Count == 0)
+{
+    <p class="text-muted"><em>@(registrosTotales.Count == 0 ? "La papelera está vacía." : "No hay resultados para ese filtro.")</em></p>
+}
+else
+{
+    <div class="tabla-scroll"><table class="table table-sm table-bordered table-hover tabla-compacta align-middle mb-0 tabla-pin">
+        <thead>
+            <tr>
+                <th style="width: 2rem;">
+                    <input type="checkbox" checked="@TodosVisiblesSeleccionados" @onchange="AlternarSeleccionTodosVisibles" />
+                </th>
+                @foreach (var c in Columnas)
+                {
+                    <th class="th-ordenable" @onclick="() => OrdenarPor(c.Clave)">@c.Nombre@(Flecha(c.Clave))</th>
+                }
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var r in registros)
+            {
+                var clave = (r.Modulo, r.Id);
+                var diasRestantes = DiasRestantes(r.FechaEliminacion);
+                <tr>
+                    <td><input type="checkbox" checked="@seleccionados.Contains(clave)" @onchange="@(e => AlternarSeleccion(clave, e.Value))" /></td>
+                    @foreach (var c in Columnas)
+                    {
+                        var fid = IdFila(r);
+                        var nat = c.Origen == OrigenCampoTabla.Nativo && Motor.Estilo(fid, c) is null;
+                        if (nat && c.Clave == "Modulo")
+                        {
+                            <td><span class="badge bg-secondary">@r.Modulo</span></td>
+                        }
+                        else if (nat && c.Clave == "DiasRestantes")
+                        {
+                            <td><span class="badge @(diasRestantes <= 5 ? "bg-danger" : "bg-secondary")">@diasRestantes día(s)</span></td>
+                        }
+                        else
+                        {
+                            <CeldaCampo Motor="Motor" Campo="c" Fila="fid" OnCambio="StateHasChanged" />
+                        }
+                    }
+                    <td>
+                        <button class="btn btn-sm btn-outline-primary" title="Restaurar" @onclick="() => Restaurar(r)"><Ico Nombre="restaurar" /></button>
+                        <button class="btn btn-sm btn-outline-danger" title="Eliminar definitivamente" @onclick="() => PedirEliminarDefinitivo(r)"><Ico Nombre="eliminar-definitivo" /></button>
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table></div>
+}
+
+@if (restauracionPendiente is not null)
+{
+    <div class="modal-backdrop-custom">
+        <div class="modal-box-custom" style="max-width: 640px;">
+            <h5>Restaurar "@restauracionPendiente.Titulo"</h5>
+            @foreach (var a in avisosRestauracion)
+            {
+                <div class="alert @(a.Nivel == "grave" ? "alert-danger" : a.Nivel == "info" ? "alert-info" : "alert-warning") py-2 small">
+                    <div><strong>@(a.Nivel == "grave" ? "Afecta la lógica de la app" : a.Nivel == "info" ? "Aviso" : "Atención")</strong> — @a.Mensaje</div>
+                    @if (a.Menus.Count > 0) { <div class="mt-1"><strong>Menús afectados:</strong> @string.Join(", ", a.Menus)</div> }
+                    @if (!string.IsNullOrWhiteSpace(a.Solucion)) { <div class="mt-1"><strong>Cómo resolverlo:</strong> @a.Solucion</div> }
+                </div>
+            }
+            <div class="d-flex gap-2 justify-content-end">
+                <button class="btn btn-secondary btn-sm" @onclick="() => { restauracionPendiente = null; avisosRestauracion = new(); }" title="Cancelar"><Ico Nombre="cancelar" /></button>
+                <button class="btn @(avisosRestauracion.Any(a => a.Nivel == "grave") ? "btn-danger" : "btn-primary") btn-sm" @onclick="ConfirmarRestauracion" title="Restaurar de todos modos"><Ico Nombre="restaurar" /></button>
+            </div>
+        </div>
+    </div>
+}
+
+@if (mostrarModalConfirmar)
+{
+    <div class="modal-backdrop-custom">
+        <div class="modal-box-custom">
+            @if (modoConfirmacion == ModoConfirmacion.Uno && pendiente is not null)
+            {
+                <h5>¿Eliminar definitivamente?</h5>
+                <p>
+                    <strong>@pendiente.Titulo</strong> (@pendiente.Modulo) y todos sus archivos asociados se
+                    borrarán para siempre. Esta acción no se puede deshacer.
+                </p>
+            }
+            else if (modoConfirmacion == ModoConfirmacion.Seleccionados)
+            {
+                <h5>¿Vaciar los seleccionados?</h5>
+                <p>
+                    <strong>@seleccionados.Count registro(s)</strong> y todos sus archivos asociados se
+                    borrarán para siempre. Esta acción no se puede deshacer.
+                </p>
+            }
+            else if (modoConfirmacion == ModoConfirmacion.Todo)
+            {
+                <h5>¿Vaciar TODA la papelera?</h5>
+                <p>
+                    <strong>@registrosTotales.Count registro(s) de todos los módulos</strong> y todos sus archivos
+                    asociados se borrarán para siempre, incluso los que no coinciden con el filtro actual.
+                    Esta acción no se puede deshacer.
+                </p>
+            }
+            <div class="d-flex gap-2 justify-content-end">
+                <button class="btn btn-secondary btn-sm" @onclick="CancelarConfirmacion" title="Cancelar"><Ico Nombre="cancelar" /></button>
+                <button class="btn btn-danger btn-sm" title="Borrar para siempre" @onclick="EjecutarConfirmacion"><Ico Nombre="eliminar-definitivo" /></button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private List<RegistroPapelera> registrosTotales = new();
+    private List<RegistroPapelera> registros = new();
+    private List<string> modulosDisponibles = new();
+    private string moduloSeleccionado = "";
+    private string filtro = "";
+    private string mensaje = "";
+    private bool errorMsg;
+
+    // Ejecuta una operación de un proveedor sin tumbar la página: si la base la rechaza, limpia el
+    // contexto (para que lo siguiente no herede el cambio fallido) y devuelve el motivo.
+    private string? Intentar(Action accion)
+    {
+        try { accion(); return null; }
+        catch (Exception ex)
+        {
+            Db.ChangeTracker.Clear();
+            var interna = ex;
+            while (interna.InnerException is not null) interna = interna.InnerException;
+            return interna.Message;
+        }
+    }
+
+    // Borra definitivamente varios registros. Algunos dependen de otros (p. ej. un archivo de un
+    // documento también en la Papelera): lo que falla se reintenta en otra pasada, cuando lo que lo
+    // bloqueaba ya se borró. Lo que sigue fallando se informa con su motivo.
+    private (int Ok, List<string> Fallos) EliminarVarios(List<(string Modulo, int Id, string Titulo)> lista)
+    {
+        var pendientes = lista;
+        var motivos = new Dictionary<(string, int), string>();
+        int ok = 0;
+        for (int pasada = 0; pasada < 4 && pendientes.Count > 0; pasada++)
+        {
+            var siguen = new List<(string Modulo, int Id, string Titulo)>();
+            foreach (var r in pendientes)
+            {
+                var proveedor = Proveedores.FirstOrDefault(p => p.Modulo == r.Modulo);
+                if (proveedor is null) continue;
+                var fallo = Intentar(() => proveedor.EliminarDefinitivo(r.Id));
+                if (fallo is null) { ok++; motivos.Remove((r.Modulo, r.Id)); }
+                else { siguen.Add(r); motivos[(r.Modulo, r.Id)] = fallo; }
+            }
+            if (siguen.Count == pendientes.Count) { pendientes = siguen; break; }   // nada avanzó
+            pendientes = siguen;
+        }
+        return (ok, pendientes.Select(r => $"{r.Modulo} · {r.Titulo}: {motivos[(r.Modulo, r.Id)]}").ToList());
+    }
+
+    private HashSet<(string Modulo, int Id)> seleccionados = new();
+
+    private enum ModoConfirmacion { Uno, Seleccionados, Todo }
+    private bool mostrarModalConfirmar = false;
+    private ModoConfirmacion modoConfirmacion = ModoConfirmacion.Uno;
+    private RegistroPapelera? pendiente;
+
+    private const int DiasRetencion = 30;
+
+    // ---------- Orden ----------
+    private string columnaOrden = "FechaEliminacion";
+    private bool ordenAscendente = false;
+
+    // ---------- Campos (columnas visibles y formatos; los registros vienen de varios módulos) ----------
+    private MotorTabla? motor;
+    private MotorTabla Motor => motor!;
+    private bool verCampos;
+    private Dictionary<int, RegistroPapelera> registrosPorId = new();
+
+    private IEnumerable<CampoTabla> Columnas => motor?.Visibles ?? Enumerable.Empty<CampoTabla>();
+
+    // Identificador estable de cada registro (módulo + id) para guardar valores de campos creados.
+    private static int IdFila(RegistroPapelera r)
+    {
+        unchecked
+        {
+            uint h = 2166136261;
+            foreach (var ch in r.Modulo + "|" + r.Id) { h ^= ch; h *= 16777619; }
+            return (int)(h & 0x7FFFFFFF);
+        }
+    }
+
+    private object? N(int id, Func<RegistroPapelera, object?> f) => registrosPorId.TryGetValue(id, out var r) ? f(r) : null;
+
+    private IEnumerable<ColumnaNativa> ColumnasNativas() => new[]
+    {
+        new ColumnaNativa("Modulo", "Módulo", TipoCampoTabla.Texto, id => N(id, r => r.Modulo)),
+        new ColumnaNativa("Titulo", "Registro", TipoCampoTabla.Texto, id => N(id, r => r.Titulo)),
+        new ColumnaNativa("Subtitulo", "Detalle", TipoCampoTabla.Texto, id => N(id, r => r.Subtitulo)),
+        new ColumnaNativa("FechaEliminacion", "Eliminado el", TipoCampoTabla.Fecha, id => N(id, r => r.FechaEliminacion)),
+        new ColumnaNativa("DiasRestantes", "Días restantes", TipoCampoTabla.Numero, id => N(id, r => (double)DiasRestantes(r.FechaEliminacion))),
+    };
+
+    protected override async Task OnInitializedAsync()
+    {
+        OnInitializedSync();
+        motor = await MotorTabla.CargarAsync(Db, "papelera", ColumnasNativas(), registrosTotales.Select(r => (IdFila(r), $"{r.Modulo} · {r.Titulo}")));
+    }
+
+    private void OnInitializedSync()
+    {
+        // Cada módulo con papelera purga sus propios vencidos: la página
+        // no necesita saber cómo se borra cada tipo de dato.
+        var fallosPurga = new List<string>();
+        foreach (var proveedor in Proveedores)
+        {
+            if (Intentar(proveedor.PurgarVencidos) is string f) fallosPurga.Add($"{proveedor.Modulo}: {f}");
+        }
+        if (fallosPurga.Count > 0) { mensaje = "No se pudieron purgar algunos vencidos:\n" + string.Join("\n", fallosPurga); errorMsg = true; }
+
+        modulosDisponibles = Proveedores.Select(p => p.Modulo).Distinct().OrderBy(m => m).ToList();
+        CargarLista();
+    }
+
+    // Un módulo que no puede listar (p. ej. migración sin aplicar) no impide ver los demás.
+    private List<RegistroPapelera> ListarSeguro(IProveedorPapelera p)
+    {
+        List<RegistroPapelera> l = new();
+        if (Intentar(() => l = p.Listar()) is string f) { mensaje = $"{p.Modulo}: no se pudo listar ({f})"; errorMsg = true; }
+        return l;
+    }
+
+    private void CargarLista()
+    {
+        registrosTotales = Proveedores.SelectMany(ListarSeguro)
+                                       .OrderByDescending(r => r.FechaEliminacion)
+                                       .ToList();
+
+        IEnumerable<RegistroPapelera> filtrados = registrosTotales;
+
+        if (!string.IsNullOrEmpty(moduloSeleccionado))
+        {
+            filtrados = filtrados.Where(r => r.Modulo == moduloSeleccionado);
+        }
+
+        if (!string.IsNullOrWhiteSpace(filtro))
+        {
+            var texto = filtro.Trim();
+            filtrados = filtrados.Where(r =>
+                (r.Modulo?.Contains(texto, StringComparison.OrdinalIgnoreCase) ?? false) ||
+                (r.Titulo?.Contains(texto, StringComparison.OrdinalIgnoreCase) ?? false) ||
+                (r.Subtitulo?.Contains(texto, StringComparison.OrdinalIgnoreCase) ?? false) ||
+                (r.FechaEliminacion?.ToString("dd/MM/yyyy").Contains(texto, StringComparison.OrdinalIgnoreCase) ?? false));
+        }
+
+        filtrados = columnaOrden switch
+        {
+            "Modulo" => ordenAscendente ? filtrados.OrderBy(r => r.Modulo) : filtrados.OrderByDescending(r => r.Modulo),
+            "Titulo" => ordenAscendente ? filtrados.OrderBy(r => r.Titulo) : filtrados.OrderByDescending(r => r.Titulo),
+            "Subtitulo" => ordenAscendente ? filtrados.OrderBy(r => r.Subtitulo) : filtrados.OrderByDescending(r => r.Subtitulo),
+            "FechaEliminacion" => ordenAscendente ? filtrados.OrderBy(r => r.FechaEliminacion) : filtrados.OrderByDescending(r => r.FechaEliminacion),
+            _ => motor is null ? filtrados : motor.Ordenar(filtrados, IdFila, columnaOrden, ordenAscendente)
+        };
+
+        registros = filtrados.ToList();
+        registrosPorId = registrosTotales.GroupBy(IdFila).ToDictionary(g => g.Key, g => g.First());
+        if (motor is not null) motor.Filas = registrosTotales.Select(r => (IdFila(r), $"{r.Modulo} · {r.Titulo}")).ToList();
+
+        // Deja de recordar seleccionados que ya no existen (restaurados,
+        // borrados o vencidos entre una carga y otra).
+        var existentes = registrosTotales.Select(r => (r.Modulo, r.Id)).ToHashSet();
+        seleccionados.RemoveWhere(c => !existentes.Contains(c));
+    }
+
+    private void OrdenarPor(string columna)
+    {
+        if (columnaOrden == columna) ordenAscendente = !ordenAscendente;
+        else { columnaOrden = columna; ordenAscendente = true; }
+        CargarLista();
+    }
+
+    private string Flecha(string columna) => columnaOrden != columna ? "" : (ordenAscendente ? " ▲" : " ▼");
+
+    private void CambiarModulo(ChangeEventArgs e)
+    {
+        moduloSeleccionado = e.Value?.ToString() ?? "";
+        CargarLista();
+    }
+
+    private void CambiarFiltro(ChangeEventArgs e)
+    {
+        filtro = e.Value?.ToString() ?? "";
+        CargarLista();
+    }
+
+    private int DiasRestantes(DateTime? fechaEliminacion)
+    {
+        if (fechaEliminacion is null) return 0;
+        var restantes = DiasRetencion - (DateTime.Now - fechaEliminacion.Value).Days;
+        return restantes < 0 ? 0 : restantes;
+    }
+
+    // ---------- Selección múltiple ----------
+    private bool TodosVisiblesSeleccionados =>
+        registros.Count > 0 && registros.All(r => seleccionados.Contains((r.Modulo, r.Id)));
+
+    private void AlternarSeleccion((string Modulo, int Id) clave, object? valorCasilla)
+    {
+        bool marcado = valorCasilla is bool b && b;
+        if (marcado) seleccionados.Add(clave);
+        else seleccionados.Remove(clave);
+    }
+
+    private void AlternarSeleccionTodosVisibles(ChangeEventArgs e)
+    {
+        bool marcarTodos = e.Value is bool b && b;
+        foreach (var r in registros)
+        {
+            if (marcarTodos) seleccionados.Add((r.Modulo, r.Id));
+            else seleccionados.Remove((r.Modulo, r.Id));
+        }
+    }
+
+    private RegistroPapelera? restauracionPendiente;
+    private List<AvisoRestauracion> avisosRestauracion = new();
+
+    // Si el módulo sabe validar, primero muestra qué podría romperse y pide confirmar.
+    private void Restaurar(RegistroPapelera r)
+    {
+        var proveedor = Proveedores.FirstOrDefault(p => p.Modulo == r.Modulo);
+        if (proveedor is IValidaRestauracion v)
+        {
+            var avisos = v.Revisar(r.Id);
+            if (avisos.Count > 0) { restauracionPendiente = r; avisosRestauracion = avisos; return; }
+        }
+        RestaurarYa(r);
+    }
+
+    private void ConfirmarRestauracion()
+    {
+        if (restauracionPendiente is not null) RestaurarYa(restauracionPendiente);
+        restauracionPendiente = null; avisosRestauracion = new();
+    }
+
+    private void RestaurarYa(RegistroPapelera r)
+    {
+        var proveedor = Proveedores.FirstOrDefault(p => p.Modulo == r.Modulo);
+        var fallo = proveedor is null ? null : Intentar(() => proveedor.Restaurar(r.Id));
+        seleccionados.Remove((r.Modulo, r.Id));
+        errorMsg = fallo is not null;
+        mensaje = fallo is null ? $"\"{r.Titulo}\" restaurado. Ya vuelve a aparecer en {r.Modulo}." : $"No se pudo restaurar \"{r.Titulo}\": {fallo}";
+        CargarLista();
+    }
+
+    // ---------- Eliminar (uno / seleccionados / todo) ----------
+    private void PedirEliminarDefinitivo(RegistroPapelera r)
+    {
+        pendiente = r;
+        modoConfirmacion = ModoConfirmacion.Uno;
+        mostrarModalConfirmar = true;
+    }
+
+    private void PedirVaciarSeleccionados()
+    {
+        if (seleccionados.Count == 0) return;
+        modoConfirmacion = ModoConfirmacion.Seleccionados;
+        mostrarModalConfirmar = true;
+    }
+
+    private void PedirVaciarTodo()
+    {
+        if (registrosTotales.Count == 0) return;
+        modoConfirmacion = ModoConfirmacion.Todo;
+        mostrarModalConfirmar = true;
+    }
+
+    private void CancelarConfirmacion()
+    {
+        mostrarModalConfirmar = false;
+        pendiente = null;
+    }
+
+    private void EjecutarConfirmacion()
+    {
+        List<(string Modulo, int Id, string Titulo)> lista = modoConfirmacion switch
+        {
+            ModoConfirmacion.Uno => pendiente is null ? new() : new() { (pendiente.Modulo, pendiente.Id, pendiente.Titulo) },
+            ModoConfirmacion.Seleccionados => registrosTotales.Where(r => seleccionados.Contains((r.Modulo, r.Id))).Select(r => (r.Modulo, r.Id, r.Titulo)).ToList(),
+            _ => registrosTotales.Select(r => (r.Modulo, r.Id, r.Titulo)).ToList()
+        };
+        var (ok, fallos) = EliminarVarios(lista);
+        seleccionados.Clear();
+        errorMsg = fallos.Count > 0;
+        mensaje = (modoConfirmacion == ModoConfirmacion.Todo ? "Papelera vaciada: " : "")
+            + $"{ok} registro(s) eliminado(s) definitivamente."
+            + (fallos.Count > 0 ? $"\nNo se pudieron eliminar {fallos.Count}:\n" + string.Join("\n", fallos.Take(15)) : "");
+
+        mostrarModalConfirmar = false;
+        pendiente = null;
+        CargarLista();
+    }
+}

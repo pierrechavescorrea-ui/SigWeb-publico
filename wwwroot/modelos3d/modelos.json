@@ -1,0 +1,133 @@
+[
+ {
+  "codigo": "BE",
+  "archivo": "torre-be.json",
+  "nombre": "BE"
+ },
+ {
+  "codigo": "AAE1",
+  "archivo": "torre-aae1.json",
+  "familia": "AAE"
+ },
+ {
+  "codigo": "AAE2",
+  "archivo": "torre-aae2.json",
+  "familia": "AAE"
+ },
+ {
+  "codigo": "AAE3",
+  "archivo": "torre-aae3.json",
+  "familia": "AAE"
+ },
+ {
+  "codigo": "AAE5",
+  "archivo": "torre-aae5.json",
+  "familia": "AAE"
+ },
+ {
+  "codigo": "AAE4",
+  "archivo": "torre-aae4.json",
+  "familia": "AAE"
+ },
+ {
+  "codigo": "BE-ANT",
+  "archivo": "torre-be-500kv.json",
+  "nombre": "BE (antigua)",
+  "vinculado": false
+ },
+ {
+  "codigo": "BP6",
+  "archivo": "torre-bp6.json",
+  "familia": "BP"
+ },
+ {
+  "codigo": "BP5",
+  "archivo": "torre-bp5.json",
+  "familia": "BP"
+ },
+ {
+  "codigo": "BP4",
+  "archivo": "torre-bp4.json",
+  "familia": "BP"
+ },
+ {
+  "codigo": "BP3",
+  "archivo": "torre-bp3.json",
+  "familia": "BP"
+ },
+ {
+  "codigo": "BP2",
+  "archivo": "torre-bp2.json",
+  "familia": "BP"
+ },
+ {
+  "codigo": "BP1",
+  "archivo": "torre-bp1.json",
+  "familia": "BP"
+ },
+ {
+  "codigo": "AP1",
+  "archivo": "torre-ap1.json",
+  "familia": "AP"
+ },
+ {
+  "codigo": "AP2",
+  "archivo": "torre-ap2.json",
+  "familia": "AP"
+ },
+ {
+  "codigo": "AP3",
+  "archivo": "torre-ap3.json",
+  "familia": "AP"
+ },
+ {
+  "codigo": "AP4",
+  "archivo": "torre-ap4.json",
+  "familia": "AP"
+ },
+ {
+  "codigo": "AP5",
+  "archivo": "torre-ap5.json",
+  "familia": "AP"
+ },
+ {
+  "codigo": "AP6",
+  "archivo": "torre-ap6.json",
+  "familia": "AP"
+ },
+ {
+  "codigo": "AP7",
+  "archivo": "torre-ap7.json",
+  "familia": "AP"
+ },
+ {
+  "codigo": "C1",
+  "archivo": "torre-c1.json",
+  "familia": "C"
+ },
+ {
+  "codigo": "C2",
+  "archivo": "torre-c2.json",
+  "familia": "C"
+ },
+ {
+  "codigo": "C3",
+  "archivo": "torre-c3.json",
+  "familia": "C"
+ },
+ {
+  "codigo": "C4",
+  "archivo": "torre-c4.json",
+  "familia": "C"
+ },
+ {
+  "codigo": "C5",
+  "archivo": "torre-c5.json",
+  "familia": "C"
+ },
+ {
+  "codigo": "C6",
+  "archivo": "torre-c6.json",
+  "familia": "C"
+ }
+]

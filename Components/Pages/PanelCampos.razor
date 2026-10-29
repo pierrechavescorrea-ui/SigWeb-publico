@@ -1,0 +1,475 @@
+@* Panel "Campos" de cualquier tabla: ver/ocultar y ordenar columnas, crear campos
+   (tipo, lista de catálogo, digitado o calculado con fórmula tipo Excel) y
+   formatos condicionales. Recibe el MotorTabla de la página. *@
+@using SigWeb.Data
+@using SigWeb.Data.Tablas
+@using SigWeb.Models
+@inject AppDbContext Db
+
+<div class="pc-capa">
+    <div class="pc">
+        <div class="pc-cab">
+            <button type="button" class="pg-atras border-0" title="Volver" aria-label="Volver" @onclick="Atras">
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>
+            </button>
+            <span class="pg-logo" aria-hidden="true"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16v14H4z"/><path d="M9.3 5v14M14.7 5v14"/></svg></span>
+            <h4 class="mb-0">@Titulo</h4>
+            <span class="ms-auto"></span>
+            @if (vista == "lista")
+            {
+                @Acciones
+                <button type="button" class="pg-btn pg-btn-primario" title="Nuevo campo" @onclick="Nuevo"><Ico Nombre="agregar" /></button>
+            }
+            @if (vista == "formatos" && campo is not null)
+            {
+                <button type="button" class="pg-btn pg-btn-primario" title="Nueva regla" @onclick="NuevaRegla"><Ico Nombre="agregar" /></button>
+            }
+        </div>
+
+        @if (!string.IsNullOrEmpty(mensaje))
+        {
+            <div class="alert alert-warning py-1 px-2 small mb-2">@mensaje</div>
+        }
+
+        @* ---------------- Lista de campos ---------------- *@
+        @if (vista == "lista")
+        {
+            <div class="pc-lista">
+                <table class="table table-sm align-middle mb-0">
+                    <thead>
+                        <tr><th style="width:22px"></th><th style="width:34px"></th><th>Campo</th><th>Origen</th><th>Tipo</th><th class="text-center">Formatos</th><th></th></tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var c in Motor.Ordenados)
+                        {
+                            var nf = Motor.Formatos.TryGetValue(c.Id, out var lf) ? lf.Count : 0;
+                            <tr class="@(c.Visible ? "" : "pc-oculto") @(arrCampo?.Id == c.Id ? "arr-origen" : "") @(sobreCampo?.Id == c.Id && arrCampo?.Id != c.Id ? "arr-sobre" : "")"
+                                @ondragover:preventDefault="true" @ondragenter="() => sobreCampo = c" @ondrop="() => SoltarCampo(c)">
+                                <td><span class="arr-asa" draggable="true" data-arrastre title="Arrastrar para reordenar" @ondragstart="() => arrCampo = c" @ondragend="FinArrastre">⠿</span></td>
+                                <td><input type="checkbox" class="form-check-input" title="@(c.Visible ? "Ocultar en la tabla" : "Mostrar en la tabla")" checked="@c.Visible" @onchange="e => Visible(c, e)" /></td>
+                                <td class="fw-semibold">@c.Nombre</td>
+                                <td><span class="pc-origen pc-@(Motor.EtiquetaOrigen(c) == "Excel" ? "excel" : c.Origen.ToString().ToLower())">@Motor.EtiquetaOrigen(c)</span></td>
+                                <td class="small">@NombreTipo(c.Tipo)@(c.Calculado ? " · ƒ" : "")@(c.Tipo == TipoCampoTabla.Lista && c.CatalogoTipo is not null ? " · " + c.CatalogoTipo : "")</td>
+                                <td class="text-center small">@(nf > 0 ? nf.ToString() : "")</td>
+                                <td class="text-end text-nowrap">
+                                    <button type="button" class="btn btn-sm btn-outline-primary" title="Editar campo" @onclick="() => Editar(c)"><Ico Nombre="editar" /></button>
+                                    <button type="button" class="btn btn-sm btn-outline-secondary" title="Formatos condicionales" @onclick="() => Formatos(c)">🎨</button>
+                                    @if (c.Origen != OrigenCampoTabla.Nativo)
+                                    {
+                                        <button type="button" class="btn btn-sm btn-outline-danger" title="Eliminar (va a la Papelera)" @onclick="() => PedirEliminar(c)"><Ico Nombre="eliminar" /></button>
+                                    }
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+
+        @* ---------------- Eliminar ---------------- *@
+        @if (vista == "eliminar" && campo is not null)
+        {
+            var imp = Motor.Impacto(campo);
+            <p class="mb-2">Se enviará a la Papelera el campo <strong>@campo.Nombre</strong>.</p>
+            <ul class="small">
+                <li>@imp.Valores valores digitados en la tabla.</li>
+                <li>@imp.Formatos reglas de formato condicional.</li>
+                @if (imp.Formulas.Count > 0)
+                {
+                    <li class="text-danger">Lo usan las fórmulas de: @string.Join(", ", imp.Formulas) (quedarán con error).</li>
+                }
+            </ul>
+            <div class="d-flex justify-content-end gap-2">
+                <button class="btn btn-secondary btn-sm" title="Cancelar" @onclick="Volver">✕</button>
+                <button class="btn btn-danger btn-sm" title="Eliminar (va a la Papelera)" @onclick="ConfirmarEliminar"><Ico Nombre="eliminar" /></button>
+            </div>
+        }
+
+        @* ---------------- Editor de campo ---------------- *@
+        @if (vista == "campo" && edicion is not null)
+        {
+            var nativo = edicion.Origen == OrigenCampoTabla.Nativo;
+            <div class="pc-form">
+                <label class="pc-et">Nombre</label>
+                <input class="form-control form-control-sm" @bind="edicion.Nombre" />
+
+                <label class="pc-et">Tipo</label>
+                <select class="form-select form-select-sm" title="@(nativo ? "Cómo se interpreta el valor (para mostrarlo y para los formatos); no cambia el dato" : null)" @bind="edicion.Tipo">
+                    @foreach (var t in Enum.GetValues<TipoCampoTabla>()) { <option value="@t">@NombreTipo(t)</option> }
+                </select>
+
+                @if (edicion.Tipo == TipoCampoTabla.Lista && !nativo)
+                {
+                    <label class="pc-et">Opciones</label>
+                    <div>
+                        <select class="form-select form-select-sm mb-1" @bind="edicion.CatalogoTipo">
+                            <option value="">Lista propia (una opción por línea)</option>
+                            @foreach (var t in tiposCatalogo) { <option value="@t">Catálogo: @t</option> }
+                        </select>
+                        @if (string.IsNullOrEmpty(edicion.CatalogoTipo))
+                        {
+                            <textarea class="form-control form-control-sm" rows="4" @bind="edicion.Opciones"></textarea>
+                        }
+                    </div>
+                }
+
+                @if (edicion.Tipo == TipoCampoTabla.Numero)
+                {
+                    <label class="pc-et">Decimales</label>
+                    <input type="number" min="0" max="8" class="form-control form-control-sm" style="max-width:90px" @bind="edicion.Decimales" />
+                }
+
+                @if (!nativo)
+                {
+                    <label class="pc-et">Valor</label>
+                    <div class="d-flex gap-3 align-items-center">
+                        <label class="form-check mb-0"><input type="radio" class="form-check-input" name="modo" checked="@(!edicion.Calculado)" @onchange="() => edicion.Calculado = false" /> Digitado</label>
+                        <label class="form-check mb-0"><input type="radio" class="form-check-input" name="modo" checked="@edicion.Calculado" @onchange="ElegirCalculado" /> Calculado (fórmula)</label>
+                    </div>
+                }
+            </div>
+
+            @if (!nativo && (edicion.Calculado || formulaCelda))
+            {
+                <div class="pc-alcance">
+                    <span class="pc-et mb-0">Aplicar la fórmula a</span>
+                    <label class="form-check mb-0"><input type="radio" class="form-check-input" name="alcance" checked="@(!formulaCelda)" @onchange="() => { formulaCelda = false; edicion.Calculado = true; }" /> toda la columna</label>
+                    <label class="form-check mb-0"><input type="radio" class="form-check-input" name="alcance" checked="@formulaCelda" @onchange="() => { formulaCelda = true; edicion.Calculado = false; }" /> solo una celda</label>
+                    @if (formulaCelda)
+                    {
+                        <select class="form-select form-select-sm" style="max-width:240px" @bind="filaCelda">
+                            @foreach (var f in Motor.Filas) { <option value="@f.Id">@f.Etiqueta</option> }
+                        </select>
+                    }
+                </div>
+                <AsistenteFormula Motor="Motor" CampoId="edicion.Id" TipoResultado="edicion.Tipo" @bind-Formula="formulaTexto" />
+            }
+            else if (!nativo && edicion.Id != 0)
+            {
+                <button type="button" class="btn btn-sm btn-outline-secondary mt-2" title="Fórmula solo para una celda" @onclick="() => { formulaCelda = true; formulaTexto = null; }">ƒ</button>
+            }
+
+            <div class="d-flex justify-content-end gap-2 mt-3">
+                <button class="btn btn-secondary btn-sm" title="Cancelar" @onclick="Volver">✕</button>
+                <button class="btn btn-primary btn-sm" title="Guardar" disabled="@string.IsNullOrWhiteSpace(edicion.Nombre)" @onclick="GuardarCampo">💾</button>
+            </div>
+        }
+
+        @* ---------------- Formatos condicionales ---------------- *@
+        @if (vista == "formatos" && campo is not null)
+        {
+            var reglas = Motor.Formatos.TryGetValue(campo.Id, out var lr) ? lr.OrderBy(r => r.Orden).ToList() : new List<FormatoCondicional>();
+            if (regla is null)
+            {
+                if (reglas.Count == 0)
+                {
+                    <p class="text-muted small mb-0">Sin reglas.</p>
+                }
+                <div class="pc-reglas">
+                    @foreach (var r in reglas)
+                    {
+                        var e = MotorTabla.EstiloDe(r);
+                        <div class="pc-regla @(r.Activo ? "" : "pc-oculto") @(arrRegla?.Id == r.Id ? "arr-origen" : "") @(sobreRegla?.Id == r.Id && arrRegla?.Id != r.Id ? "arr-sobre" : "")"
+                             @ondragover:preventDefault="true" @ondragenter="() => sobreRegla = r" @ondrop="() => SoltarRegla(r)">
+                            <span class="arr-asa" draggable="true" data-arrastre title="Arrastrar para cambiar la prioridad" @ondragstart="() => arrRegla = r" @ondragend="FinArrastre">⠿</span>
+                            <input type="checkbox" class="form-check-input" title="Activa" checked="@r.Activo" @onchange="ev => ActivarRegla(r, ev)" />
+                            <span class="pc-muestra">@Muestra(e, "Ejemplo")</span>
+                            <span class="small flex-grow-1">@MotorTabla.Describir(r)</span>
+                            <button type="button" class="btn btn-sm btn-outline-primary" title="Editar regla" @onclick="() => EditarRegla(r)"><Ico Nombre="editar" /></button>
+                            <button type="button" class="btn btn-sm btn-outline-danger" title="Eliminar regla" @onclick="() => EliminarRegla(r)"><Ico Nombre="eliminar" /></button>
+                        </div>
+                    }
+                </div>
+            }
+            else
+            {
+                var op = MotorTabla.Operadores.First(o => o.Op == regla.Operador);
+                <div class="pc-form">
+                    <label class="pc-et">Si el valor</label>
+                    <select class="form-select form-select-sm" @bind="regla.Operador">
+                        @foreach (var o in MotorTabla.Operadores) { <option value="@o.Op">@o.Nombre</option> }
+                    </select>
+
+                    @if (regla.Operador == OperadorFormato.Formula)
+                    {
+                        <label class="pc-et">Fórmula</label>
+                        <div>
+                            <input class="form-control form-control-sm" placeholder="=Y([Valor] > 0; [Valor] < 100)" @bind="regla.Valor1" />
+                            <div class="form-text">[Valor] es el valor de esta celda; también puedes usar los demás campos, ej. [Fecha].</div>
+                        </div>
+                    }
+                    else if (op.Valores >= 1)
+                    {
+                        <label class="pc-et">@(op.Valores == 2 ? "Entre" : (regla.Operador is OperadorFormato.FechaProximosDias or OperadorFormato.FechaUltimosDias ? "Días" : "Valor"))</label>
+                        <div class="d-flex gap-2">
+                            <input type="@TipoEntrada(regla.Operador)" class="form-control form-control-sm" @bind="regla.Valor1" />
+                            @if (op.Valores == 2)
+                            {
+                                <span class="align-self-center">y</span>
+                                <input type="@TipoEntrada(regla.Operador)" class="form-control form-control-sm" @bind="regla.Valor2" />
+                            }
+                        </div>
+                    }
+
+                    <label class="pc-et">Estilo</label>
+                    <div class="pc-paleta">
+                        @foreach (var p in MotorTabla.Paleta)
+                        {
+                            <button type="button" class="pc-swatch @(regla.Estilo == p.Clave ? "activo" : "")" title="@p.Nombre" @onclick="() => regla.Estilo = p.Clave"
+                                    style="background:@p.Fondo;color:@p.Texto">Aa</button>
+                        }
+                        <button type="button" class="pc-swatch pc-swatch-pers @(regla.Estilo == "personalizado" ? "activo" : "")" title="Personalizado" @onclick="Personalizar"><Ico Nombre="editar" /></button>
+                    </div>
+
+                    @if (regla.Estilo == "personalizado")
+                    {
+                        <label class="pc-et">Colores</label>
+                        <div class="d-flex gap-3 align-items-center">
+                            <label class="d-flex gap-1 align-items-center mb-0 small">Texto <input type="color" class="form-control form-control-color form-control-sm" value="@(regla.ColorTexto ?? "#212529")" @onchange='ev => regla.ColorTexto = ev.Value?.ToString()' /></label>
+                            <label class="d-flex gap-1 align-items-center mb-0 small">Fondo <input type="color" class="form-control form-control-color form-control-sm" value="@(regla.ColorFondo ?? "#ffffff")" @onchange='ev => regla.ColorFondo = ev.Value?.ToString()' /></label>
+                        </div>
+                    }
+
+                    <label class="pc-et">Aplicar como</label>
+                    <div class="d-flex gap-3 align-items-center flex-wrap">
+                        <select class="form-select form-select-sm" style="max-width:170px" @bind="regla.Forma">
+                            <option value="pildora">Píldora</option>
+                            <option value="celda">Toda la celda</option>
+                            <option value="texto">Solo el texto</option>
+                        </select>
+                        <label class="form-check mb-0 small"><input type="checkbox" class="form-check-input" @bind="regla.Negrita" /> Negrita</label>
+                        <span class="pc-muestra">@Muestra(MotorTabla.EstiloDe(regla), "Ejemplo")</span>
+                    </div>
+                </div>
+                <div class="d-flex justify-content-end gap-2 mt-3">
+                    <button class="btn btn-secondary btn-sm" title="Cancelar" @onclick="() => regla = null">✕</button>
+                    <button class="btn btn-primary btn-sm" title="Guardar regla" @onclick="GuardarRegla">💾</button>
+                </div>
+            }
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public MotorTabla Motor { get; set; } = default!;
+    [Parameter] public EventCallback OnCerrar { get; set; }
+    [Parameter] public EventCallback OnCambio { get; set; }
+    // Botones extra de la página (ej. configurar los campos de la matriz importada en Equipos/Ensayos).
+    [Parameter] public RenderFragment? Acciones { get; set; }
+
+    private string vista = "lista";
+    private CampoTabla? campo;        // campo en edición de formatos / eliminación
+    private CampoTabla? edicion;      // copia para el editor
+    private FormatoCondicional? regla;
+    private string? formulaTexto;
+    private bool formulaCelda;
+    private int filaCelda;
+    private string? mensaje;
+    private List<string> tiposCatalogo = new();
+
+    private string Titulo => vista switch
+    {
+        "campo" => edicion?.Id == 0 ? "Nuevo campo" : "Campo: " + edicion?.Nombre,
+        "formatos" => "Formatos: " + campo?.Nombre,
+        "eliminar" => "Eliminar campo",
+        _ => "Campos"
+    };
+
+    protected override async Task OnInitializedAsync() => tiposCatalogo = await MotorTabla.TiposCatalogoAsync(Db);
+
+    private static string NombreTipo(TipoCampoTabla t) => t switch
+    {
+        TipoCampoTabla.Numero => "Número", TipoCampoTabla.Fecha => "Fecha", TipoCampoTabla.Lista => "Lista desplegable",
+        TipoCampoTabla.SiNo => "Sí / No", TipoCampoTabla.Auto => "Automático (según el resultado)", _ => "Texto"
+    };
+
+    // El valor de la regla se escribe como texto (acepta números, fechas o palabras como "OK"); se interpreta
+    // según el valor de cada celda. Solo las columnas de tipo Fecha usan el selector de fecha.
+    private string TipoEntrada(OperadorFormato op)
+    {
+        if (op is OperadorFormato.FechaProximosDias or OperadorFormato.FechaUltimosDias) return "number";
+        if (op is OperadorFormato.Contiene or OperadorFormato.NoContiene or OperadorFormato.EmpiezaCon or OperadorFormato.TerminaCon) return "text";
+        return campo?.Tipo == TipoCampoTabla.Fecha ? "date" : "text";
+    }
+
+    // Un campo calculado nuevo empieza en "Automático": su tipo lo da el resultado de la fórmula.
+    private void ElegirCalculado()
+    {
+        if (edicion is null) return;
+        edicion.Calculado = true;
+        if (edicion.Tipo == TipoCampoTabla.Texto) edicion.Tipo = TipoCampoTabla.Auto;
+    }
+
+    private static RenderFragment Muestra(EstiloCelda e, string texto) => __b =>
+    {
+        var peso = e.Negrita ? "600" : "400";
+        if (e.Forma == "pildora")
+        {
+            __b.OpenElement(0, "span"); __b.AddAttribute(1, "class", "cc-pildora");
+            __b.AddAttribute(2, "style", $"background:{e.ColorFondo};color:{e.ColorTexto};font-weight:{peso}");
+            __b.AddContent(3, texto); __b.CloseElement();
+        }
+        else if (e.Forma == "celda")
+        {
+            __b.OpenElement(4, "span"); __b.AddAttribute(5, "class", "pc-celda");
+            __b.AddAttribute(6, "style", $"background:{e.ColorFondo};color:{e.ColorTexto};font-weight:{peso}");
+            __b.AddContent(7, texto); __b.CloseElement();
+        }
+        else
+        {
+            __b.OpenElement(8, "span");
+            __b.AddAttribute(9, "style", $"color:{e.ColorTexto};font-weight:{peso}");
+            __b.AddContent(10, texto); __b.CloseElement();
+        }
+    };
+
+    private async Task Cerrar() => await OnCerrar.InvokeAsync();
+
+    // «Volver»: dentro del panel regresa un paso; en la lista de campos, cierra el panel.
+    private async Task Atras()
+    {
+        if (vista == "lista") { await Cerrar(); return; }
+        Volver();
+    }
+
+    private void Volver()
+    {
+        mensaje = null;
+        if (vista == "formatos" && regla is not null) { regla = null; return; }
+        vista = "lista"; campo = null; edicion = null; regla = null;
+    }
+
+    // ---------- Campos ----------
+    private async Task Visible(CampoTabla c, ChangeEventArgs e)
+    {
+        await Motor.CambiarVisibleAsync(Db, c, e.Value is true);
+        await OnCambio.InvokeAsync();
+    }
+
+    // ---------- Arrastrar y soltar (campos y prioridad de reglas) ----------
+    private CampoTabla? arrCampo, sobreCampo;
+    private FormatoCondicional? arrRegla, sobreRegla;
+
+    private void FinArrastre() { arrCampo = sobreCampo = null; arrRegla = sobreRegla = null; }
+
+    private async Task SoltarCampo(CampoTabla destino)
+    {
+        var c = arrCampo; FinArrastre();
+        if (c is null || c.Id == destino.Id) return;
+        await Motor.MoverAAsync(Db, c, destino);
+        await OnCambio.InvokeAsync();
+    }
+
+    private void Nuevo()
+    {
+        edicion = new CampoTabla { Tabla = Motor.Tabla, Origen = OrigenCampoTabla.Manual, Tipo = TipoCampoTabla.Texto };
+        formulaTexto = null; formulaCelda = false; filaCelda = Motor.Filas.FirstOrDefault().Id;
+        vista = "campo"; mensaje = null;
+    }
+
+    private void Editar(CampoTabla c)
+    {
+        edicion = new CampoTabla
+        {
+            Id = c.Id, Tabla = c.Tabla, Clave = c.Clave, Nombre = c.Nombre, Origen = c.Origen, Tipo = c.Tipo, Calculado = c.Calculado, TipoFijadoPorUsuario = c.TipoFijadoPorUsuario,
+            Formula = c.Formula, CatalogoTipo = c.CatalogoTipo, Opciones = c.Opciones, Decimales = c.Decimales, Visible = c.Visible, Orden = c.Orden
+        };
+        formulaTexto = c.Formula; formulaCelda = false; filaCelda = Motor.Filas.FirstOrDefault().Id;
+        vista = "campo"; mensaje = null;
+    }
+
+    private async Task GuardarCampo()
+    {
+        if (edicion is null) return;
+        var nombre = edicion.Nombre.Trim();
+        if (Motor.Campos.Any(c => c.Id != edicion.Id && string.Equals(c.Nombre.Trim(), nombre, StringComparison.OrdinalIgnoreCase)))
+        { mensaje = $"Ya existe un campo llamado «{nombre}»."; return; }
+        if (nombre.Contains('[') || nombre.Contains(']')) { mensaje = "El nombre no puede llevar corchetes."; return; }
+        edicion.Nombre = nombre;
+
+        var conFormula = !string.IsNullOrWhiteSpace(formulaTexto);
+        if (edicion.Calculado && !formulaCelda && !conFormula) { mensaje = "Escribe la fórmula de la columna."; return; }
+        edicion.Formula = edicion.Calculado && !formulaCelda ? formulaTexto : null;
+
+        var id = await Motor.GuardarCampoAsync(Db, edicion);
+        if (formulaCelda && conFormula && filaCelda != 0)
+        {
+            var c = Motor.Campos.First(x => x.Id == id);
+            await Motor.GuardarFormulaCeldaAsync(Db, filaCelda, c, formulaTexto);
+        }
+        vista = "lista"; edicion = null; mensaje = null;
+        await OnCambio.InvokeAsync();
+    }
+
+    private void PedirEliminar(CampoTabla c) { campo = c; vista = "eliminar"; }
+
+    private async Task ConfirmarEliminar()
+    {
+        if (campo is null) return;
+        await Motor.EliminarAsync(Db, campo);
+        vista = "lista"; campo = null;
+        await OnCambio.InvokeAsync();
+    }
+
+    // ---------- Formatos ----------
+    private void Formatos(CampoTabla c) { campo = c; regla = null; vista = "formatos"; mensaje = null; }
+
+    private void NuevaRegla()
+    {
+        if (campo is null) return;
+        regla = new FormatoCondicional
+        {
+            CampoTablaId = campo.Id,
+            Operador = campo.Tipo == TipoCampoTabla.Fecha ? OperadorFormato.FechaAntesDeHoy : OperadorFormato.Igual,
+            Estilo = "verde", Forma = "pildora", Negrita = true, Activo = true
+        };
+    }
+
+    private void EditarRegla(FormatoCondicional r) => regla = new FormatoCondicional
+    {
+        Id = r.Id, CampoTablaId = r.CampoTablaId, Operador = r.Operador, Valor1 = r.Valor1, Valor2 = r.Valor2, Estilo = r.Estilo,
+        ColorTexto = r.ColorTexto, ColorFondo = r.ColorFondo, Negrita = r.Negrita, Forma = r.Forma, Orden = r.Orden, Activo = r.Activo
+    };
+
+    private void Personalizar()
+    {
+        if (regla is null) return;
+        // Parte del estilo que estaba elegido, para ajustar solo lo necesario.
+        var e = MotorTabla.EstiloDe(regla);
+        regla.ColorTexto ??= e.ColorTexto; regla.ColorFondo ??= e.ColorFondo;
+        regla.Estilo = "personalizado";
+    }
+
+    private async Task GuardarRegla()
+    {
+        if (regla is null) return;
+        await Motor.GuardarFormatoAsync(Db, regla);
+        regla = null;
+        await OnCambio.InvokeAsync();
+    }
+
+    private async Task ActivarRegla(FormatoCondicional r, ChangeEventArgs e)
+    {
+        var copia = new FormatoCondicional
+        {
+            Id = r.Id, CampoTablaId = r.CampoTablaId, Operador = r.Operador, Valor1 = r.Valor1, Valor2 = r.Valor2, Estilo = r.Estilo,
+            ColorTexto = r.ColorTexto, ColorFondo = r.ColorFondo, Negrita = r.Negrita, Forma = r.Forma, Orden = r.Orden, Activo = e.Value is true
+        };
+        await Motor.GuardarFormatoAsync(Db, copia);
+        await OnCambio.InvokeAsync();
+    }
+
+    private async Task SoltarRegla(FormatoCondicional destino)
+    {
+        var r = arrRegla; FinArrastre();
+        if (r is null || r.Id == destino.Id) return;
+        await Motor.MoverFormatoAAsync(Db, r, destino);
+        await OnCambio.InvokeAsync();
+    }
+
+    private async Task EliminarRegla(FormatoCondicional r)
+    {
+        await Motor.EliminarFormatoAsync(Db, r);
+        await OnCambio.InvokeAsync();
+    }
+}

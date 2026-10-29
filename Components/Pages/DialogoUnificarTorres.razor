@@ -1,0 +1,487 @@
+@* Unifica dos torres que quedaron duplicadas (ej. "99" y "99N" porque se
+   cargó una tabla de torres nueva sin usar la opción de migrar a tiempo).
+   El usuario elige cuál de las dos torres conserva como la "principal"
+   (mantiene su código, nombre y punto en el mapa); los datos de la otra
+   se combinan hacia esa, campo por campo cuando hay choque, y la torre
+   sobrante se manda a la papelera (no se borra físicamente). *@
+@using Microsoft.AspNetCore.Components.Forms
+@using Microsoft.EntityFrameworkCore
+@using SigWeb.Data
+@using SigWeb.Data.Trazado
+@using SigWeb.Models
+@inject AppDbContext Db
+
+<div class="modal-backdrop-custom">
+    <div class="modal-box-custom" style="max-width: 880px;">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+            <h5 class="mb-0">🔗 Unificar torres duplicadas</h5>
+            <button type="button" class="btn-close" aria-label="Cerrar" @onclick="Cerrar"></button>
+        </div>
+
+        @if (paso == "elegir")
+        {
+            <p class="text-muted small">
+                Elige las dos torres que en realidad son la misma (por ejemplo, porque a una le cambiaron el
+                código y quedó duplicada al cargar una tabla de torres nueva). Vas a poder revisar y elegir,
+                campo por campo, qué datos conservar antes de confirmar.
+            </p>
+
+            <div class="row g-2 mb-2">
+                <div class="col-md-6">
+                    <label class="form-label mb-1 small">Torre 1</label>
+                    <select class="form-select form-select-sm" @bind="idTorreA">
+                        <option value="">-- Selecciona --</option>
+                        @foreach (var t in torres)
+                        {
+                            <option value="@t.Id">@t.Codigo @(string.IsNullOrWhiteSpace(t.Nombre) ? "" : $"— {t.Nombre}")</option>
+                        }
+                    </select>
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label mb-1 small">Torre 2</label>
+                    <select class="form-select form-select-sm" @bind="idTorreB">
+                        <option value="">-- Selecciona --</option>
+                        @foreach (var t in torres)
+                        {
+                            <option value="@t.Id">@t.Codigo @(string.IsNullOrWhiteSpace(t.Nombre) ? "" : $"— {t.Nombre}")</option>
+                        }
+                    </select>
+                </div>
+            </div>
+
+            @if (idTorreA.HasValue && idTorreB.HasValue && idTorreA != idTorreB)
+            {
+                var torreA = torres.First(t => t.Id == idTorreA);
+                var torreB = torres.First(t => t.Id == idTorreB);
+
+                <div class="mb-2">
+                    <label class="form-label mb-1 small">¿Cuál de las dos quieres conservar como la torre principal?</label>
+                    <div class="form-check">
+                        <input class="form-check-input" type="radio" name="sobreviviente" id="rbA"
+                               checked="@(idSobreviviente == torreA.Id)" @onchange="@(() => idSobreviviente = torreA.Id)" />
+                        <label class="form-check-label" for="rbA">Conservar <strong>@torreA.Codigo</strong></label>
+                    </div>
+                    <div class="form-check">
+                        <input class="form-check-input" type="radio" name="sobreviviente" id="rbB"
+                               checked="@(idSobreviviente == torreB.Id)" @onchange="@(() => idSobreviviente = torreB.Id)" />
+                        <label class="form-check-label" for="rbB">Conservar <strong>@torreB.Codigo</strong></label>
+                    </div>
+                </div>
+            }
+            else if (idTorreA.HasValue && idTorreB.HasValue && idTorreA == idTorreB)
+            {
+                <div class="alert alert-warning py-1">Elige dos torres distintas.</div>
+            }
+
+            @if (!string.IsNullOrEmpty(error))
+            {
+                <div class="alert alert-warning py-1">@error</div>
+            }
+
+            <div class="d-flex justify-content-end gap-2 mt-2">
+                <button class="btn btn-secondary btn-sm" @onclick="Cerrar" title="Cancelar"><Ico Nombre="cancelar" /></button>
+                <button class="btn btn-primary btn-sm" disabled="@(!PuedeContinuar)" @onclick="PrepararConflictos">
+                    Comparar datos
+                </button>
+            </div>
+        }
+        else if (paso == "conflictos")
+        {
+            <p class="text-muted small">
+                <strong>@torreSobreviviente!.Codigo</strong> quedará como la torre principal.
+                @if (conflictos.Count == 0)
+                {
+                    <span>No hay datos en conflicto: todo lo que tenga <strong>@torrePerdedora!.Codigo</strong> y no tenga @torreSobreviviente!.Codigo se copiará automáticamente.</span>
+                }
+                else
+                {
+                    <span>Elige, para cada dato donde las dos torres difieren, cuál valor conservar. Lo demás se combina automáticamente.</span>
+                }
+            </p>
+
+            @if (conflictos.Count > 0)
+            {
+                <div class="modal-area-flexible">
+                    <table class="table table-sm tabla-compacta align-middle">
+                        <thead style="position: sticky; top: 0; background: #fff;">
+                            <tr>
+                                <th style="width: 22%;">Elemento</th>
+                                <th style="width: 20%;">Campo</th>
+                                <th>Valor en @torreSobreviviente!.Codigo</th>
+                                <th>Valor en @torrePerdedora!.Codigo</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var c in conflictos)
+                            {
+                                <tr>
+                                    <td class="small">@c.Ambito</td>
+                                    <td class="small">@c.Clave</td>
+                                    <td>
+                                        <div class="form-check">
+                                            <input class="form-check-input" type="radio" name="@("c_" + c.Id)"
+                                                   checked="@(c.Eleccion == "Sobreviviente")" @onchange="@(() => c.Eleccion = "Sobreviviente")" />
+                                            <label class="form-check-label small">@c.ValorSobreviviente</label>
+                                        </div>
+                                    </td>
+                                    <td>
+                                        <div class="form-check">
+                                            <input class="form-check-input" type="radio" name="@("c_" + c.Id)"
+                                                   checked="@(c.Eleccion == "Perdedor")" @onchange="@(() => c.Eleccion = "Perdedor")" />
+                                            <label class="form-check-label small">@c.ValorPerdedor</label>
+                                        </div>
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+
+            @if (!string.IsNullOrEmpty(error))
+            {
+                <div class="alert alert-warning py-1 mt-2">@error</div>
+            }
+
+            <div class="d-flex justify-content-end gap-2 mt-2">
+                <button class="btn btn-secondary btn-sm" @onclick="@(() => paso = "elegir")">Atrás</button>
+                <button class="btn btn-primary btn-sm" disabled="@procesando" @onclick="ConfirmarUnificacion">
+                    @(procesando ? "Unificando..." : "Confirmar unificación")
+                </button>
+            </div>
+        }
+        else if (paso == "resultado")
+        {
+            <div class="alert alert-success">@mensajeResultado</div>
+            <div class="d-flex justify-content-end">
+                <button class="btn btn-primary btn-sm" @onclick="Cerrar">Cerrar</button>
+            </div>
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter] public EventCallback OnCerrar { get; set; }
+
+    private string paso = "elegir"; // "elegir" | "conflictos" | "resultado"
+    private string error = "";
+    private bool procesando = false;
+    private string mensajeResultado = "";
+
+    private List<ElementoTrazado> torres = new();
+    private int? idTorreA;
+    private int? idTorreB;
+    private int? idSobreviviente;
+
+    private bool PuedeContinuar =>
+        idTorreA.HasValue && idTorreB.HasValue && idTorreA != idTorreB && idSobreviviente.HasValue;
+
+    protected override async Task OnInitializedAsync()
+    {
+        torres = await Db.ElementosTrazado.AsNoTracking().Where(t => !t.Eliminado).OrderBy(t => t.Codigo).ToListAsync();
+    }
+
+    // ---------- Preparar comparación ----------
+    private class ConflictoCampo
+    {
+        public int Id { get; set; }
+        public string Ambito { get; set; } = ""; // "Torre (datos generales)" o el nombre del componente
+        public string Clave { get; set; } = "";
+        public string ValorSobreviviente { get; set; } = "";
+        public string ValorPerdedor { get; set; } = "";
+        public string Eleccion { get; set; } = "Sobreviviente"; // "Sobreviviente" | "Perdedor"
+
+        // Contexto para poder aplicar la decisión al confirmar.
+        public string Tipo { get; set; } = ""; // "CampoTorre" | "Coordenada" | "CampoComponente"
+        public CampoExtraTorre? CampoTorreObjetivo { get; set; }
+        public CampoExtraTorre? CampoTorreOrigen { get; set; }
+        public Componente? ComponenteSobreviviente { get; set; }
+        public Componente? ComponentePerdedor { get; set; }
+        public CampoExtraComponente? CampoComponenteObjetivo { get; set; }
+        public CampoExtraComponente? CampoComponenteOrigen { get; set; }
+    }
+
+    private ElementoTrazado? torreSobreviviente;
+    private ElementoTrazado? torrePerdedora;
+    private List<Componente> componentesSobreviviente = new();
+    private List<Componente> componentesPerdedora = new();
+    private List<ConflictoCampo> conflictos = new();
+
+    // Campos que se copian tal cual (sin conflicto) al confirmar.
+    private List<CampoExtraTorre> nuevosCamposTorre = new();
+    private List<CampoExtraComponente> nuevosCamposComponente = new();
+    private List<(Componente Perdedor, Componente Sobreviviente)> coordenadasAAdoptar = new();
+
+    private async Task PrepararConflictos()
+    {
+        error = "";
+        if (!PuedeContinuar) return;
+
+        var idA = idTorreA!.Value;
+        var idB = idTorreB!.Value;
+        var idSuperviviente = idSobreviviente!.Value;
+        var idLoser = idSuperviviente == idA ? idB : idA;
+
+        torreSobreviviente = await Db.ElementosTrazado.FirstOrDefaultAsync(t => t.Id == idSuperviviente);
+        torrePerdedora = await Db.ElementosTrazado.FirstOrDefaultAsync(t => t.Id == idLoser);
+
+        if (torreSobreviviente is null || torrePerdedora is null)
+        {
+            error = "No se encontró alguna de las torres seleccionadas.";
+            return;
+        }
+
+        conflictos = new();
+        nuevosCamposTorre = new();
+        nuevosCamposComponente = new();
+        coordenadasAAdoptar = new();
+        int contador = 0;
+
+        // ----- Campos de la torre (datos generales) -----
+        var camposSobreviviente = await Db.CamposExtraTorre.Where(c => c.ElementoTrazadoId == torreSobreviviente.Id).ToListAsync();
+        var camposPerdedor = await Db.CamposExtraTorre.Where(c => c.ElementoTrazadoId == torrePerdedora.Id).ToListAsync();
+        var mapaSobreviviente = camposSobreviviente.ToDictionary(c => c.Clave.Trim().ToLowerInvariant());
+
+        foreach (var cp in camposPerdedor)
+        {
+            var clave = cp.Clave.Trim().ToLowerInvariant();
+            if (mapaSobreviviente.TryGetValue(clave, out var cs))
+            {
+                if (!string.Equals(cs.Valor?.Trim(), cp.Valor?.Trim(), StringComparison.OrdinalIgnoreCase))
+                {
+                    conflictos.Add(new ConflictoCampo
+                    {
+                        Id = ++contador,
+                        Ambito = "Torre (datos generales)",
+                        Clave = cs.Clave,
+                        ValorSobreviviente = cs.Valor,
+                        ValorPerdedor = cp.Valor,
+                        Tipo = "CampoTorre",
+                        CampoTorreObjetivo = cs,
+                        CampoTorreOrigen = cp
+                    });
+                }
+            }
+            else
+            {
+                // Solo lo tiene la torre perdedora: se adopta directo, sin conflicto.
+                nuevosCamposTorre.Add(new CampoExtraTorre
+                {
+                    ElementoTrazadoId = torreSobreviviente.Id,
+                    Clave = cp.Clave,
+                    Valor = cp.Valor,
+                    Origen = cp.Origen
+                });
+            }
+        }
+
+        // ----- Componentes (patas, trinchos, etc.), emparejados por nombre -----
+        componentesSobreviviente = await Db.Componentes.Where(c => c.ElementoTrazadoId == torreSobreviviente.Id && !c.Eliminado).ToListAsync();
+        componentesPerdedora = await Db.Componentes.Where(c => c.ElementoTrazadoId == torrePerdedora.Id && !c.Eliminado).ToListAsync();
+
+        foreach (var compPerdedor in componentesPerdedora)
+        {
+            var compSobreviviente = componentesSobreviviente.FirstOrDefault(c =>
+                c.Nombre.Trim().Equals(compPerdedor.Nombre.Trim(), StringComparison.OrdinalIgnoreCase));
+
+            if (compSobreviviente is null)
+            {
+                // No hay pareja: este componente se traslada completo a la torre sobreviviente
+                // (se resuelve al confirmar, no genera conflicto).
+                continue;
+            }
+
+            // Coordenadas de este componente (ej. punto exacto de una pata).
+            bool tieneCoordSobreviviente = compSobreviviente.Latitud.HasValue && compSobreviviente.Longitud.HasValue;
+            bool tieneCoordPerdedor = compPerdedor.Latitud.HasValue && compPerdedor.Longitud.HasValue;
+
+            if (tieneCoordPerdedor && !tieneCoordSobreviviente)
+            {
+                coordenadasAAdoptar.Add((compPerdedor, compSobreviviente));
+            }
+            else if (tieneCoordSobreviviente && tieneCoordPerdedor)
+            {
+                bool difieren = Math.Abs(compSobreviviente.Latitud!.Value - compPerdedor.Latitud!.Value) > 0.0000001
+                    || Math.Abs(compSobreviviente.Longitud!.Value - compPerdedor.Longitud!.Value) > 0.0000001;
+                if (difieren)
+                {
+                    conflictos.Add(new ConflictoCampo
+                    {
+                        Id = ++contador,
+                        Ambito = compSobreviviente.Nombre,
+                        Clave = "Coordenadas (Lat/Lon)",
+                        ValorSobreviviente = $"{compSobreviviente.Latitud:F6}, {compSobreviviente.Longitud:F6}",
+                        ValorPerdedor = $"{compPerdedor.Latitud:F6}, {compPerdedor.Longitud:F6}",
+                        Tipo = "Coordenada",
+                        ComponenteSobreviviente = compSobreviviente,
+                        ComponentePerdedor = compPerdedor
+                    });
+                }
+            }
+
+            // Campos adicionales del componente.
+            var camposCompSobreviviente = await Db.CamposExtraComponente.Where(c => c.ComponenteId == compSobreviviente.Id).ToListAsync();
+            var camposCompPerdedor = await Db.CamposExtraComponente.Where(c => c.ComponenteId == compPerdedor.Id).ToListAsync();
+            var mapaCompSobreviviente = camposCompSobreviviente.ToDictionary(c => c.Clave.Trim().ToLowerInvariant());
+
+            foreach (var cp in camposCompPerdedor)
+            {
+                var clave = cp.Clave.Trim().ToLowerInvariant();
+                if (mapaCompSobreviviente.TryGetValue(clave, out var cs))
+                {
+                    if (!string.Equals(cs.Valor?.Trim(), cp.Valor?.Trim(), StringComparison.OrdinalIgnoreCase))
+                    {
+                        conflictos.Add(new ConflictoCampo
+                        {
+                            Id = ++contador,
+                            Ambito = compSobreviviente.Nombre,
+                            Clave = cs.Clave,
+                            ValorSobreviviente = cs.Valor,
+                            ValorPerdedor = cp.Valor,
+                            Tipo = "CampoComponente",
+                            ComponenteSobreviviente = compSobreviviente,
+                            ComponentePerdedor = compPerdedor,
+                            CampoComponenteObjetivo = cs,
+                            CampoComponenteOrigen = cp
+                        });
+                    }
+                }
+                else
+                {
+                    nuevosCamposComponente.Add(new CampoExtraComponente
+                    {
+                        ComponenteId = compSobreviviente.Id,
+                        Clave = cp.Clave,
+                        Valor = cp.Valor,
+                        Origen = cp.Origen
+                    });
+                }
+            }
+        }
+
+        paso = "conflictos";
+    }
+
+    // ---------- Confirmar ----------
+    private async Task ConfirmarUnificacion()
+    {
+        if (torreSobreviviente is null || torrePerdedora is null || procesando) return;
+        procesando = true;
+        error = "";
+
+        try
+        {
+            // 1) Aplicar decisiones de conflicto.
+            foreach (var c in conflictos)
+            {
+                if (c.Eleccion != "Perdedor") continue; // "Sobreviviente" ya es el valor actual, no hay que hacer nada.
+
+                switch (c.Tipo)
+                {
+                    case "CampoTorre":
+                        if (c.CampoTorreObjetivo is not null && c.CampoTorreOrigen is not null)
+                        {
+                            c.CampoTorreObjetivo.Valor = c.CampoTorreOrigen.Valor;
+                            c.CampoTorreObjetivo.Origen = c.CampoTorreOrigen.Origen;
+                        }
+                        break;
+                    case "Coordenada":
+                        if (c.ComponenteSobreviviente is not null && c.ComponentePerdedor is not null)
+                        {
+                            c.ComponenteSobreviviente.Latitud = c.ComponentePerdedor.Latitud;
+                            c.ComponenteSobreviviente.Longitud = c.ComponentePerdedor.Longitud;
+                        }
+                        break;
+                    case "CampoComponente":
+                        if (c.CampoComponenteObjetivo is not null && c.CampoComponenteOrigen is not null)
+                        {
+                            c.CampoComponenteObjetivo.Valor = c.CampoComponenteOrigen.Valor;
+                            c.CampoComponenteObjetivo.Origen = c.CampoComponenteOrigen.Origen;
+                        }
+                        break;
+                }
+            }
+
+            // 2) Adoptar campos que solo tenía la torre perdedora (sin conflicto).
+            foreach (var nuevo in nuevosCamposTorre) Db.CamposExtraTorre.Add(nuevo);
+            foreach (var nuevo in nuevosCamposComponente) Db.CamposExtraComponente.Add(nuevo);
+
+            // 3) Adoptar coordenadas de componentes que solo tenía la torre perdedora.
+            foreach (var (perdedor, sobreviviente) in coordenadasAAdoptar)
+            {
+                sobreviviente.Latitud = perdedor.Latitud;
+                sobreviviente.Longitud = perdedor.Longitud;
+            }
+
+            // 4) Trasladar hijos (checklist, archivos, materiales) de cada componente emparejado
+            //    desde el de la torre perdedora hacia el de la sobreviviente.
+            foreach (var compPerdedor in componentesPerdedora)
+            {
+                var compSobreviviente = componentesSobreviviente.FirstOrDefault(c =>
+                    c.Nombre.Trim().Equals(compPerdedor.Nombre.Trim(), StringComparison.OrdinalIgnoreCase));
+
+                if (compSobreviviente is null)
+                {
+                    // Sin pareja: el componente completo pasa a la torre sobreviviente.
+                    compPerdedor.ElementoTrazadoId = torreSobreviviente.Id;
+                    continue;
+                }
+
+                // Checklist: no pisar un registro que la sobreviviente ya tenga para el mismo parámetro.
+                var registrosSobreviviente = await Db.RegistrosParametro
+                    .Where(r => r.ComponenteId == compSobreviviente.Id)
+                    .Select(r => r.ParametroActividadId)
+                    .ToListAsync();
+                var yaTiene = registrosSobreviviente.ToHashSet();
+
+                var registrosPerdedor = await Db.RegistrosParametro.Where(r => r.ComponenteId == compPerdedor.Id).ToListAsync();
+                foreach (var reg in registrosPerdedor)
+                {
+                    if (!yaTiene.Contains(reg.ParametroActividadId))
+                    {
+                        reg.ComponenteId = compSobreviviente.Id;
+                        yaTiene.Add(reg.ParametroActividadId);
+                    }
+                    // si ya tiene uno para ese parámetro, se deja el de la sobreviviente y el del
+                    // perdedor queda huérfano (sigue existiendo, pero atado a una torre en papelera).
+                }
+
+                // Archivos adjuntos directos del componente: se trasladan todos, no hay conflicto posible.
+                var archivosPerdedor = await Db.ArchivosComponente.Where(a => a.ComponenteId == compPerdedor.Id && !a.Eliminado).ToListAsync();
+                foreach (var arch in archivosPerdedor) arch.ComponenteId = compSobreviviente.Id;
+
+                // Materiales vinculados a este componente.
+                var materialesPerdedor = await Db.Materiales.Where(m => m.ComponenteId == compPerdedor.Id && !m.Eliminado).ToListAsync();
+                foreach (var mat in materialesPerdedor) mat.ComponenteId = compSobreviviente.Id;
+            }
+
+            // 5) Enviar la torre perdedora a la papelera (referencia gráfica solamente; sus
+            //    componentes y datos ya migrados quedan intactos en la sobreviviente).
+            torrePerdedora.Eliminado = true;
+            torrePerdedora.FechaEliminacion = DateTime.Now;
+
+            await Db.SaveChangesAsync();
+            Db.ChangeTracker.Clear();
+
+            SincronizadorCatalogoLocalizacion.MarcarInactivo(Db, torrePerdedora.Id);
+            SincronizadorCatalogoLocalizacion.Sincronizar(Db, torreSobreviviente);
+
+            mensajeResultado = $"Se unificaron los datos de {torrePerdedora.Codigo} en {torreSobreviviente.Codigo}. " +
+                $"{torrePerdedora.Codigo} quedó en la papelera.";
+            paso = "resultado";
+        }
+        catch (Exception ex)
+        {
+            error = $"No se pudo completar la unificación: {ex.Message}";
+        }
+        finally
+        {
+            procesando = false;
+        }
+    }
+
+    private async Task Cerrar()
+    {
+        await OnCerrar.InvokeAsync();
+    }
+}

@@ -1,0 +1,2365 @@
+@page "/riesgos"
+@page "/riesgos/{RiesgoId:int}"
+@rendermode InteractiveServer
+@using Microsoft.EntityFrameworkCore
+@using SigWeb.Data
+@using SigWeb.Data.Riesgos
+@using SigWeb.Data.Tablas
+@using SigWeb.Models
+@inject AppDbContext Db
+@inject MatrizRiesgosServicio Servicio
+@inject SigWeb.Data.Impacto.AnalizadorImpacto Analizador
+@inject IWebHostEnvironment Env
+@inject NavigationManager Nav
+@inject SigWeb.Data.Planes.PlanesAccionServicio ServicioPlanes
+
+<PageTitle>Riesgos</PageTitle>
+
+<EncabezadoPagina Titulo="@Titulo" Icono="riesgos" Subtitulo="@Subtitulo" OnAtras="AtrasCb">
+    <Acciones>
+        @if (vista == "matriz")
+        {
+            <button type="button" class="pg-btn @(vistaR == "mapa" ? "activo" : "")" title="Mapa de calor (probabilidad × impacto)" @onclick='() => vistaR = "mapa"'><Ico Nombre="tablero" /></button>
+            <button type="button" class="pg-btn @(vistaR == "lista" ? "activo" : "")" title="Lista" @onclick='() => vistaR = "lista"'><Ico Nombre="listado" /></button>
+            <button type="button" class="pg-btn" title="Ronda de seguimiento" disabled="@(version is null || riesgos.Count == 0)" @onclick="AbrirRonda"><Ico Nombre="seguimiento" /></button>
+            <button type="button" class="pg-btn" title="Revisiones de la matriz" @onclick='() => vista = "versiones"'><Ico Nombre="versiones" /></button>
+            <span class="pg-sep"></span>
+            <BotonCampos Activo="verCampos" Deshabilitado="motor is null" OnClick="() => verCampos = true" />
+            <button type="button" class="pg-btn" title="Importar el libro Excel de la matriz" @onclick='() => { vista = "importar"; mensaje = ""; }'><Ico Nombre="importar" /></button>
+            @if (vistaR == "lista")
+            {
+                <BotonExportar Titulo="@($"Matriz de riesgos {version?.Codigo}")" />
+            }
+            <span class="pg-sep"></span>
+            <button type="button" class="pg-btn pg-btn-primario" title="Nuevo riesgo" disabled="@(version is null)" @onclick="NuevoRiesgo"><Ico Nombre="agregar" /></button>
+        }
+        else if (vista == "versiones")
+        {
+            <BotonExportar Titulo="Revisiones de la matriz de riesgos" />
+            <span class="pg-sep"></span>
+            <button type="button" class="pg-btn pg-btn-primario" title="Nueva revisión" @onclick="NuevaVersion"><Ico Nombre="agregar" /></button>
+        }
+        else if (vista == "detalle" && riesgo is not null)
+        {
+            <BotonExportar Titulo="@($"Seguimientos {riesgo.Codigo}")" Selector="table.tabla-seguimientos" />
+            <span class="pg-sep"></span>
+            <button type="button" class="pg-btn pg-btn-peligro" title="Eliminar riesgo" @onclick="() => PedirEliminarRiesgo(riesgo)"><Ico Nombre="eliminar" /></button>
+            <button type="button" class="pg-btn" title="Editar riesgo" @onclick="() => EditarRiesgo(riesgo)"><Ico Nombre="editar" /></button>
+            <button type="button" class="pg-btn pg-btn-primario" title="Nuevo seguimiento" @onclick="() => NuevoSeguimiento(riesgo)"><Ico Nombre="seguimiento" /></button>
+        }
+    </Acciones>
+</EncabezadoPagina>
+
+@if (!string.IsNullOrEmpty(mensaje))
+{
+    <div class="alert @(error ? "alert-warning" : "alert-success") py-1 px-2 small d-flex align-items-center gap-2">
+        <span class="flex-grow-1">@mensaje</span>
+        <button type="button" class="btn-close btn-sm" @onclick='() => mensaje = ""'></button>
+    </div>
+}
+
+@if (verCampos && motor is not null)
+{
+    <PanelCampos Motor="motor" OnCerrar="() => verCampos = false" OnCambio="StateHasChanged" />
+}
+
+@* ============ Confirmaciones de eliminación ============ *@
+@if (elimRiesgo is not null)
+{
+    <div class="card panel-formulario mb-3 border-danger">
+        <div class="card-body">
+            <div class="mb-2"><Ico Nombre="eliminar" /> <strong>@elimRiesgo.Codigo — @elimRiesgo.Descripcion</strong></div>
+            <PanelImpacto Informe="impacto" OnEntendido="@(v => impactoOk = v)" />
+            <div class="d-flex gap-2">
+                <button class="btn btn-secondary btn-sm" type="button" title="Cancelar" @onclick="() => { elimRiesgo = null; impacto = null; }"><Ico Nombre="cancelar" /></button>
+                <button class="btn btn-danger btn-sm" type="button" title="Eliminar (va a la Papelera)" disabled="@BloqueadoPorImpacto" @onclick="ConfirmarEliminarRiesgo"><Ico Nombre="eliminar" /></button>
+            </div>
+        </div>
+    </div>
+}
+@if (elimVersion is not null)
+{
+    <div class="card panel-formulario mb-3 border-danger">
+        <div class="card-body">
+            <div class="mb-2"><Ico Nombre="eliminar" /> <strong>@elimVersion.Codigo</strong></div>
+            <PanelImpacto Informe="impacto" OnEntendido="@(v => impactoOk = v)" />
+            <div class="d-flex gap-2">
+                <button class="btn btn-secondary btn-sm" type="button" title="Cancelar" @onclick="() => { elimVersion = null; impacto = null; reemplazarCodigoTrasEliminar = null; }"><Ico Nombre="cancelar" /></button>
+                <button class="btn btn-danger btn-sm" type="button" title="@(reemplazarCodigoTrasEliminar is null ? "Eliminar (va a la Papelera)" : "Eliminar y dejar lista la nueva para importar")" disabled="@BloqueadoPorImpacto" @onclick="ConfirmarEliminarVersion"><Ico Nombre="eliminar" /></button>
+            </div>
+        </div>
+    </div>
+}
+@if (elimSeguimiento is not null)
+{
+    <div class="card panel-formulario mb-3 border-danger">
+        <div class="card-body">
+            <div class="mb-2"><Ico Nombre="eliminar" /> <strong>Seguimiento del @elimSeguimiento.Fecha.ToString("dd/MM/yyyy")</strong></div>
+            <PanelImpacto Informe="impacto" OnEntendido="@(v => impactoOk = v)" />
+            <div class="d-flex gap-2">
+                <button class="btn btn-secondary btn-sm" type="button" title="Cancelar" @onclick="() => { elimSeguimiento = null; impacto = null; }"><Ico Nombre="cancelar" /></button>
+                <button class="btn btn-danger btn-sm" type="button" title="Eliminar (va a la Papelera)" disabled="@BloqueadoPorImpacto" @onclick="ConfirmarEliminarSeguimiento"><Ico Nombre="eliminar" /></button>
+            </div>
+        </div>
+    </div>
+}
+
+@* ======================= MATRIZ (lista) ======================= *@
+@if (vista == "matriz")
+{
+    @if (version is null)
+    {
+        <div class="card panel-formulario">
+            <div class="card-body">
+                <p class="mb-2">Todavía no hay ninguna revisión de la matriz.</p>
+                <div class="d-flex gap-2">
+                    <button class="btn btn-primary btn-sm" title="Importar el libro Excel de la matriz" @onclick='() => vista = "importar"'><Ico Nombre="importar" /></button>
+                    <button class="btn btn-outline-secondary btn-sm" title="Crear revisión en blanco" @onclick="NuevaVersion"><Ico Nombre="agregar" /></button>
+                </div>
+            </div>
+        </div>
+    }
+    else
+    {
+        @if (formRiesgo is not null)
+        {
+            @FormularioRiesgo()
+        }
+
+        <div class="d-flex flex-wrap gap-2 align-items-center mb-2">
+            <input class="form-control form-control-sm" style="max-width:280px;" placeholder="Buscar riesgo..." @bind="filtro" @bind:event="oninput" />
+            <select class="form-select form-select-sm" style="max-width:190px;" @bind="filtroVersion" @bind:after="CargarAsync">
+                @foreach (var v in versiones)
+                {
+                    <option value="@v.Id">@v.Codigo — @v.Fecha.ToString("dd/MM/yyyy") @(v.Estado == EstadoVersionMatriz.Vigente ? "(vigente)" : "")</option>
+                }
+            </select>
+            <select class="form-select form-select-sm" style="max-width:150px;" @bind="filtroNivel">
+                <option value="">Todos los niveles</option>
+                <option value="Extremo">Extremo</option>
+                <option value="Alto">Alto</option>
+                <option value="Moderado">Moderado</option>
+                <option value="Bajo">Bajo</option>
+            </select>
+            <div class="ms-auto d-flex gap-1 align-items-center small">
+                @foreach (var n in new[] { NivelRiesgo.Extremo, NivelRiesgo.Alto, NivelRiesgo.Moderado, NivelRiesgo.Bajo })
+                {
+                    var cuenta = riesgos.Count(r => r.Nivel == n);
+                    <span class="rg-pill" style="background:@EscalaRiesgo.Color(n);color:@EscalaRiesgo.ColorTexto(n)" title="@EscalaRiesgo.Nombre(n)">@EscalaRiesgo.Nombre(n): @cuenta</span>
+                }
+            </div>
+        </div>
+
+        @if (vistaR == "mapa")
+        {
+            @MapaRiesgos()
+        }
+        else
+        {
+        <div class="tabla-scroll tabla-llena"><table class="table table-sm table-bordered table-hover tabla-compacta align-middle mb-0 tabla-pin">
+            <thead>
+                <tr>
+                    @foreach (var c in Columnas)
+                    {
+                        <th class="th-ordenable" @onclick="() => Ordenar(c.Clave)">@c.Nombre@(col == c.Clave ? (asc ? " ▲" : " ▼") : "")</th>
+                    }
+                    <th style="width:70px;"></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var r in Mostrados)
+                {
+                    <tr class="@(riesgo?.Id == r.Id ? "table-active" : "")" role="button" @onclick="() => AbrirRiesgo(r)">
+                        @foreach (var c in Columnas)
+                        {
+                            @if (c.Origen == OrigenCampoTabla.Nativo && c.Clave == "nivel")
+                            {
+                                <td class="text-center"><span class="rg-pill" style="background:@EscalaRiesgo.Color(r.Nivel);color:@EscalaRiesgo.ColorTexto(r.Nivel)">@EscalaRiesgo.Nombre(r.Nivel)</span></td>
+                            }
+                            else if (c.Origen == OrigenCampoTabla.Nativo && c.Clave == "estadoplan")
+                            {
+                                <td>
+                                    <div class="d-flex flex-column gap-1">
+                                        @foreach (var p in PlanesDe(r))
+                                        {
+                                            <span class="d-flex gap-1 align-items-center small"><strong>@p.Codigo</strong><EstadoAccion Estado="p.Estado" /></span>
+                                        }
+                                    </div>
+                                </td>
+                            }
+                            else if (c.Origen == OrigenCampoTabla.Nativo && CatalogoDeColumna(c.Clave) is string tipoCat && motor!.Estilo(r.Id, c) is null)
+                            {
+                                <td class="small"><ValorCatalogo Tipo="@tipoCat" Valor="@(motor!.Texto(r.Id, c, out _))" /></td>
+                            }
+                            else if (c.Origen == OrigenCampoTabla.Nativo && ColumnasMultilinea.Contains(c.Clave))
+                            {
+                                <CeldaCampo Motor="motor!" Campo="c" Fila="r.Id" Clase="rg-multi rg-celda-lista" OnCambio="StateHasChanged" />
+                            }
+                            else
+                            {
+                                <CeldaCampo Motor="motor!" Campo="c" Fila="r.Id" Clase="@(c.Clave == "codigo" ? "fw-bold" : null)" OnCambio="StateHasChanged" />
+                            }
+                        }
+                        <td class="text-center celda-acciones" @onclick:stopPropagation="true">
+                            <button type="button" class="ens-mini" title="Nuevo seguimiento" @onclick="() => NuevoSeguimiento(r)"><Ico Nombre="seguimiento" /></button>
+                            <button type="button" class="ens-mini" title="Editar" @onclick="() => EditarRiesgo(r)"><Ico Nombre="editar" /></button>
+                        </td>
+                    </tr>
+                }
+                @if (!Mostrados.Any())
+                {
+                    <tr><td colspan="@(Columnas.Count() + 1)" class="text-muted small text-center py-2"><em>Sin riesgos en esta revisión.</em></td></tr>
+                }
+            </tbody>
+        </table></div>
+        }
+    }
+}
+
+@* ======================= DETALLE DE UN RIESGO ======================= *@
+else if (vista == "detalle" && riesgo is not null)
+{
+    @if (formSeguimiento is not null)
+    {
+        @FormularioSeguimiento()
+    }
+    @if (formRiesgo is not null)
+    {
+        @FormularioRiesgo()
+    }
+
+    <div class="rg-detalle">
+        <div class="rg-col">
+            <div class="rg-bloque">
+                <div class="rg-bloque-tit">
+                    <span class="rg-pill" style="background:@EscalaRiesgo.Color(riesgo.Nivel);color:@EscalaRiesgo.ColorTexto(riesgo.Nivel)">@EscalaRiesgo.Nombre(riesgo.Nivel)</span>
+                    <span>@riesgo.Codigo · @(riesgo.Tipo == TipoRiesgo.Oportunidad ? "Oportunidad" : "Riesgo")</span>
+                    <span class="ms-auto small"><ValorCatalogo Tipo="@SembradorCatalogosRiesgo.EstadoActual" Valor="@riesgo.EstadoActual" ClaseSinFormato="text-muted" /></span>
+                </div>
+                <div class="rg-desc">@riesgo.Descripcion</div>
+                <div class="rg-meta">
+                    <div><span>Categoría</span><div><ValorCatalogo Tipo="@SembradorCatalogosRiesgo.Categoria" Valor="@riesgo.Categoria" /></div></div>
+                    <div><span>Área</span><div><ValorCatalogo Tipo="@SembradorCatalogosRiesgo.Area" Valor="@riesgo.Area" /></div></div>
+                    <div><span>Estrategia</span><div><ValorCatalogo Tipo="@SembradorCatalogosRiesgo.Estrategia" Valor="@riesgo.Estrategia" /></div></div>
+                    <div class="rg-meta-ancho"><span>Responsable del plan</span>
+                        <div class="d-flex flex-wrap gap-1 mt-1">
+                            @foreach (var c in CargosDe(riesgo.ResponsablePlan)) { <ValorCatalogo Tipo="@SembradorCatalogosRiesgo.Cargo" Valor="@c" ClaseSinFormato="rg-chip" /> }
+                            @if (string.IsNullOrWhiteSpace(riesgo.ResponsablePlan)) { <span class="text-muted">—</span> }
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="rg-listas">
+                @foreach (var t in ElementosRiesgo.Tipos)
+                {
+                    var items = elementos.Where(e => e.Tipo == t).OrderBy(e => e.Orden).ToList();
+                    <div class="rg-bloque rg-lista">
+                        <div class="rg-bloque-tit"><span>@ElementosRiesgo.Nombre(t)</span><span class="rg-cuenta">@items.Count</span></div>
+                        @if (items.Count == 0)
+                        {
+                            <div class="small text-muted">—</div>
+                        }
+                        else
+                        {
+                            <ul class="rg-items">
+                                @foreach (var e in items) { <li>@e.Texto</li> }
+                            </ul>
+                        }
+                    </div>
+                }
+            </div>
+        </div>
+
+        <div class="rg-col">
+            <div class="rg-bloque">
+                <div class="rg-bloque-tit"><span>Análisis cualitativo</span></div>
+                @MatrizCalor(riesgo.Probabilidad, riesgo.Impacto)
+                <div class="small text-muted mt-1">
+                    Probabilidad: <strong>@EscalaRiesgo.Nombre(riesgo.Probabilidad)</strong> ·
+                    Impacto: <strong>@EscalaRiesgo.Nombre(riesgo.Impacto)</strong>
+                </div>
+            </div>
+
+            <div class="rg-bloque">
+                <div class="rg-bloque-tit">
+                    <span>Alcance</span>
+                    <button type="button" class="ens-mini ms-auto" title="Asociar torre, pata o localización" @onclick="() => mostrarAlcance = !mostrarAlcance"><Ico Nombre="agregar" /></button>
+                </div>
+                @if (alcances.Count == 0)
+                {
+                    <div class="small text-muted">Aplica a todo el proyecto.</div>
+                }
+                <div class="d-flex flex-wrap gap-1">
+                    @foreach (var a in alcances)
+                    {
+                        <span class="rg-chip">@TextoAlcance(a)
+                            <button type="button" class="rg-chip-x" title="Quitar" @onclick="() => QuitarAlcance(a)">✕</button>
+                        </span>
+                    }
+                </div>
+                @if (mostrarAlcance)
+                {
+                    <div class="border rounded p-2 mt-2 small d-flex flex-column gap-1">
+                        <select class="form-select form-select-sm" @bind="tipoAlcance">
+                            <option value="torre">Torre</option>
+                            <option value="componente">Pata o elemento de una torre</option>
+                            <option value="localizacion">Localización (catálogo)</option>
+                            <option value="tiro">Tiro</option>
+                        </select>
+                        @if (tipoAlcance == "torre")
+                        {
+                            <select class="form-select form-select-sm" @bind="idAlcance">
+                                <option value="0">— elegir torre —</option>
+                                @foreach (var t in torres) { <option value="@t.Id">@t.Codigo</option> }
+                            </select>
+                        }
+                        else if (tipoAlcance == "componente")
+                        {
+                            <select class="form-select form-select-sm" @bind="torreDeComponente" @bind:after="CargarComponentes">
+                                <option value="0">— elegir torre —</option>
+                                @foreach (var t in torres) { <option value="@t.Id">@t.Codigo</option> }
+                            </select>
+                            <select class="form-select form-select-sm" @bind="idAlcance">
+                                <option value="0">— elegir elemento —</option>
+                                @foreach (var c in componentes) { <option value="@c.Id">@c.Nombre</option> }
+                            </select>
+                        }
+                        else if (tipoAlcance == "localizacion")
+                        {
+                            <select class="form-select form-select-sm" @bind="idAlcance">
+                                <option value="0">— elegir localización —</option>
+                                @foreach (var l in localizaciones) { <option value="@l.Id">@l.Nombre</option> }
+                            </select>
+                        }
+                        else
+                        {
+                            <select class="form-select form-select-sm" @bind="idAlcance">
+                                <option value="0">— elegir tiro —</option>
+                                @foreach (var t in tiros) { <option value="@t.Id">@t.Nombre</option> }
+                            </select>
+                        }
+                        <div class="d-flex gap-1">
+                            <button class="btn btn-sm btn-primary" title="Agregar" disabled="@(idAlcance == 0)" @onclick="AgregarAlcance"><Ico Nombre="agregar" /></button>
+                            <button class="btn btn-sm btn-secondary" title="Cancelar" @onclick="() => mostrarAlcance = false"><Ico Nombre="cancelar" /></button>
+                        </div>
+                    </div>
+                }
+            </div>
+
+            <div class="rg-bloque">
+                <div class="rg-bloque-tit">
+                    <span>Planes de acción</span><span class="rg-cuenta">@planesRiesgo.Count</span>
+                    <button type="button" class="ens-mini ms-auto" title="Nuevo plan de acción" @onclick="() => IrNuevoPlan(riesgo.Id, null)"><Ico Nombre="agregar" /></button>
+                </div>
+                @if (planesRiesgo.Count == 0)
+                {
+                    <div class="small text-muted">—</div>
+                }
+                <div class="d-flex flex-column gap-1">
+                    @foreach (var p in planesRiesgo)
+                    {
+                        var ep = EscalaAccion.EstadoPlan(accionesPlanes.Where(a => a.PlanAccionId == p.Id));
+                        <button type="button" class="rg-plan-res" title="Abrir plan" @onclick="() => IrPlan(p.Id)">
+                            <strong>@p.Codigo</strong>
+                            <span class="rg-plan-res-txt">@p.DescripcionHallazgo</span>
+                            <EstadoAccion Estado="ep" />
+                        </button>
+                    }
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="rg-bloque mt-2">
+        <div class="rg-bloque-tit"><span>Acciones de los planes (@accionesPlanes.Count)</span></div>
+        <div class="tabla-scroll"><table class="table table-sm table-bordered table-hover tabla-compacta align-middle mb-0 tabla-pin tabla-acciones">
+            <thead>
+                <tr>
+                    <th style="width:90px;">Plan</th>
+                    <th style="width:150px;">Tipo de hallazgo</th>
+                    <th style="width:140px;">Tipo de acción</th>
+                    <th>Acción</th>
+                    <th style="width:160px;">Producto</th>
+                    <th style="width:170px;">Responsable</th>
+                    <th style="width:95px;">Fecha</th>
+                    <th style="width:110px;">Estado</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var p in planesRiesgo)
+                {
+                    var acs = accionesPlanes.Where(a => a.PlanAccionId == p.Id).OrderBy(a => a.Orden).ToList();
+                    @if (acs.Count == 0)
+                    {
+                        <tr role="button" title="Abrir plan" @onclick="() => IrPlan(p.Id)">
+                            <td class="fw-bold">@p.Codigo</td>
+                            <td class="small">@p.TipoHallazgo</td>
+                            <td></td>
+                            <td class="text-muted small"><em>Sin acciones.</em></td>
+                            <td></td><td></td><td></td>
+                            <td><EstadoAccion Estado="EstadoAccionPlan.Abierta" /></td>
+                        </tr>
+                    }
+                    @foreach (var a in acs)
+                    {
+                        <tr role="button" title="Abrir plan" @onclick="() => IrPlan(p.Id)">
+                            <td class="fw-bold">@p.Codigo</td>
+                            <td class="small">@p.TipoHallazgo</td>
+                            <td class="small">@EscalaAccion.Nombre(a.Tipo)</td>
+                            <td class="rg-multi">@a.Descripcion</td>
+                            <td class="small rg-multi">@a.Producto</td>
+                            <td class="small rg-multi">@a.Responsable</td>
+                            <td class="small">@a.Fecha.ToString("dd/MM/yyyy")</td>
+                            <td><EstadoAccion Estado="a.Estado" /></td>
+                        </tr>
+                    }
+                }
+                @if (planesRiesgo.Count == 0)
+                {
+                    <tr><td colspan="8" class="text-muted small text-center py-2"><em>Sin planes de acción.</em></td></tr>
+                }
+            </tbody>
+        </table></div>
+    </div>
+
+    <div class="rg-bloque mt-2">
+        <div class="rg-bloque-tit"><span>Seguimientos (@seguimientos.Count)</span></div>
+        <div class="tabla-scroll"><table class="table table-sm table-bordered table-hover tabla-compacta align-middle mb-0 tabla-pin tabla-seguimientos">
+            <thead>
+                <tr>
+                    <th style="width:100px;">Fecha</th>
+                    <th style="width:130px;">Resultado</th>
+                    <th style="width:180px;">Responsables</th>
+                    <th>Observación</th>
+                    <th style="width:220px;">Hallazgos</th>
+                    <th style="width:200px;">Soportes</th>
+                    <th style="width:110px;">Planes</th>
+                    <th style="width:100px;"></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var s in seguimientos)
+                {
+                    var hs = hallazgos.Where(h => h.SeguimientoRiesgoId == s.Id).ToList();
+                    <tr>
+                        <td class="fw-bold">@s.Fecha.ToString("dd/MM/yyyy")</td>
+                        <td><ValorCatalogo Tipo="@SembradorCatalogosRiesgo.ResultadoSeguimiento" Valor="@NombreResultado(s.Resultado)" FondoDef="@ColorResultado(s.Resultado)" TextoDef="#fff" /></td>
+                        <td class="small rg-multi">@s.Responsable</td>
+                        <td class="rg-multi">@s.Observacion</td>
+                        <td>
+                            @if (hs.Count == 0)
+                            {
+                                <span class="text-muted small">—</span>
+                            }
+                            @foreach (var h in hs)
+                            {
+                                <div class="small">
+                                    @foreach (var t in TextosHallazgo(h)) { <span class="rg-chip me-1">@t</span> }
+                                    @h.Descripcion
+                                </div>
+                            }
+                        </td>
+                        <td>
+                            <div class="d-flex flex-wrap gap-1">
+                                @foreach (var x in soportes.Where(x => x.SeguimientoRiesgoId == s.Id))
+                                {
+                                    <a class="rg-chip" href="@x.RutaArchivo" target="_blank" rel="noopener" title="@x.NombreOriginal">
+                                        @if (SigWeb.Data.Planes.AlmacenAnexos.EsImagen(x.RutaArchivo)) { <img src="@x.RutaArchivo" alt="" class="rg-mini" /> }
+                                        else { <Ico Nombre="adjuntar" /> }
+                                        <span class="pa-accion-txt" style="max-width:120px">@x.NombreOriginal</span>
+                                    </a>
+                                }
+                            </div>
+                        </td>
+                        <td>
+                            @foreach (var p in planesRiesgo.Where(p => p.SeguimientoRiesgoId == s.Id))
+                            {
+                                <button type="button" class="rg-chip" title="Abrir plan" @onclick="() => IrPlan(p.Id)">@p.Codigo</button>
+                            }
+                        </td>
+                        <td class="text-center celda-acciones">
+                            <button type="button" class="ens-mini" title="Iniciar plan de acción" @onclick="() => IrNuevoPlan(riesgo.Id, s.Id)"><Ico Nombre="plan-accion" /></button>
+                            <button type="button" class="ens-mini" title="Editar seguimiento" @onclick="() => EditarSeguimiento(s)"><Ico Nombre="editar" /></button>
+                            <button type="button" class="ens-mini" title="Eliminar seguimiento" @onclick="() => PedirEliminarSeguimiento(s)"><Ico Nombre="eliminar" /></button>
+                        </td>
+                    </tr>
+                }
+                @if (seguimientos.Count == 0)
+                {
+                    <tr><td colspan="8" class="text-muted small text-center py-2"><em>Sin seguimientos registrados.</em></td></tr>
+                }
+            </tbody>
+        </table></div>
+    </div>
+
+    @if (historial.Count > 1)
+    {
+        <div class="rg-bloque mt-2">
+            <div class="rg-bloque-tit"><span>Este riesgo en otras revisiones</span></div>
+            <div class="d-flex flex-wrap gap-1">
+                @foreach (var h in historial)
+                {
+                    var v = versiones.FirstOrDefault(x => x.Id == h.VersionMatrizRiesgosId);
+                    <button type="button" class="rg-chip @(h.Id == riesgo.Id ? "rg-chip-on" : "")" @onclick="() => AbrirRiesgo(h)">
+                        @(v?.Codigo ?? "?") · @EscalaRiesgo.Nombre(h.Nivel)
+                    </button>
+                }
+            </div>
+        </div>
+    }
+}
+
+@* ======================= VERSIONES ======================= *@
+else if (vista == "versiones")
+{
+    @if (formVersion is not null)
+    {
+        <div class="card panel-formulario mb-3">
+            <div class="card-body">
+                <div class="row g-2">
+                    <div class="col-md-2">
+                        <label class="small text-muted">Código</label>
+                        <input class="form-control form-control-sm" @bind="formVersion.Codigo" placeholder="Rev. 01" />
+                    </div>
+                    <div class="col-md-2">
+                        <label class="small text-muted">Fecha de la revisión</label>
+                        <input type="date" class="form-control form-control-sm" @bind="formVersion.Fecha" />
+                    </div>
+                    <div class="col-md-2">
+                        <label class="small text-muted">Etapa</label>
+                        <input class="form-control form-control-sm" @bind="formVersion.Etapa" placeholder="CONSTRUCCIÓN" />
+                    </div>
+                    <div class="col-md-2">
+                        <label class="small text-muted">Elaborado por</label>
+                        <input class="form-control form-control-sm" @bind="formVersion.ElaboradoPor" />
+                    </div>
+                    <div class="col-md-2">
+                        <label class="small text-muted">Revisado por</label>
+                        <input class="form-control form-control-sm" @bind="formVersion.RevisadoPor" />
+                    </div>
+                    <div class="col-md-2">
+                        <label class="small text-muted">Aprobado por</label>
+                        <input class="form-control form-control-sm" @bind="formVersion.AprobadoPor" />
+                    </div>
+                    <div class="col-md-1">
+                        <label class="small text-muted" title="Estado documental del cliente (APCC, DPC, APC, EPA…)">Estado</label>
+                        <input class="form-control form-control-sm" @bind="formVersion.EstadoDocumento" />
+                    </div>
+                    <div class="col-md-12">
+                        <label class="small text-muted">Control de cambios</label>
+                        <textarea class="form-control form-control-sm" rows="2" @bind="formVersion.DescripcionCambios" placeholder="Qué cambió respecto de la revisión anterior"></textarea>
+                    </div>
+                </div>
+                @if (formVersionEsNueva)
+                {
+                    <label class="form-check mt-2 mb-0 small">
+                        <input class="form-check-input" type="checkbox" @bind="copiarRiesgos" />
+                        Copiar los riesgos de la revisión vigente (los seguimientos y hallazgos anteriores se conservan en su propia revisión)
+                    </label>
+                }
+                <div class="d-flex gap-2 mt-2">
+                    <button class="btn btn-primary btn-sm" title="Guardar" @onclick="GuardarVersion"><Ico Nombre="guardar" /></button>
+                    <button class="btn btn-secondary btn-sm" title="Cancelar" @onclick="() => formVersion = null"><Ico Nombre="cancelar" /></button>
+                </div>
+            </div>
+        </div>
+    }
+
+    <div class="tabla-scroll"><table class="table table-sm table-bordered table-hover tabla-compacta align-middle mb-0 tabla-pin">
+        <thead>
+            <tr>
+                <th style="width:120px;">Revisión</th>
+                <th style="width:100px;">Fecha</th>
+                <th style="width:110px;">Estado</th>
+                <th style="width:110px;">Etapa</th>
+                <th style="width:120px;">Elaborado</th>
+                <th style="width:120px;">Revisado</th>
+                <th style="width:120px;">Aprobado</th>
+                <th>Control de cambios</th>
+                <th style="width:80px;" class="text-center">Riesgos</th>
+                <th style="width:90px;" class="text-center">Seguim.</th>
+                <th style="width:110px;"></th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var v in versiones)
+            {
+                <tr>
+                    <td class="fw-bold" title="@(string.IsNullOrWhiteSpace(v.HojaOrigen) ? "Creada manualmente" : $"Cargada de la hoja \"{v.HojaOrigen}\"")">@v.Codigo</td>
+                    <td>@v.Fecha.ToString("dd/MM/yyyy")</td>
+                    <td><span class="rg-pill" style="background:@ColorEstadoVersion(v.Estado);color:#fff">@NombreEstadoVersion(v.Estado)</span></td>
+                    <td class="small">@v.Etapa</td>
+                    <td class="small">@v.ElaboradoPor</td>
+                    <td class="small">@v.RevisadoPor</td>
+                    <td class="small">@v.AprobadoPor</td>
+                    <td class="rg-multi">@v.DescripcionCambios@(string.IsNullOrWhiteSpace(v.EstadoDocumento) ? "" : $" [{v.EstadoDocumento}]")</td>
+                    <td class="text-center">@(conteoRiesgos.TryGetValue(v.Id, out var n) ? n : 0)</td>
+                    <td class="text-center">@(conteoSeguimientos.TryGetValue(v.Id, out var m) ? m : 0)</td>
+                    <td class="text-center">
+                        <button type="button" class="ens-mini" title="Ver sus riesgos" @onclick="() => VerVersion(v)"><Ico Nombre="listado" /></button>
+                        @if (v.Estado != EstadoVersionMatriz.Vigente)
+                        {
+                            <button type="button" class="ens-mini" title="Marcar como vigente" @onclick="() => MarcarVigente(v)"><Ico Nombre="guardar" /></button>
+                        }
+                        <button type="button" class="ens-mini" title="Editar" @onclick="() => EditarVersion(v)"><Ico Nombre="editar" /></button>
+                        <button type="button" class="ens-mini" title="Eliminar revisión" @onclick="() => PedirEliminarVersion(v)"><Ico Nombre="eliminar" /></button>
+                    </td>
+                </tr>
+            }
+            @if (versiones.Count == 0)
+            {
+                <tr><td colspan="11" class="text-muted small text-center py-2"><em>Sin revisiones.</em></td></tr>
+            }
+        </tbody>
+    </table></div>
+}
+
+@* ======================= RONDA DE SEGUIMIENTO ======================= *@
+else if (vista == "ronda")
+{
+    <div class="card panel-formulario mb-2">
+        <div class="card-body py-2">
+            <div class="row g-2 align-items-end">
+                <div class="col-md-2">
+                    <label class="small text-muted">Fecha del seguimiento</label>
+                    <input type="date" class="form-control form-control-sm" @bind="rondaFecha" />
+                </div>
+                <div class="col-md-5">
+                    <label class="small text-muted">Responsables</label>
+                    <SelectorMultiple Valores="rondaResp" Opciones="Opciones(SembradorCatalogosRiesgo.Cargo, null)" />
+                </div>
+                <div class="col-md-5 d-flex gap-2 align-items-center">
+                    <span class="small text-muted">@rondaFilas.Count(f => f.Marcado) de @rondaFilas.Count marcados</span>
+                    <button class="btn btn-sm btn-outline-secondary" type="button" title="Marcar todos como no materializado" @onclick="MarcarTodosNoMaterializado">Todos ✓</button>
+                    <button class="btn btn-sm btn-primary ms-auto" type="button" title="Guardar la ronda" disabled="@(!rondaFilas.Any(f => f.Marcado) || rondaResp.Count == 0)" @onclick="GuardarRonda"><Ico Nombre="guardar" /></button>
+                    <button class="btn btn-sm btn-secondary" type="button" title="Cancelar" @onclick='() => vista = "matriz"'><Ico Nombre="cancelar" /></button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="tabla-scroll tabla-llena"><table class="table table-sm table-bordered tabla-compacta align-middle mb-0 tabla-pin">
+        <thead>
+            <tr>
+                <th style="width:36px;"></th>
+                <th style="width:80px;">Código</th>
+                <th style="width:90px;">Nivel</th>
+                <th>Riesgo</th>
+                <th style="width:100px;">Último</th>
+                <th style="width:180px;">Resultado</th>
+                <th style="width:34%;">Observación</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var f in rondaFilas)
+            {
+                <tr class="@(f.Marcado ? "table-active" : "")">
+                    <td class="text-center"><input type="checkbox" class="form-check-input" checked="@f.Marcado" @onchange="@(e => f.Marcado = e.Value is true)" /></td>
+                    <td class="fw-bold">@f.Riesgo.Codigo</td>
+                    <td class="text-center"><span class="rg-pill" style="background:@EscalaRiesgo.Color(f.Riesgo.Nivel);color:@EscalaRiesgo.ColorTexto(f.Riesgo.Nivel)">@EscalaRiesgo.Nombre(f.Riesgo.Nivel)</span></td>
+                    <td class="small">@f.Riesgo.Descripcion</td>
+                    <td class="small text-muted">@(f.UltimoSeguimiento?.ToString("dd/MM/yyyy") ?? "—")</td>
+                    <td>
+                        <select class="form-select form-select-sm" value="@((int)f.Resultado)" @onchange="@(e => { f.Resultado = (ResultadoSeguimiento)int.Parse(e.Value?.ToString() ?? "0"); f.Marcado = true; })">
+                            <option value="0">No materializado</option>
+                            <option value="1">En observación</option>
+                            <option value="2">Materializado</option>
+                        </select>
+                    </td>
+                    <td><input class="form-control form-control-sm" value="@f.Observacion" @onchange="@(e => { f.Observacion = e.Value?.ToString() ?? ""; f.Marcado = true; })" placeholder="Observación del mes" /></td>
+                </tr>
+            }
+        </tbody>
+    </table></div>
+    <div class="small text-muted mt-1">Los que marques como <strong>Materializado</strong> quedan creados; luego, desde el detalle del riesgo, registras en qué torre o localización ocurrió.</div>
+}
+
+@* ======================= IMPORTAR EXCEL ======================= *@
+else if (vista == "importar")
+{
+    <div class="card panel-formulario">
+        <div class="card-body">
+            <div>
+                <label class="small text-muted d-block">Libro Excel de la matriz de riesgos</label>
+                <InputFile class="form-control form-control-sm" style="max-width:460px;" accept=".xlsx" OnChange="LeerExcel" />
+            </div>
+
+            @if (libro is not null)
+            {
+                @if (libro.Advertencias.Count > 0)
+                {
+                    <div class="alert alert-warning py-1 px-2 small mt-2 mb-1">
+                        @foreach (var a in libro.Advertencias) { <div>@a</div> }
+                    </div>
+                }
+
+                @if (libro.Catalogos.Hay)
+                {
+                    <div class="mt-2 small">
+                        <strong>Listas encontradas en la hoja «Datos»</strong> (se agregan a Catálogos, sin pisar lo que ya tengas):
+                        <div class="d-flex flex-wrap gap-1 mt-1">
+                            @foreach (var v in libro.Catalogos.EstadoActual) { <span class="rg-chip" title="Estado actual">@v</span> }
+                            @foreach (var v in libro.Catalogos.Categoria) { <span class="rg-chip" title="Categoría">@v</span> }
+                            @foreach (var v in libro.Catalogos.Estrategia) { <span class="rg-chip" title="Estrategia de respuesta">@v</span> }
+                            @foreach (var v in libro.Catalogos.EstadoPlan) { <span class="rg-chip" title="Estado del plan">@v</span> }
+                        </div>
+                        @if (libro.Catalogos.Tipo.Count > 0)
+                        {
+                            <div class="text-muted mt-1">
+                                La hoja «Datos» también define una lista «Tipo» (@string.Join(", ", libro.Catalogos.Tipo)) que ninguna hoja de matriz usa como columna: no se importa.
+                            </div>
+                        }
+                    </div>
+                }
+
+                <div class="mt-2 small"><strong>Revisiones encontradas</strong> — marca las que quieras cargar:</div>
+                <div class="tabla-scroll mt-1" style="max-height:38vh;"><table class="table table-sm table-bordered tabla-compacta align-middle mb-0">
+                    <thead>
+                        <tr>
+                            <th style="width:34px;"></th>
+                            <th style="width:70px;">Código</th>
+                            <th style="width:100px;">Fecha</th>
+                            <th style="width:120px;">Etapa</th>
+                            <th style="width:110px;">Elaborado</th>
+                            <th style="width:110px;">Revisado</th>
+                            <th style="width:110px;">Aprobado</th>
+                            <th style="width:70px;" class="text-center">Riesgos</th>
+                            <th style="width:60px;" class="text-center">Estado</th>
+                            <th>Avisos</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var rv in libro.Revisiones)
+                        {
+                            <tr class="@(rv.Importar ? "table-active" : "")">
+                                <td class="text-center"><input type="checkbox" class="form-check-input" checked="@rv.Importar" @onchange="@(e => rv.Importar = e.Value is true)" /></td>
+                                <td class="fw-bold">@rv.Codigo</td>
+                                <td>@rv.Fecha.ToString("dd/MM/yyyy")</td>
+                                <td class="small">@rv.Etapa</td>
+                                <td class="small">@rv.ElaboradoPor</td>
+                                <td class="small">@rv.RevisadoPor</td>
+                                <td class="small">@rv.AprobadoPor</td>
+                                <td class="text-center">@rv.Filas.Count</td>
+                                <td class="text-center small">@rv.EstadoDocumento</td>
+                                <td class="small @(rv.FechasDiscrepan ? "table-warning" : "")">
+                                    @if (yaImportadas.Contains(rv.Codigo))
+                                    {
+                                        <div class="d-flex align-items-center gap-1">
+                                            <span>Ya existe una revisión con este código: se omite.</span>
+                                            <button type="button" class="ens-mini" title="Eliminar la revisión existente, para reemplazarla con esta" @onclick="() => PedirReemplazarCarga(rv.Codigo)"><Ico Nombre="eliminar" /></button>
+                                        </div>
+                                    }
+                                    @foreach (var a in rv.Advertencias) { <div>@a</div> }
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table></div>
+
+                @if (libro.Revisiones.FirstOrDefault(rv => rv.Importar) is { } primera && primera.Filas.Count > 0)
+                {
+                    <div class="mt-2 small"><strong>Vista previa de @primera.Codigo</strong> (@primera.Hoja)</div>
+                    <div class="tabla-scroll mt-1" style="max-height:34vh;"><table class="table table-sm table-bordered tabla-compacta align-middle mb-0">
+                        <thead><tr><th>Item</th><th>Estado</th><th>Categoría</th><th>Área</th><th>Riesgo / Oportunidad</th><th>Prob.</th><th>Impacto</th><th>Nivel</th></tr></thead>
+                        <tbody>
+                            @foreach (var f in primera.Filas)
+                            {
+                                var p = f.Probabilidad ?? ProbabilidadRiesgo.Moderada;
+                                var i = f.Impacto ?? ImpactoRiesgo.Importante;
+                                var nv = EscalaRiesgo.Nivel(p, i);
+                                <tr>
+                                    <td>@f.Item</td><td>@f.EstadoActual</td><td>@f.Categoria</td><td>@f.Area</td>
+                                    <td class="small">@f.Descripcion</td>
+                                    <td class="@(f.Probabilidad is null ? "table-warning" : "")">@f.ProbabilidadTexto</td>
+                                    <td class="@(f.Impacto is null ? "table-warning" : "")">@f.ImpactoTexto</td>
+                                    <td class="text-center"><span class="rg-pill" style="background:@EscalaRiesgo.Color(nv);color:@EscalaRiesgo.ColorTexto(nv)">@EscalaRiesgo.Nombre(nv)</span></td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table></div>
+                }
+            }
+
+            <div class="d-flex gap-2 mt-2">
+                <button class="btn btn-primary btn-sm" title="Importar las revisiones marcadas" disabled="@(libro is null || !libro.Revisiones.Any(rv => rv.Importar && !yaImportadas.Contains(rv.Codigo)) || importando)" @onclick="ConfirmarImportar"><Ico Nombre="agregar" /></button>
+                <button class="btn btn-secondary btn-sm" title="Cancelar" @onclick='() => { vista = "matriz"; libro = null; }'><Ico Nombre="cancelar" /></button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    // ---------- Estado general ----------
+    private string vista = "matriz";
+    private string mensaje = "";
+    private bool error;
+
+    // El DbContext inyectado (Db) vive mientras dure el circuito de Blazor y
+    // se comparte entre todas las operaciones de esta página, incluida la
+    // que calcula el impacto en segundo plano al pedir una eliminación
+    // (CalcularImpacto, lanzada sin "await" para no congelar el diálogo).
+    // EF Core no admite dos operaciones a la vez sobre el mismo DbContext:
+    // si esa tarea en segundo plano todavía está consultando cuando se
+    // guarda un riesgo, sale "A second operation was started on this
+    // context instance...". Este semáforo serializa todo el acceso a Db
+    // en la página para que eso no pueda pasar. Los métodos internos que
+    // ya se llaman siempre desde dentro de un bloque con el semáforo
+    // tomado (CargarAsync, CargarMotorAsync, CargarDetalle,
+    // EncadenarRiesgosAsync) NO lo vuelven a tomar, para no bloquearse
+    // a sí mismos.
+    private readonly SemaphoreSlim _dbLock = new(1, 1);
+
+    private List<VersionMatrizRiesgos> versiones = new();
+    private VersionMatrizRiesgos? version;
+    private int filtroVersion;
+    private List<Riesgo> riesgos = new();
+    private Riesgo? riesgo;
+    private List<Riesgo> historial = new();
+
+    private List<SeguimientoRiesgo> seguimientos = new();
+    private List<HallazgoRiesgo> hallazgos = new();
+    private List<AlcanceRiesgo> alcances = new();
+    private List<ElementoRiesgo> elementos = new();
+    private Dictionary<int, List<ElementoRiesgo>> elementosVersion = new();
+    private List<PlanAccion> planesRiesgo = new();
+    private List<AccionPlan> accionesPlanes = new();
+
+    [Parameter] public int? RiesgoId { get; set; }
+
+    private void IrNuevoPlan(int riesgoId, int? seguimientoId) =>
+        Nav.NavigateTo($"planes-accion/nuevo?riesgo={riesgoId}" + (seguimientoId is int s ? $"&seguimiento={s}" : ""));
+
+    private void IrPlan(int planId) => Nav.NavigateTo($"planes-accion/{planId}?riesgo={riesgo?.Id}");
+
+    private Dictionary<int, int> conteoRiesgos = new(), conteoSeguimientos = new();
+    private Dictionary<int, DateTime> ultimoSeguimiento = new();
+    private Dictionary<int, ResultadoSeguimiento> ultimoResultado = new();
+    private Dictionary<int, int> hallazgosAbiertos = new();
+
+    private List<ElementoTrazado> torres = new();
+    private List<Componente> componentes = new();
+    private List<ItemCatalogo> localizaciones = new();
+    private List<Tiro> tiros = new();
+
+    private MotorTabla? motor;
+    private bool verCampos;
+    private string filtro = "", filtroNivel = "";
+    private string col = "codigo";
+    private bool asc = true;
+
+    private string Titulo => vista switch
+    {
+        "versiones" => "Revisiones de la matriz",
+        "detalle" => riesgo is null ? "Riesgo" : riesgo.Codigo,
+        "ronda" => "Ronda de seguimiento",
+        "importar" => "Importar matriz de riesgos",
+        _ => "Matriz de riesgos"
+    };
+
+    private string? Subtitulo => vista switch
+    {
+        "detalle" => riesgo?.Descripcion,
+        "matriz" => version is null ? null : $"{version.Codigo} · {version.Fecha:dd/MM/yyyy} · {riesgos.Count} riesgo(s)",
+        "ronda" => version?.Codigo,
+        _ => null
+    };
+
+    private EventCallback AtrasCb => vista == "matriz" ? default : EventCallback.Factory.Create(this, Atras);
+
+    private void Atras()
+    {
+        if (vista == "detalle") { vista = "matriz"; riesgo = null; formSeguimiento = null; formRiesgo = null; return; }
+        vista = "matriz"; formVersion = null; libro = null;
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        await _dbLock.WaitAsync();
+        try
+        {
+            // /riesgos/{id}: vuelve al detalle (p. ej. desde un plan de acción),
+            // mostrando la revisión a la que pertenece ese riesgo.
+            if (RiesgoId is int rid && Db.Riesgos.AsNoTracking().FirstOrDefault(r => r.Id == rid) is { } r0)
+                filtroVersion = r0.VersionMatrizRiesgosId;
+            await CargarAsync();
+            if (RiesgoId is int id) { vista = "detalle"; CargarDetalle(id); }
+        }
+        finally { _dbLock.Release(); }
+    }
+
+    private async Task CargarAsync()
+    {
+        versiones = Servicio.Versiones();
+        if (filtroVersion == 0 || !versiones.Any(v => v.Id == filtroVersion))
+            filtroVersion = (versiones.FirstOrDefault(v => v.Estado == EstadoVersionMatriz.Vigente) ?? versiones.FirstOrDefault())?.Id ?? 0;
+        version = versiones.FirstOrDefault(v => v.Id == filtroVersion);
+
+        riesgos = version is null ? new() : Db.Riesgos.AsNoTracking()
+            .Where(r => r.VersionMatrizRiesgosId == version.Id).OrderBy(r => r.Orden).ThenBy(r => r.Codigo).ToList();
+
+        var ids = riesgos.Select(r => r.Id).ToList();
+        elementosVersion = Db.ElementosRiesgo.AsNoTracking().Where(e => ids.Contains(e.RiesgoId)).ToList()
+            .GroupBy(e => e.RiesgoId).ToDictionary(g => g.Key, g => g.ToList());
+        var segs = Db.SeguimientosRiesgo.AsNoTracking().Where(s => ids.Contains(s.RiesgoId)).ToList();
+        ultimoSeguimiento = segs.GroupBy(s => s.RiesgoId).ToDictionary(g => g.Key, g => g.Max(x => x.Fecha));
+        ultimoResultado = segs.GroupBy(s => s.RiesgoId)
+            .ToDictionary(g => g.Key, g => g.OrderByDescending(x => x.Fecha).ThenByDescending(x => x.Id).First().Resultado);
+        var idsSeg = segs.Select(s => s.Id).ToList();
+        hallazgosAbiertos = Db.HallazgosRiesgo.AsNoTracking()
+            .Where(h => idsSeg.Contains(h.SeguimientoRiesgoId) && h.Estado != EstadoHallazgo.Cerrado)
+            .ToList()
+            .GroupBy(h => segs.First(s => s.Id == h.SeguimientoRiesgoId).RiesgoId)
+            .ToDictionary(g => g.Key, g => g.Count());
+
+        // Conteos por versión para la pantalla de revisiones.
+        var todosRiesgos = Db.Riesgos.AsNoTracking().Select(r => new { r.Id, r.VersionMatrizRiesgosId }).ToList();
+        conteoRiesgos = todosRiesgos.GroupBy(r => r.VersionMatrizRiesgosId).ToDictionary(g => g.Key, g => g.Count());
+        var porRiesgo = todosRiesgos.ToDictionary(r => r.Id, r => r.VersionMatrizRiesgosId);
+        conteoSeguimientos = Db.SeguimientosRiesgo.AsNoTracking().Select(s => s.RiesgoId).ToList()
+            .Where(porRiesgo.ContainsKey).GroupBy(id => porRiesgo[id]).ToDictionary(g => g.Key, g => g.Count());
+
+        torres = Db.ElementosTrazado.AsNoTracking().Where(t => !t.Eliminado).OrderBy(t => t.Codigo).ToList();
+        localizaciones = Db.Catalogos.AsNoTracking().Where(c => c.Tipo == "Localización" && c.Activo).OrderBy(c => c.Nombre).ToList();
+        tiros = Db.Tiros.AsNoTracking().Where(t => !t.Eliminado).OrderBy(t => t.Nombre).ToList();
+
+        // Todo lo que el render necesita se carga aquí: Blazor vuelve a
+        // renderizar en medio del await de un manejador (p. ej. al guardar),
+        // y una consulta a Db desde el render en ese momento choca con la
+        // operación en curso ("A second operation was started...").
+        componentesPorId = Db.Componentes.IgnoreQueryFilters().AsNoTracking().ToList().ToDictionary(c => c.Id);
+        // Listas desplegables: salen de Catálogos (se amplían desde allí).
+        catalogos = new()
+        {
+            [SembradorCatalogosRiesgo.EstadoActual] = SembradorCatalogosRiesgo.Valores(Db, SembradorCatalogosRiesgo.EstadoActual),
+            [SembradorCatalogosRiesgo.Categoria] = SembradorCatalogosRiesgo.Valores(Db, SembradorCatalogosRiesgo.Categoria),
+            [SembradorCatalogosRiesgo.Area] = SembradorCatalogosRiesgo.Valores(Db, SembradorCatalogosRiesgo.Area),
+            [SembradorCatalogosRiesgo.Estrategia] = SembradorCatalogosRiesgo.Valores(Db, SembradorCatalogosRiesgo.Estrategia),
+            [SembradorCatalogosRiesgo.Cargo] = SembradorCatalogosRiesgo.Valores(Db, SembradorCatalogosRiesgo.Cargo),
+            // Para el editor de planes de acción dentro del seguimiento.
+            [SembradorCatalogosRiesgo.OrigenHallazgo] = SembradorCatalogosRiesgo.Valores(Db, SembradorCatalogosRiesgo.OrigenHallazgo),
+            [SembradorCatalogosRiesgo.TipoHallazgo] = SembradorCatalogosRiesgo.Valores(Db, SembradorCatalogosRiesgo.TipoHallazgo),
+            [SembradorCatalogosRiesgo.ProcesoPlan] = SembradorCatalogosRiesgo.Valores(Db, SembradorCatalogosRiesgo.ProcesoPlan),
+        };
+
+        // "Estado del plan" de cada riesgo = sus planes de acción. Se agrupan
+        // por código de riesgo para ver también los de revisiones anteriores.
+        var codigoDe = Db.Riesgos.IgnoreQueryFilters().AsNoTracking().Select(r => new { r.Id, r.Codigo }).ToDictionary(r => r.Id, r => r.Codigo);
+        // Un plan puede estar asociado a varios riesgos (RiesgoPlan): aparece en cada uno.
+        var idsConRel = Db.RiesgosPlan.AsNoTracking().Select(r => r.PlanAccionId).Distinct().ToList();
+        var todosPlanes = Db.PlanesAccion.AsNoTracking().Where(p => p.RiesgoId != null || idsConRel.Contains(p.Id)).ToList();
+        var riesgosDe = SigWeb.Data.Planes.PlanesAccionServicio.RiesgosDePlanes(Db, todosPlanes);
+        var idsTodos = todosPlanes.Select(p => p.Id).ToList();
+        var accionesTodas = Db.AccionesPlan.AsNoTracking().Where(a => idsTodos.Contains(a.PlanAccionId)).ToList();
+        planesPorCodigo = todosPlanes
+            .SelectMany(p => (riesgosDe.TryGetValue(p.Id, out var lr) ? lr : new List<int>()).Where(codigoDe.ContainsKey)
+                .Select(r => codigoDe[r]).Distinct(StringComparer.OrdinalIgnoreCase).Select(c => (Codigo: c, Plan: p)))
+            .GroupBy(x => x.Codigo, x => x.Plan, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.OrderBy(p => p.Fecha).ThenBy(p => p.Id)
+                .Select(p => new ResumenPlan(p.Id, p.Codigo, EscalaAccion.EstadoPlan(accionesTodas.Where(a => a.PlanAccionId == p.Id)), p.DescripcionHallazgo)).ToList(),
+                StringComparer.OrdinalIgnoreCase);
+
+        await CargarMotorAsync();
+        if (riesgo is not null) CargarDetalle(riesgo.Id);
+    }
+
+    private async Task CargarMotorAsync()
+    {
+        if (version is null) { motor = null; return; }
+        try
+        {
+            motor = await MotorTabla.CargarAsync(Db, "riesgos", Nativas(),
+                riesgos.Select(r => (r.Id, r.Codigo + " — " + r.Descripcion)));
+        }
+        catch { motor = null; }
+    }
+
+    private Riesgo? R(int id) => riesgos.FirstOrDefault(x => x.Id == id);
+
+    // Una línea por elemento (causa, consecuencia…), con viñeta, dentro de la misma celda.
+    private static string? Lineas(string? t) => string.IsNullOrWhiteSpace(t) ? t
+        : string.Join("\n", t.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Select(x => "• " + x));
+
+    // Columnas cuyo valor sale de un catálogo: se muestran con el formato del ítem.
+    private static string? CatalogoDeColumna(string clave) => clave switch
+    {
+        "estado" => SembradorCatalogosRiesgo.EstadoActual,
+        "categoria" => SembradorCatalogosRiesgo.Categoria,
+        "area" => SembradorCatalogosRiesgo.Area,
+        "estrategia" => SembradorCatalogosRiesgo.Estrategia,
+        _ => null
+    };
+
+    private static readonly HashSet<string> ColumnasMultilinea = new() { "causa", "consecuencia", "disparadores", "plan", "responsable", "seguimientodef" };
+
+    private IEnumerable<ColumnaNativa> Nativas() => new[]
+    {
+        new ColumnaNativa("codigo", "Código", TipoCampoTabla.Texto, id => R(id)?.Codigo),
+        new ColumnaNativa("tipo", "Tipo", TipoCampoTabla.Texto, id => R(id) is { } r ? (r.Tipo == TipoRiesgo.Oportunidad ? "Oportunidad" : "Riesgo") : null, false),
+        new ColumnaNativa("estado", "Estado", TipoCampoTabla.Texto, id => R(id)?.EstadoActual),
+        new ColumnaNativa("categoria", "Categoría", TipoCampoTabla.Texto, id => R(id)?.Categoria, false),
+        new ColumnaNativa("area", "Área", TipoCampoTabla.Texto, id => R(id)?.Area),
+        new ColumnaNativa("descripcion", "Riesgo / Oportunidad", TipoCampoTabla.Texto, id => R(id)?.Descripcion),
+        new ColumnaNativa("causa", "Causa", TipoCampoTabla.Texto, id => Lineas(R(id)?.Causa), false),
+        new ColumnaNativa("consecuencia", "Consecuencia", TipoCampoTabla.Texto, id => Lineas(R(id)?.Consecuencia), false),
+        new ColumnaNativa("probabilidad", "Probabilidad", TipoCampoTabla.Texto, id => R(id) is { } r ? EscalaRiesgo.Nombre(r.Probabilidad) : null),
+        new ColumnaNativa("impacto", "Impacto", TipoCampoTabla.Texto, id => R(id) is { } r ? EscalaRiesgo.Nombre(r.Impacto) : null),
+        new ColumnaNativa("nivel", "Nivel", TipoCampoTabla.Texto, id => R(id) is { } r ? EscalaRiesgo.Nombre(r.Nivel) : null),
+        new ColumnaNativa("estrategia", "Estrategia", TipoCampoTabla.Texto, id => R(id)?.Estrategia, false),
+        new ColumnaNativa("disparadores", "Disparadores", TipoCampoTabla.Texto, id => Lineas(R(id)?.Disparadores), false),
+        new ColumnaNativa("plan", "Plan de respuesta", TipoCampoTabla.Texto, id => Lineas(R(id)?.PlanRespuesta), false),
+        new ColumnaNativa("responsable", "Responsable del plan", TipoCampoTabla.Texto, id => Lineas(R(id)?.ResponsablePlan), false),
+        new ColumnaNativa("estadoplan", "Planes de acción", TipoCampoTabla.Texto, id => R(id) is { } r
+            ? string.Join("\n", PlanesDe(r).Select(p => $"{p.Codigo}: {EscalaAccion.Nombre(p.Estado)}")) : null),
+        new ColumnaNativa("seguimientodef", "Cómo se hace el seguimiento", TipoCampoTabla.Texto, id => Lineas(R(id)?.ComoSeHaceSeguimiento), false),
+        new ColumnaNativa("ultimoseg", "Último seguimiento", TipoCampoTabla.Fecha, id => ultimoSeguimiento.TryGetValue(id, out var f) ? f : (object?)null),
+        new ColumnaNativa("ultimores", "Resultado", TipoCampoTabla.Texto, id => ultimoResultado.TryGetValue(id, out var r) ? NombreResultado(r) : null),
+        new ColumnaNativa("abiertos", "Hallazgos abiertos", TipoCampoTabla.Numero, id => hallazgosAbiertos.TryGetValue(id, out var n) ? n : 0),
+    };
+
+    private IEnumerable<CampoTabla> Columnas => motor?.Visibles ?? Enumerable.Empty<CampoTabla>();
+
+    private IEnumerable<Riesgo> Mostrados
+    {
+        get
+        {
+            IEnumerable<Riesgo> q = riesgos;
+            var f = filtro.Trim();
+            if (f.Length > 0)
+                q = q.Where(r => (r.Codigo + " " + r.Descripcion + " " + r.Area + " " + r.Categoria + " " + r.Causa + " " + r.Consecuencia)
+                        .Contains(f, StringComparison.OrdinalIgnoreCase)
+                    || (motor is not null && motor.TextoBusqueda(r.Id).Contains(f, StringComparison.OrdinalIgnoreCase)));
+            if (filtroNivel.Length > 0) q = q.Where(r => EscalaRiesgo.Nombre(r.Nivel) == filtroNivel);
+            if (motor is not null) q = motor.Ordenar(q, r => r.Id, col, asc);
+            return q.ToList();
+        }
+    }
+
+    private void Ordenar(string clave) { if (col == clave) asc = !asc; else { col = clave; asc = true; } }
+
+    private static string Vacio(string? t) => string.IsNullOrWhiteSpace(t) ? "—" : t;
+
+    private static string NombreResultado(ResultadoSeguimiento r) => r switch
+    {
+        ResultadoSeguimiento.Materializado => "Materializado",
+        ResultadoSeguimiento.EnObservacion => "En observación",
+        _ => "No materializado"
+    };
+
+    private static string ColorResultado(ResultadoSeguimiento r) => r switch
+    {
+        ResultadoSeguimiento.Materializado => "#c0392b",
+        ResultadoSeguimiento.EnObservacion => "#d9822b",
+        _ => "#198754"
+    };
+
+    private static string NombreEstadoVersion(EstadoVersionMatriz e) => e switch
+    {
+        EstadoVersionMatriz.Vigente => "Vigente",
+        EstadoVersionMatriz.Historica => "Histórica",
+        _ => "Borrador"
+    };
+
+    private static string ColorEstadoVersion(EstadoVersionMatriz e) => e switch
+    {
+        EstadoVersionMatriz.Vigente => "#198754",
+        EstadoVersionMatriz.Historica => "#6b7686",
+        _ => "#d9822b"
+    };
+
+    // Cuadrícula 5×5 del Excel, con la celda del riesgo marcada.
+    private RenderFragment MatrizCalor(ProbabilidadRiesgo pSel, ImpactoRiesgo iSel) => @<table class="rg-matriz">
+        <tbody>
+            @foreach (var p in EscalaRiesgo.Probabilidades)
+            {
+                <tr>
+                    <th title="@EscalaRiesgo.Nombre(p)">@EscalaRiesgo.Sigla(p)</th>
+                    @foreach (var i in EscalaRiesgo.Impactos)
+                    {
+                        var nv = EscalaRiesgo.Nivel(p, i);
+                        var sel = p == pSel && i == iSel;
+                        <td class="@(sel ? "rg-sel" : "")" style="background:@EscalaRiesgo.Color(nv)"
+                            title="@EscalaRiesgo.Nombre(p) / @EscalaRiesgo.Nombre(i) — @EscalaRiesgo.Nombre(nv)">@(sel ? "X" : "")</td>
+                    }
+                </tr>
+            }
+            <tr>
+                <th></th>
+                @foreach (var i in EscalaRiesgo.Impactos)
+                {
+                    <th title="@EscalaRiesgo.Nombre(i)">@EscalaRiesgo.Sigla(i)</th>
+                }
+            </tr>
+        </tbody>
+    </table>;
+
+    // ---------- Detalle ----------
+    private void AbrirRiesgo(Riesgo r)
+    {
+        vista = "detalle";
+        CargarDetalle(r.Id);
+    }
+
+    private void CargarDetalle(int riesgoId)
+    {
+        riesgo = Db.Riesgos.AsNoTracking().FirstOrDefault(r => r.Id == riesgoId);
+        if (riesgo is null) { vista = "matriz"; return; }
+        seguimientos = Db.SeguimientosRiesgo.AsNoTracking().Where(s => s.RiesgoId == riesgoId)
+            .OrderByDescending(s => s.Fecha).ThenByDescending(s => s.Id).ToList();
+        var idsSeg = seguimientos.Select(s => s.Id).ToList();
+        hallazgos = Db.HallazgosRiesgo.AsNoTracking().Where(h => idsSeg.Contains(h.SeguimientoRiesgoId)).ToList();
+        var idsHall = hallazgos.Select(h => h.Id).ToList();
+        lugaresHallazgos = Db.LugaresHallazgo.AsNoTracking().Where(l => idsHall.Contains(l.HallazgoRiesgoId)).ToList();
+        soportes = Db.ArchivosRiesgo.AsNoTracking().Where(x => x.SeguimientoRiesgoId != null && idsSeg.Contains(x.SeguimientoRiesgoId.Value)).OrderBy(x => x.Id).ToList();
+        alcances = Db.AlcancesRiesgo.AsNoTracking().Where(a => a.RiesgoId == riesgoId).ToList();
+        historial = Servicio.Historial(riesgo.Codigo);
+        elementos = Db.ElementosRiesgo.AsNoTracking().Where(e => e.RiesgoId == riesgoId).ToList();
+        // Trazabilidad entre revisiones: los planes de este riesgo en cualquier versión.
+        var idsHist = historial.Select(h => h.Id).Append(riesgoId).ToList();
+        var idsPorRel = Db.RiesgosPlan.AsNoTracking().Where(r => idsHist.Contains(r.RiesgoId)).Select(r => r.PlanAccionId).ToList();
+        planesRiesgo = Db.PlanesAccion.AsNoTracking().Where(p => (p.RiesgoId != null && idsHist.Contains(p.RiesgoId.Value)) || idsPorRel.Contains(p.Id))
+            .OrderByDescending(p => p.Fecha).ThenByDescending(p => p.Id).ToList();
+        var idsPlan = planesRiesgo.Select(p => p.Id).ToList();
+        accionesPlanes = Db.AccionesPlan.AsNoTracking().Where(a => idsPlan.Contains(a.PlanAccionId)).ToList();
+        mostrarAlcance = false;
+    }
+
+    private string TextoAlcance(AlcanceRiesgo a)
+    {
+        if (a.ElementoTrazadoId is int t) return torres.FirstOrDefault(x => x.Id == t)?.Codigo ?? $"Torre {t}";
+        if (a.ComponenteId is int c) return NombreComponente(c);
+        if (a.ItemCatalogoId is int l) return localizaciones.FirstOrDefault(x => x.Id == l)?.Nombre ?? $"Localización {l}";
+        if (a.TiroId is int ti) return tiros.FirstOrDefault(x => x.Id == ti)?.Nombre ?? $"Tiro {ti}";
+        return "—";
+    }
+
+    private IEnumerable<string> TextosHallazgo(HallazgoRiesgo h)
+    {
+        var ls = lugaresHallazgos.Where(l => l.HallazgoRiesgoId == h.Id).ToList();
+        if (ls.Count == 0) return new[] { TextoHallazgo(h) };
+        return ls.Select(l => SelectorLugares.Texto(l is null ? new LugarPlan() : new LugarPlan { ElementoTrazadoId = l.ElementoTrazadoId, ComponenteId = l.ComponenteId, ItemCatalogoId = l.ItemCatalogoId, TiroId = l.TiroId },
+            torres, componentesPorId, localizaciones, tiros));
+    }
+
+    private string TextoHallazgo(HallazgoRiesgo h)
+    {
+        if (h.ElementoTrazadoId is int t) return torres.FirstOrDefault(x => x.Id == t)?.Codigo ?? $"Torre {t}";
+        if (h.ComponenteId is int c) return NombreComponente(c);
+        if (h.ItemCatalogoId is int l) return localizaciones.FirstOrDefault(x => x.Id == l)?.Nombre ?? $"Localización {l}";
+        if (h.TiroId is int ti) return tiros.FirstOrDefault(x => x.Id == ti)?.Nombre ?? $"Tiro {ti}";
+        return "Proyecto";
+    }
+
+    private string NombreComponente(int id)
+    {
+        if (!componentesPorId.TryGetValue(id, out var c)) return $"Elemento {id}";
+        var t = torres.FirstOrDefault(x => x.Id == c.ElementoTrazadoId);
+        return t is null ? c.Nombre : $"{t.Codigo} · {c.Nombre}";
+    }
+
+    // ---------- Alcance ----------
+    private bool mostrarAlcance;
+    private string tipoAlcance = "torre";
+    private int idAlcance, torreDeComponente;
+
+    private void CargarComponentes()
+    {
+        componentes = torreDeComponente == 0 ? new()
+            : componentesPorId.Values.Where(c => c.ElementoTrazadoId == torreDeComponente && !c.Eliminado)
+                .OrderBy(c => c.Orden).ThenBy(c => c.Nombre).ToList();
+        idAlcance = 0;
+    }
+
+    private async Task AgregarAlcance()
+    {
+        if (riesgo is null || idAlcance == 0) return;
+        await _dbLock.WaitAsync();
+        try
+        {
+            var a = new AlcanceRiesgo { RiesgoId = riesgo.Id };
+            switch (tipoAlcance)
+            {
+                case "torre": a.ElementoTrazadoId = idAlcance; break;
+                case "componente": a.ComponenteId = idAlcance; break;
+                case "localizacion": a.ItemCatalogoId = idAlcance; break;
+                default: a.TiroId = idAlcance; break;
+            }
+            Db.AlcancesRiesgo.Add(a);
+            await Db.SaveChangesAsync();
+            Db.ChangeTracker.Clear();
+            idAlcance = 0; mostrarAlcance = false;
+            CargarDetalle(riesgo.Id);
+        }
+        finally { _dbLock.Release(); }
+    }
+
+    private async Task QuitarAlcance(AlcanceRiesgo a)
+    {
+        await _dbLock.WaitAsync();
+        try
+        {
+            var ent = await Db.AlcancesRiesgo.FirstOrDefaultAsync(x => x.Id == a.Id);
+            if (ent is not null) { Db.AlcancesRiesgo.Remove(ent); await Db.SaveChangesAsync(); }
+            Db.ChangeTracker.Clear();
+            if (riesgo is not null) CargarDetalle(riesgo.Id);
+        }
+        finally { _dbLock.Release(); }
+    }
+
+    // ---------- Formulario de riesgo ----------
+    private Riesgo? formRiesgo;
+    private bool formRiesgoEsNuevo;
+
+    private void NuevoRiesgo()
+    {
+        if (version is null) return;
+        formRiesgo = new Riesgo
+        {
+            VersionMatrizRiesgosId = version.Id,
+            Codigo = Servicio.SiguienteCodigo(version.Id),
+            Orden = riesgos.Count == 0 ? 1 : riesgos.Max(r => r.Orden) + 1,
+            EstadoActual = "Activo"
+        };
+        formItems = NuevosItems();
+        formCargos = new();
+        formRiesgoEsNuevo = true;
+    }
+
+    // Editor de las listas del riesgo (causas, consecuencias…): un texto por elemento.
+    private class ItemTexto { public string Texto { get; set; } = ""; }
+    private Dictionary<TipoElementoRiesgo, List<ItemTexto>> formItems = NuevosItems();
+    private static Dictionary<TipoElementoRiesgo, List<ItemTexto>> NuevosItems() =>
+        ElementosRiesgo.Tipos.ToDictionary(t => t, _ => new List<ItemTexto>());
+
+    private void CargarItems(IEnumerable<ElementoRiesgo> els)
+    {
+        formItems = NuevosItems();
+        foreach (var e in els.OrderBy(e => e.Orden)) formItems[e.Tipo].Add(new ItemTexto { Texto = e.Texto });
+    }
+
+    // Si se pega una lista numerada en un elemento, se separa sola y sin números.
+    private void CambiarItem(TipoElementoRiesgo t, int k, string? valor)
+    {
+        var lista = formItems[t];
+        if (k >= lista.Count) return;
+        var partes = ElementosRiesgo.Partir(valor);
+        if (partes.Count <= 1) { lista[k].Texto = partes.FirstOrDefault() ?? (valor ?? "").Trim(); return; }
+        lista[k].Texto = partes[0];
+        lista.InsertRange(k + 1, partes.Skip(1).Select(x => new ItemTexto { Texto = x }));
+    }
+
+    private void MoverItem(TipoElementoRiesgo t, int k, int d)
+    {
+        var lista = formItems[t];
+        var j = k + d;
+        if (j < 0 || j >= lista.Count) return;
+        (lista[k], lista[j]) = (lista[j], lista[k]);
+    }
+
+    private List<ElementoRiesgo> ElementosDelFormulario(int riesgoId)
+    {
+        var res = new List<ElementoRiesgo>();
+        foreach (var (t, lista) in formItems)
+        {
+            var o = 0;
+            foreach (var it in lista.Where(x => !string.IsNullOrWhiteSpace(x.Texto)))
+                res.Add(new ElementoRiesgo { RiesgoId = riesgoId, Tipo = t, Orden = ++o, Texto = it.Texto.Trim() });
+        }
+        return res;
+    }
+
+    private List<ElementoRiesgo> ElementosDe(int riesgoId) =>
+        riesgo?.Id == riesgoId ? elementos
+        : elementosVersion.TryGetValue(riesgoId, out var l) ? l
+        : Db.ElementosRiesgo.AsNoTracking().Where(e => e.RiesgoId == riesgoId).ToList();
+
+    private List<string> formCargos = new();
+
+    private void EditarRiesgo(Riesgo r)
+    {
+        CargarItems(ElementosDe(r.Id));
+        formCargos = CargosDe(r.ResponsablePlan);
+        formRiesgo = new Riesgo
+        {
+            Id = r.Id, VersionMatrizRiesgosId = r.VersionMatrizRiesgosId, Codigo = r.Codigo, Orden = r.Orden,
+            Tipo = r.Tipo, EstadoActual = r.EstadoActual, Categoria = r.Categoria, Area = r.Area,
+            Causa = r.Causa, Descripcion = r.Descripcion, Consecuencia = r.Consecuencia,
+            Probabilidad = r.Probabilidad, Impacto = r.Impacto, Disparadores = r.Disparadores,
+            Estrategia = r.Estrategia, PlanRespuesta = r.PlanRespuesta, ResponsablePlan = r.ResponsablePlan,
+            EstadoPlan = r.EstadoPlan, ComoSeHaceSeguimiento = r.ComoSeHaceSeguimiento, RiesgoAnteriorId = r.RiesgoAnteriorId
+        };
+        formRiesgoEsNuevo = false;
+    }
+
+    private RenderFragment FormularioRiesgo() =>@<FormularioSig Titulo="@(formRiesgoEsNuevo ? "Nuevo riesgo" : "Editar riesgo")" Icono="riesgos" Clase="mb-3" OnCerrar="() => formRiesgo = null">
+        <ChildContent>
+            <SeccionFormulario Titulo="Identificación">
+                <CampoFormulario Etiqueta="Código" Ancho="col-md-2" Obligatorio="true" Destacado="true">
+                    <input class="form-control" @bind="formRiesgo!.Codigo" />
+                </CampoFormulario>
+                <CampoFormulario Etiqueta="Tipo" Ancho="col-md-2">
+                    <select class="form-select" value="@((int)formRiesgo!.Tipo)" @onchange='e => formRiesgo!.Tipo = (TipoRiesgo)int.Parse(e.Value?.ToString() ?? "0")'>
+                        <option value="0">Riesgo</option>
+                        <option value="1">Oportunidad</option>
+                    </select>
+                </CampoFormulario>
+                <CampoFormulario Etiqueta="Estado actual" Ancho="col-md-2">
+                    <select class="form-select" @bind="formRiesgo!.EstadoActual">
+                        <option value="">—</option>
+                        @foreach (var v in Opciones(SembradorCatalogosRiesgo.EstadoActual, formRiesgo!.EstadoActual)) { <option value="@v">@v</option> }
+                    </select>
+                </CampoFormulario>
+                <CampoFormulario Etiqueta="Categoría" Ancho="col-md-2">
+                    <select class="form-select" @bind="formRiesgo!.Categoria">
+                        <option value="">—</option>
+                        @foreach (var v in Opciones(SembradorCatalogosRiesgo.Categoria, formRiesgo!.Categoria)) { <option value="@v">@v</option> }
+                    </select>
+                </CampoFormulario>
+                <CampoFormulario Etiqueta="Área" Ancho="col-md-2">
+                    <select class="form-select" @bind="formRiesgo!.Area">
+                        <option value="">—</option>
+                        @foreach (var v in Opciones(SembradorCatalogosRiesgo.Area, formRiesgo!.Area)) { <option value="@v">@v</option> }
+                    </select>
+                </CampoFormulario>
+                <CampoFormulario Etiqueta="Estrategia de respuesta" Ancho="col-md-2">
+                    <select class="form-select" @bind="formRiesgo!.Estrategia">
+                        <option value="">—</option>
+                        @foreach (var v in Opciones(SembradorCatalogosRiesgo.Estrategia, formRiesgo!.Estrategia)) { <option value="@v">@v</option> }
+                    </select>
+                </CampoFormulario>
+                <CampoFormulario Etiqueta="Riesgo / Oportunidad" Ancho="col-md-12" Obligatorio="true">
+                    <textarea class="form-control" rows="2" @bind="formRiesgo!.Descripcion"></textarea>
+                </CampoFormulario>
+            </SeccionFormulario>
+
+            <SeccionFormulario Titulo="Valoración">
+                <CampoFormulario Etiqueta="Probabilidad" Ancho="col-md-3">
+                    <select class="form-select" value="@((int)formRiesgo!.Probabilidad)" @onchange='e => formRiesgo!.Probabilidad = (ProbabilidadRiesgo)int.Parse(e.Value?.ToString() ?? "3")'>
+                        @foreach (var p in EscalaRiesgo.Probabilidades)
+                        {
+                            <option value="@((int)p)">@EscalaRiesgo.Nombre(p)</option>
+                        }
+                    </select>
+                </CampoFormulario>
+                <CampoFormulario Etiqueta="Impacto" Ancho="col-md-3">
+                    <select class="form-select" value="@((int)formRiesgo!.Impacto)" @onchange='e => formRiesgo!.Impacto = (ImpactoRiesgo)int.Parse(e.Value?.ToString() ?? "3")'>
+                        @foreach (var i in EscalaRiesgo.Impactos)
+                        {
+                            <option value="@((int)i)">@EscalaRiesgo.Nombre(i)</option>
+                        }
+                    </select>
+                </CampoFormulario>
+                <CampoFormulario Etiqueta="Nivel" Ancho="col-md-3">
+                    <span class="rg-pill frm-nivel" style="background:@EscalaRiesgo.Color(formRiesgo!.Nivel);color:@EscalaRiesgo.ColorTexto(formRiesgo!.Nivel)">@EscalaRiesgo.Nombre(formRiesgo!.Nivel)</span>
+                </CampoFormulario>
+                <CampoFormulario Etiqueta="Responsable del plan" Ancho="col-md-12">
+                    <SelectorMultiple Valores="formCargos" Opciones="Opciones(SembradorCatalogosRiesgo.Cargo, null)" />
+                </CampoFormulario>
+            </SeccionFormulario>
+
+            <SeccionFormulario Titulo="Análisis" SinFila="true">
+            <div class="rg-listas">
+                @foreach (var t in ElementosRiesgo.Tipos)
+                {
+                    var tipo = t;
+                    var lista = formItems[tipo];
+                    <div class="rg-ed">
+                        <div class="rg-bloque-tit">
+                            <span>@ElementosRiesgo.Nombre(tipo)</span><span class="rg-cuenta">@lista.Count</span>
+                            <button type="button" class="ens-mini ms-auto" title="Agregar" @onclick="() => lista.Add(new ItemTexto())"><Ico Nombre="agregar" /></button>
+                        </div>
+                        @for (var i = 0; i < lista.Count; i++)
+                        {
+                            var k = i;
+                            var it = lista[k];
+                            <div class="rg-ed-item" @key="it">
+                                <textarea class="form-control form-control-sm" rows="2" value="@it.Texto" @onchange="e => CambiarItem(tipo, k, e.Value?.ToString())"></textarea>
+                                <div class="rg-ed-btns">
+                                    <button type="button" class="ens-mini" title="Subir" disabled="@(k == 0)" @onclick="() => MoverItem(tipo, k, -1)"><Ico Nombre="subir" /></button>
+                                    <button type="button" class="ens-mini" title="Bajar" disabled="@(k == lista.Count - 1)" @onclick="() => MoverItem(tipo, k, 1)"><Ico Nombre="bajar" /></button>
+                                    <button type="button" class="ens-mini" title="Quitar" @onclick="() => lista.RemoveAt(k)">✕</button>
+                                </div>
+                            </div>
+                        }
+                    </div>
+                }
+            </div>
+            </SeccionFormulario>
+        </ChildContent>
+        <Acciones>
+            <button class="btn btn-secondary btn-sm" title="Cancelar" @onclick="() => formRiesgo = null"><Ico Nombre="cancelar" /></button>
+            <button class="btn btn-primary btn-sm" title="Guardar" @onclick="GuardarRiesgo"><Ico Nombre="guardar" /></button>
+        </Acciones>
+    </FormularioSig>;
+
+    // Valores ya usados en la matriz, para ofrecerlos sin forzar un catálogo
+    // cerrado. Salen de lo precargado en CargarAsync: el render nunca consulta Db.
+    private Dictionary<string, List<string>> catalogos = new();
+
+    // Opciones de un catálogo, más el valor actual si ya no está en él (para no perderlo al editar).
+    private List<string> Opciones(string tipo, string? actual)
+    {
+        var l = catalogos.TryGetValue(tipo, out var v) ? v.ToList() : new();
+        if (!string.IsNullOrWhiteSpace(actual) && !l.Contains(actual, StringComparer.OrdinalIgnoreCase)) l.Insert(0, actual);
+        return l;
+    }
+
+    private record ResumenPlan(int Id, string Codigo, EstadoAccionPlan Estado, string Hallazgo);
+
+    // ======================= Mapa de calor probabilidad × impacto (solo presentación) =======================
+    private string vistaR = "mapa";   // mapa | lista
+    private (ProbabilidadRiesgo P, ImpactoRiesgo I)? celdaR;
+
+    // ?p={probabilidad 1–5}&i={impacto 1–5} (tablero de inicio): abre el mapa con esa celda elegida.
+    [SupplyParameterFromQuery(Name = "p")] public int? ProbQ { get; set; }
+    [SupplyParameterFromQuery(Name = "i")] public int? ImpQ { get; set; }
+    private string? celdaAplicada;
+    protected override void OnParametersSet()
+    {
+        var c = $"{ProbQ}|{ImpQ}";
+        if (c == celdaAplicada) return;
+        celdaAplicada = c;
+        if (ProbQ is >= 1 and <= 5 && ImpQ is >= 1 and <= 5)
+        {
+            celdaR = ((ProbabilidadRiesgo)ProbQ.Value, (ImpactoRiesgo)ImpQ.Value);
+            vistaR = "mapa";
+        }
+    }
+
+    private static readonly ProbabilidadRiesgo[] ProbsMapa = { ProbabilidadRiesgo.MuyAlta, ProbabilidadRiesgo.Alta, ProbabilidadRiesgo.Moderada, ProbabilidadRiesgo.Baja, ProbabilidadRiesgo.MuyBaja };
+    private static readonly ImpactoRiesgo[] ImpactosMapa = { ImpactoRiesgo.Inferior, ImpactoRiesgo.Menor, ImpactoRiesgo.Importante, ImpactoRiesgo.Mayor, ImpactoRiesgo.Superior };
+
+    private string ordenMapa = "severidad";   // severidad | numero
+
+    // "R-2" < "R-10" < "R-26b": por el número del código y luego por el texto.
+    private static (int, string) OrdenCodigo(string? codigo)
+    {
+        var c = codigo ?? "";
+        var m = System.Text.RegularExpressions.Regex.Match(c, @"\d+");
+        return (m.Success && int.TryParse(m.Value, out var n) ? n : int.MaxValue, c);
+    }
+
+    private void ElegirCelda(ProbabilidadRiesgo p, ImpactoRiesgo i) => celdaR = celdaR == (p, i) ? null : (p, i);
+
+    private RenderFragment MapaRiesgos() => __builder =>
+    {
+        var todos = Mostrados.ToList();
+        var porCelda = todos.GroupBy(r => (r.Probabilidad, r.Impacto)).ToDictionary(g => g.Key, g => g.ToList());
+        var filtrados = celdaR is (ProbabilidadRiesgo cp, ImpactoRiesgo ci) ? todos.Where(r => r.Probabilidad == cp && r.Impacto == ci) : todos;
+        var enLista = ordenMapa == "numero"
+            ? filtrados.OrderBy(r => OrdenCodigo(r.Codigo)).ToList()
+            : filtrados.OrderByDescending(r => EscalaRiesgo.Puntuacion(r.Probabilidad, r.Impacto)).ThenBy(r => OrdenCodigo(r.Codigo)).ToList();
+        <div class="rm-marco">
+            <div class="rm-mapa-caja">
+                <div class="rm-mapa">
+                    <div class="rm-eje-y"><span>Probabilidad</span></div>
+                    <div class="rm-rejilla">
+                        @foreach (var pr in ProbsMapa)
+                        {
+                            var p = pr;
+                            <div class="rm-etq-y">@EscalaRiesgo.Nombre(p)</div>
+                            @foreach (var im in ImpactosMapa)
+                            {
+                                var i = im;
+                                var nivel = EscalaRiesgo.Nivel(p, i);
+                                var lista = porCelda.TryGetValue((p, i), out var l) ? l : new List<Riesgo>();
+                                <button type="button" class="rm-celda rm-n@((int)nivel) @(lista.Count == 0 ? "rm-vacia" : "") @(celdaR == (p, i) ? "sel" : "")"
+                                        style="--rm:@EscalaRiesgo.Color(nivel);" title="@($"{EscalaRiesgo.Nombre(p)} × {EscalaRiesgo.Nombre(i)} · {EscalaRiesgo.Nombre(nivel)}: {lista.Count}")"
+                                        @onclick="() => ElegirCelda(p, i)">
+                                    <span class="rm-cuenta">@(lista.Count == 0 ? "" : lista.Count.ToString())</span>
+                                    <span class="rm-codigos">
+                                        @foreach (var r in lista.Take(4)) { <span>@r.Codigo</span> }
+                                        @if (lista.Count > 4) { <span>+@(lista.Count - 4)</span> }
+                                    </span>
+                                </button>
+                            }
+                        }
+                        <div></div>
+                        @foreach (var im in ImpactosMapa)
+                        {
+                            <div class="rm-etq-x">@EscalaRiesgo.Nombre(im)</div>
+                        }
+                    </div>
+                    <div class="rm-eje-x">Impacto</div>
+                </div>
+                <div class="rm-niveles">
+                    @foreach (var n in new[] { NivelRiesgo.Extremo, NivelRiesgo.Alto, NivelRiesgo.Moderado, NivelRiesgo.Bajo })
+                    {
+                        var cuenta = todos.Count(r => r.Nivel == n);
+                        var pct = todos.Count == 0 ? 0 : cuenta * 100 / todos.Count;
+                        <div class="rm-nivel">
+                            <span class="rm-nivel-nom"><span class="rm-punto" style="background:@EscalaRiesgo.Color(n);"></span>@EscalaRiesgo.Nombre(n)</span>
+                            <span class="rm-nivel-barra"><span style="width:@(pct)%;background:@EscalaRiesgo.Color(n);"></span></span>
+                            <span class="rm-nivel-n">@cuenta</span>
+                        </div>
+                    }
+                </div>
+            </div>
+
+            <div class="rm-lista">
+                <div class="rm-lista-cab">
+                    @if (celdaR is (ProbabilidadRiesgo sp, ImpactoRiesgo si))
+                    {
+                        var nv = EscalaRiesgo.Nivel(sp, si);
+                        <span class="rg-pill" style="background:@EscalaRiesgo.Color(nv);color:@EscalaRiesgo.ColorTexto(nv)">@EscalaRiesgo.Nombre(nv)</span>
+                        <span class="rm-lista-tit">@EscalaRiesgo.Nombre(sp) × @EscalaRiesgo.Nombre(si)</span>
+                        <button type="button" class="gf-x" title="Ver todos" @onclick="() => celdaR = null">✕</button>
+                    }
+                    else
+                    {
+                        <span class="rm-lista-tit">Todos los riesgos</span>
+                    }
+                    <select class="form-select form-select-sm rm-orden" title="Ordenar" @bind="ordenMapa">
+                        <option value="severidad">Severidad</option>
+                        <option value="numero">N.º de riesgo</option>
+                    </select>
+                    <span class="rm-lista-n">@enLista.Count</span>
+                </div>
+                <div class="rm-lista-cuerpo">
+                    @foreach (var rr in enLista)
+                    {
+                        var r = rr;
+                        <div class="rm-tarjeta" style="--rm:@EscalaRiesgo.Color(r.Nivel);" @onclick="() => AbrirRiesgo(r)">
+                            <div class="rm-tarjeta-cab">
+                                <span class="pv-cod">@r.Codigo</span>
+                                <span class="rg-pill" style="background:@EscalaRiesgo.Color(r.Nivel);color:@EscalaRiesgo.ColorTexto(r.Nivel)">@EscalaRiesgo.Nombre(r.Nivel)</span>
+                                @if (r.Tipo == TipoRiesgo.Oportunidad) { <span class="ind-chip">Oportunidad</span> }
+                                <span class="rm-acciones" @onclick:stopPropagation="true">
+                                    <button type="button" class="ens-mini" title="Nuevo seguimiento" @onclick="() => NuevoSeguimiento(r)"><Ico Nombre="seguimiento" /></button>
+                                    <button type="button" class="ens-mini" title="Editar" @onclick="() => EditarRiesgo(r)"><Ico Nombre="editar" /></button>
+                                </span>
+                            </div>
+                            <div class="rm-tarjeta-desc">@r.Descripcion</div>
+                            <div class="rm-tarjeta-pie">
+                                @if (!string.IsNullOrWhiteSpace(r.Categoria)) { <ValorCatalogo Tipo="@SembradorCatalogosRiesgo.Categoria" Valor="@r.Categoria" /> }
+                                @if (!string.IsNullOrWhiteSpace(r.Area)) { <ValorCatalogo Tipo="@SembradorCatalogosRiesgo.Area" Valor="@r.Area" /> }
+                                @if (!string.IsNullOrWhiteSpace(r.EstadoActual)) { <ValorCatalogo Tipo="@SembradorCatalogosRiesgo.EstadoActual" Valor="@r.EstadoActual" /> }
+                                @foreach (var pl in PlanesDe(r)) { <span class="d-inline-flex gap-1 align-items-center small"><strong>@pl.Codigo</strong><EstadoAccion Estado="pl.Estado" /></span> }
+                                @if (ultimoSeguimiento.TryGetValue(r.Id, out var us)) { <span class="rm-seg" title="Último seguimiento">⟳ @us.ToString("dd/MM/yyyy")</span> }
+                            </div>
+                        </div>
+                    }
+                    @if (enLista.Count == 0)
+                    {
+                        <div class="pv-vacio">Sin riesgos.</div>
+                    }
+                </div>
+            </div>
+        </div>
+    };
+    private Dictionary<string, List<ResumenPlan>> planesPorCodigo = new(StringComparer.OrdinalIgnoreCase);
+    private List<ResumenPlan> PlanesDe(Riesgo r) => planesPorCodigo.TryGetValue(r.Codigo, out var l) ? l : new();
+
+    private static List<string> CargosDe(string? texto) => SembradorCatalogosRiesgo.Cargos(texto);
+
+    private async Task GuardarRiesgo()
+    {
+        if (formRiesgo is null) return;
+        if (string.IsNullOrWhiteSpace(formRiesgo.Descripcion)) { mensaje = "El riesgo necesita una descripción."; error = true; return; }
+        if (string.IsNullOrWhiteSpace(formRiesgo.Codigo)) { mensaje = "El riesgo necesita un código."; error = true; return; }
+        var codigoNuevo = formRiesgo.Codigo.Trim();
+        // El código debe ser único dentro de la misma versión (hay un índice único
+        // en la base de datos); se valida antes para no reventar con una excepción
+        // de SQL sin aviso. Con "R-22" y "R-22b" del importador, es fácil chocar
+        // al editar el código a mano.
+        if (riesgos.Any(r => r.Id != formRiesgo.Id && string.Equals(r.Codigo, codigoNuevo, StringComparison.OrdinalIgnoreCase)))
+        { mensaje = $"Ya existe un riesgo con el código \"{codigoNuevo}\" en esta revisión."; error = true; return; }
+
+        await _dbLock.WaitAsync();
+        try
+        {
+            if (formRiesgoEsNuevo)
+            {
+                formRiesgo.Codigo = codigoNuevo;
+                formRiesgo.ResponsablePlan = string.Join("\n", formCargos);
+                Db.Riesgos.Add(formRiesgo);
+            }
+            else
+            {
+                var ent = await Db.Riesgos.FirstOrDefaultAsync(r => r.Id == formRiesgo.Id);
+                if (ent is null) return;
+                ent.Codigo = codigoNuevo; ent.Tipo = formRiesgo.Tipo;
+                ent.EstadoActual = formRiesgo.EstadoActual?.Trim() ?? ""; ent.Categoria = formRiesgo.Categoria?.Trim() ?? "";
+                ent.Area = formRiesgo.Area?.Trim() ?? ""; ent.Causa = formRiesgo.Causa ?? "";
+                ent.Descripcion = formRiesgo.Descripcion.Trim(); ent.Consecuencia = formRiesgo.Consecuencia ?? "";
+                ent.Probabilidad = formRiesgo.Probabilidad; ent.Impacto = formRiesgo.Impacto;
+                ent.Disparadores = formRiesgo.Disparadores ?? ""; ent.Estrategia = formRiesgo.Estrategia?.Trim() ?? "";
+                ent.PlanRespuesta = formRiesgo.PlanRespuesta ?? ""; ent.ResponsablePlan = string.Join("\n", formCargos);
+                ent.EstadoPlan = formRiesgo.EstadoPlan?.Trim() ?? ""; ent.ComoSeHaceSeguimiento = formRiesgo.ComoSeHaceSeguimiento ?? "";
+            }
+            await Db.SaveChangesAsync();
+
+            // Elementos: se reemplazan por los del formulario y el riesgo
+            // guarda su copia de texto sin números.
+            var id = formRiesgo.Id;
+            var guardado = formRiesgoEsNuevo ? formRiesgo : await Db.Riesgos.FirstAsync(r => r.Id == id);
+            Db.ElementosRiesgo.RemoveRange(await Db.ElementosRiesgo.Where(e => e.RiesgoId == id).ToListAsync());
+            var nuevosEls = ElementosDelFormulario(id);
+            Db.ElementosRiesgo.AddRange(nuevosEls);
+            ElementosRiesgo.Sincronizar(guardado, nuevosEls);
+            await Db.SaveChangesAsync();
+            Db.ChangeTracker.Clear();
+            formRiesgo = null;
+            mensaje = "Riesgo guardado."; error = false;
+            await CargarAsync();
+            if (vista == "detalle" && id > 0) CargarDetalle(id);
+        }
+        catch (Exception ex)
+        {
+            Db.ChangeTracker.Clear();
+            mensaje = "No se pudo guardar el riesgo: " +
+                      (ex is Microsoft.EntityFrameworkCore.DbUpdateException dbEx && dbEx.InnerException?.Message.Contains("IX_Riesgos", StringComparison.OrdinalIgnoreCase) == true
+                          ? $"ya existe un riesgo con el código \"{codigoNuevo}\" en esta revisión."
+                          : "inténtalo de nuevo. (" + ex.Message + ")");
+            error = true;
+        }
+        finally { _dbLock.Release(); }
+    }
+
+    // ---------- Seguimiento ----------
+    private SeguimientoRiesgo? formSeguimiento;
+    private bool formSeguimientoEsNuevo;
+    private List<HallazgoRiesgo> formHallazgos = new();
+
+    private void NuevoSeguimiento(Riesgo r)
+    {
+        if (vista != "detalle") AbrirRiesgo(r);
+        formSeguimiento = new SeguimientoRiesgo { RiesgoId = r.Id, Fecha = DateTime.Today };
+        formSegResp = new(); formSoportes = new(); soportesQuitados = new();
+        lugaresForm = new(); planesBorrador = new();
+        formHallazgos = new();
+        formSeguimientoEsNuevo = true;
+    }
+
+    private List<string> formSegResp = new();
+    private List<ArchivoRiesgo> formSoportes = new();
+    private List<ArchivoRiesgo> soportesQuitados = new();
+    private List<ArchivoRiesgo> soportes = new();
+
+    private async Task SubirSoportes(InputFileChangeEventArgs e)
+    {
+        try
+        {
+            foreach (var f in e.GetMultipleFiles(30))
+            {
+                var (nombre, ruta) = await SigWeb.Data.Planes.AlmacenAnexos.GuardarAsync(f, Env.WebRootPath, "riesgos");
+                formSoportes.Add(new ArchivoRiesgo { NombreOriginal = nombre, RutaArchivo = ruta });
+            }
+        }
+        catch (Exception ex) { mensaje = "No se pudo adjuntar: " + ex.Message; error = true; }
+    }
+
+    private void EditarSeguimiento(SeguimientoRiesgo s)
+    {
+        formSegResp = SelectorMultiple.Leer(s.Responsable);
+        formSoportes = soportes.Where(x => x.SeguimientoRiesgoId == s.Id).ToList();
+        soportesQuitados = new();
+        formSeguimiento = new SeguimientoRiesgo
+        {
+            Id = s.Id, RiesgoId = s.RiesgoId, Fecha = s.Fecha, Responsable = s.Responsable,
+            Resultado = s.Resultado, Observacion = s.Observacion
+        };
+        formHallazgos = hallazgos.Where(h => h.SeguimientoRiesgoId == s.Id)
+            .Select(h => new HallazgoRiesgo
+            {
+                Id = h.Id, SeguimientoRiesgoId = h.SeguimientoRiesgoId, ElementoTrazadoId = h.ElementoTrazadoId,
+                ComponenteId = h.ComponenteId, ItemCatalogoId = h.ItemCatalogoId, TiroId = h.TiroId,
+                Descripcion = h.Descripcion, Accion = h.Accion, Estado = h.Estado, FechaCierre = h.FechaCierre
+            }).ToList();
+        lugaresForm = formHallazgos.ToDictionary(h => h, h => lugaresHallazgos.Where(l => l.HallazgoRiesgoId == h.Id)
+            .Select(l => new LugarPlan { ElementoTrazadoId = l.ElementoTrazadoId, ComponenteId = l.ComponenteId, ItemCatalogoId = l.ItemCatalogoId, TiroId = l.TiroId }).ToList());
+        planesBorrador = new();
+        formSeguimientoEsNuevo = false;
+    }
+
+    private RenderFragment FormularioSeguimiento() =>@<FormularioSig Titulo="Seguimiento" Icono="seguimiento" Clase="mb-3" OnCerrar="() => { formSeguimiento = null; planesBorrador = new(); }">
+        <ChildContent>
+            <SeccionFormulario Titulo="Seguimiento">
+                <CampoFormulario Etiqueta="Fecha del seguimiento" Ancho="col-md-3">
+                    <input type="date" class="form-control" @bind="formSeguimiento!.Fecha" />
+                </CampoFormulario>
+                <CampoFormulario Etiqueta="Resultado" Ancho="col-md-3">
+                    <select class="form-select" value="@((int)formSeguimiento!.Resultado)" @onchange='e => formSeguimiento!.Resultado = (ResultadoSeguimiento)int.Parse(e.Value?.ToString() ?? "0")'>
+                        <option value="0">No materializado</option>
+                        <option value="1">En observación</option>
+                        <option value="2">Materializado</option>
+                    </select>
+                </CampoFormulario>
+                <CampoFormulario Etiqueta="Responsables" Ancho="col-md-6">
+                    <SelectorMultiple Valores="formSegResp" Opciones="Opciones(SembradorCatalogosRiesgo.Cargo, null)" />
+                </CampoFormulario>
+                <CampoFormulario Etiqueta="Observación" Ancho="col-md-12">
+                    <textarea class="form-control" rows="3" @bind="formSeguimiento!.Observacion"></textarea>
+                </CampoFormulario>
+                <CampoFormulario Etiqueta="Soportes" Ancho="col-md-12">
+                    <div class="d-flex flex-wrap gap-1 align-items-center">
+                        <label class="ens-mini mb-0 pa-adjuntar" title="Adjuntar documentos, fotos o anexos"><Ico Nombre="adjuntar" /><InputFile class="d-none" multiple OnChange="SubirSoportes" /></label>
+                        @foreach (var x in formSoportes.ToList())
+                        {
+                            <span class="rg-chip @(x.Id == 0 ? "pa-pendiente" : "")" title="@(x.Id == 0 ? "Se guarda con el seguimiento" : x.FechaRegistro.ToString("dd/MM/yyyy"))">
+                                <a href="@x.RutaArchivo" target="_blank" rel="noopener">@x.NombreOriginal</a>
+                                <button type="button" class="rg-chip-x" title="Quitar" @onclick="() => { formSoportes.Remove(x); if (x.Id > 0) soportesQuitados.Add(x); }">✕</button>
+                            </span>
+                        }
+                    </div>
+                </CampoFormulario>
+            </SeccionFormulario>
+
+            <SeccionFormulario Titulo="Hallazgos (dónde se materializó)" SinFila="true">
+                <Extra>
+                    <button type="button" class="ens-mini" title="Agregar hallazgo" @onclick="AgregarFilaHallazgo"><Ico Nombre="agregar" /></button>
+                </Extra>
+                <ChildContent>
+            @foreach (var h in formHallazgos)
+            {
+                <div class="row g-1 align-items-start mb-1 rg-hallazgo-fila">
+                    <div class="col-md-4">
+                        <SelectorLugares Lugares="LugaresForm(h)" Torres="torres" Componentes="componentesPorId" Localizaciones="localizaciones" Tiros="tiros" />
+                    </div>
+                    <div class="col-md-3"><input class="form-control form-control-sm" placeholder="Qué pasó" value="@h.Descripcion" @onchange="@(e => h.Descripcion = e.Value?.ToString() ?? "")" /></div>
+                    <div class="col-md-3"><input class="form-control form-control-sm" placeholder="Acción tomada" value="@h.Accion" @onchange="@(e => h.Accion = e.Value?.ToString() ?? "")" /></div>
+                    <div class="col-md-1">
+                        <select class="form-select form-select-sm" value="@((int)h.Estado)" @onchange='e => h.Estado = (EstadoHallazgo)int.Parse(e.Value?.ToString() ?? "0")'>
+                            <option value="0">Abierto</option>
+                            <option value="1">En tratamiento</option>
+                            <option value="2">Cerrado</option>
+                        </select>
+                    </div>
+                    <div class="col-md-1">
+                        <button type="button" class="btn btn-sm btn-outline-danger" title="Quitar hallazgo" @onclick="() => formHallazgos.Remove(h)"><Ico Nombre="eliminar" /></button>
+                    </div>
+                </div>
+            }
+
+                </ChildContent>
+            </SeccionFormulario>
+
+            <SeccionFormulario Titulo="Planes de acción" SinFila="true">
+                <Extra>
+                    <button type="button" class="ens-mini" title="Nuevo plan de acción" @onclick="AgregarPlanBorrador"><Ico Nombre="agregar" /></button>
+                @if (formSeguimiento!.Id > 0)
+                {
+                    @foreach (var p in planesRiesgo.Where(p => p.SeguimientoRiesgoId == formSeguimiento.Id))
+                    {
+                        <button type="button" class="rg-chip" title="Abrir plan" @onclick="() => IrPlan(p.Id)">@p.Codigo</button>
+                    }
+                }
+                </Extra>
+                <ChildContent>
+            @foreach (var pb in planesBorrador)
+            {
+                <div class="rg-plan-borrador" @key="pb">
+                    <button type="button" class="ens-mini rg-plan-borrador-x" title="Quitar" @onclick="() => planesBorrador.Remove(pb)">✕</button>
+                    <EditorPlanAccion Modelo="pb" Origenes="Opciones(SembradorCatalogosRiesgo.OrigenHallazgo, null)" Tipos="Opciones(SembradorCatalogosRiesgo.TipoHallazgo, null)"
+                                      Procesos="Opciones(SembradorCatalogosRiesgo.ProcesoPlan, null)" Responsables="Opciones(SembradorCatalogosRiesgo.Cargo, null)"
+                                      Torres="torres" Componentes="componentesPorId" Localizaciones="localizaciones" Tiros="tiros"
+                                      OnError="m => { mensaje = m; error = true; }"
+                                      EtiquetasRiesgo="@(riesgo is null ? new() : new Dictionary<int, string> { [riesgo.Id] = $"{riesgo.Codigo} — {riesgo.Descripcion}" })" />
+                </div>
+            }
+
+                </ChildContent>
+            </SeccionFormulario>
+        </ChildContent>
+        <Acciones>
+            <button class="btn btn-secondary btn-sm" title="Cancelar" @onclick="() => { formSeguimiento = null; planesBorrador = new(); }"><Ico Nombre="cancelar" /></button>
+            <button class="btn btn-primary btn-sm" title="Guardar" @onclick="GuardarSeguimiento"><Ico Nombre="guardar" /></button>
+        </Acciones>
+    </FormularioSig>;
+
+    private List<Componente> TodosComponentes => componentesPorId.Values.Where(c => !c.Eliminado)
+        .OrderBy(c => c.ElementoTrazadoId).ThenBy(c => c.Orden).ToList();
+    private Dictionary<int, Componente> componentesPorId = new();
+
+    private static int? Int(ChangeEventArgs e) => int.TryParse(e.Value?.ToString(), out var n) ? n : 0;
+
+    // Lugares de cada fila de hallazgo del formulario (vacío = todo el proyecto).
+    private Dictionary<HallazgoRiesgo, List<LugarPlan>> lugaresForm = new();
+    private List<LugarPlan> LugaresForm(HallazgoRiesgo h) => lugaresForm.TryGetValue(h, out var l) ? l : lugaresForm[h] = new();
+    private List<LugarHallazgo> lugaresHallazgos = new();
+
+    // Planes de acción nuevos que nacen de este seguimiento (se guardan con él).
+    private List<SigWeb.Data.Planes.PlanesAccionServicio.PlanEditable> planesBorrador = new();
+
+    private void AgregarPlanBorrador()
+    {
+        if (formSeguimiento is null) return;
+        var origen = Opciones(SembradorCatalogosRiesgo.OrigenHallazgo, null)
+            .FirstOrDefault(o => string.Equals(o, "Seguimiento", StringComparison.OrdinalIgnoreCase)) ?? "";
+        var pb = new SigWeb.Data.Planes.PlanesAccionServicio.PlanEditable
+        {
+            Plan = new PlanAccion
+            {
+                Codigo = ServicioPlanes.SiguienteCodigo(planesBorrador.Select(p => p.Plan.Codigo)),
+                Fecha = formSeguimiento.Fecha, OrigenHallazgo = origen,
+                DescripcionHallazgo = formSeguimiento.Observacion ?? ""
+            }
+        };
+        if (riesgo is not null) pb.Riesgos.Add(riesgo.Id);
+        // Lugares sugeridos: los de los hallazgos del formulario.
+        foreach (var l in formHallazgos.SelectMany(LugaresForm))
+            if (!pb.Lugares.Any(x => x.ElementoTrazadoId == l.ElementoTrazadoId && x.ComponenteId == l.ComponenteId && x.ItemCatalogoId == l.ItemCatalogoId && x.TiroId == l.TiroId))
+                pb.Lugares.Add(new LugarPlan { ElementoTrazadoId = l.ElementoTrazadoId, ComponenteId = l.ComponenteId, ItemCatalogoId = l.ItemCatalogoId, TiroId = l.TiroId });
+        planesBorrador.Add(pb);
+    }
+
+    private static string TipoDe(HallazgoRiesgo h) =>
+        h.ElementoTrazadoId is not null ? "torre"
+        : h.ComponenteId is not null ? "componente"
+        : h.ItemCatalogoId is not null ? "localizacion"
+        : h.TiroId is not null ? "tiro" : "proyecto";
+
+    private void CambiarTipoHallazgo(HallazgoRiesgo h, string tipo)
+    {
+        h.ElementoTrazadoId = null; h.ComponenteId = null; h.ItemCatalogoId = null; h.TiroId = null;
+        // Se deja en 0/null hasta que el usuario elija: el select de al lado se redibuja.
+        if (tipo == "torre") h.ElementoTrazadoId = 0;
+        else if (tipo == "componente") h.ComponenteId = 0;
+        else if (tipo == "localizacion") h.ItemCatalogoId = 0;
+        else if (tipo == "tiro") h.TiroId = 0;
+    }
+
+    private void AgregarFilaHallazgo()
+    {
+        formHallazgos.Add(new HallazgoRiesgo());
+        if (formSeguimiento is not null) formSeguimiento.Resultado = ResultadoSeguimiento.Materializado;
+    }
+
+    private async Task GuardarSeguimiento()
+    {
+        if (formSeguimiento is null || riesgo is null) return;
+        if (formSegResp.Count == 0) { mensaje = "Indica quién hace el seguimiento."; error = true; return; }
+        formSeguimiento.Responsable = SelectorMultiple.Unir(formSegResp);
+
+        await _dbLock.WaitAsync();
+        try
+        {
+            SeguimientoRiesgo ent;
+            if (formSeguimientoEsNuevo)
+            {
+                ent = new SeguimientoRiesgo
+                {
+                    RiesgoId = formSeguimiento.RiesgoId, Fecha = formSeguimiento.Fecha,
+                    Responsable = formSeguimiento.Responsable, Resultado = formSeguimiento.Resultado,
+                    Observacion = formSeguimiento.Observacion ?? "",
+                    Probabilidad = riesgo.Probabilidad, Impacto = riesgo.Impacto
+                };
+                Db.SeguimientosRiesgo.Add(ent);
+            }
+            else
+            {
+                var e2 = await Db.SeguimientosRiesgo.FirstOrDefaultAsync(s => s.Id == formSeguimiento.Id);
+                if (e2 is null) return;
+                e2.Fecha = formSeguimiento.Fecha; e2.Responsable = formSeguimiento.Responsable;
+                e2.Resultado = formSeguimiento.Resultado; e2.Observacion = formSeguimiento.Observacion ?? "";
+                ent = e2;
+            }
+            await Db.SaveChangesAsync();
+
+            // Hallazgos: se reescriben los de este seguimiento (los quitados van a la Papelera).
+            var previos = await Db.HallazgosRiesgo.Where(h => h.SeguimientoRiesgoId == ent.Id).ToListAsync();
+            var conservados = formHallazgos.Where(h => h.Id > 0).Select(h => h.Id).ToHashSet();
+            foreach (var p in previos.Where(p => !conservados.Contains(p.Id)))
+            { p.Eliminado = true; p.FechaEliminacion = DateTime.Now; }
+
+            var destinosH = new List<(HallazgoRiesgo Form, HallazgoRiesgo Dest)>();
+            foreach (var h in formHallazgos)
+            {
+                var dest = h.Id > 0 ? previos.FirstOrDefault(p => p.Id == h.Id) : null;
+                if (dest is null)
+                {
+                    dest = new HallazgoRiesgo { SeguimientoRiesgoId = ent.Id };
+                    Db.HallazgosRiesgo.Add(dest);
+                }
+                // Los lugares van en LugarHallazgo (varios); los campos únicos quedan vacíos.
+                dest.ElementoTrazadoId = null; dest.ComponenteId = null; dest.ItemCatalogoId = null; dest.TiroId = null;
+                dest.Descripcion = h.Descripcion ?? ""; dest.Accion = h.Accion ?? ""; dest.Estado = h.Estado;
+                dest.FechaCierre = h.Estado == EstadoHallazgo.Cerrado ? (h.FechaCierre ?? DateTime.Today) : null;
+                destinosH.Add((h, dest));
+            }
+            await Db.SaveChangesAsync();
+            var idsH = destinosH.Select(d => d.Dest.Id).ToList();
+            Db.LugaresHallazgo.RemoveRange(await Db.LugaresHallazgo.Where(l => idsH.Contains(l.HallazgoRiesgoId)).ToListAsync());
+            foreach (var (h, dest) in destinosH)
+                foreach (var l in LugaresForm(h))
+                    Db.LugaresHallazgo.Add(new LugarHallazgo { HallazgoRiesgoId = dest.Id, ElementoTrazadoId = l.ElementoTrazadoId, ComponenteId = l.ComponenteId, ItemCatalogoId = l.ItemCatalogoId, TiroId = l.TiroId });
+            // Soportes: los nuevos se registran; los quitados van a la Papelera.
+            foreach (var x in formSoportes.Where(x => x.Id == 0))
+                Db.ArchivosRiesgo.Add(new ArchivoRiesgo { SeguimientoRiesgoId = ent.Id, NombreOriginal = x.NombreOriginal, RutaArchivo = x.RutaArchivo });
+            var idsQuitar = soportesQuitados.Select(x => x.Id).ToList();
+            foreach (var x in await Db.ArchivosRiesgo.Where(x => idsQuitar.Contains(x.Id)).ToListAsync())
+            { x.Eliminado = true; x.FechaEliminacion = DateTime.Now; }
+            await Db.SaveChangesAsync();
+            Db.ChangeTracker.Clear();
+
+            // Planes de acción nuevos de este seguimiento: ligados al riesgo y al seguimiento.
+            var creados = new List<string>();
+            foreach (var pb in planesBorrador)
+            {
+                pb.Plan.RiesgoId = riesgo.Id;
+                pb.Plan.SeguimientoRiesgoId = ent.Id;
+                if (string.IsNullOrWhiteSpace(pb.Plan.DescripcionHallazgo)) pb.Plan.DescripcionHallazgo = ent.Observacion ?? "";
+                await ServicioPlanes.GuardarAsync(pb);
+                creados.Add(pb.Plan.Codigo);
+            }
+
+            formSeguimiento = null; formHallazgos = new(); formSoportes = new(); soportesQuitados = new();
+            lugaresForm = new(); planesBorrador = new();
+            mensaje = "Seguimiento guardado." + (creados.Count > 0 ? $" Planes de acción creados: {string.Join(", ", creados)}." : ""); error = false;
+            await CargarAsync();
+            CargarDetalle(riesgo.Id);
+        }
+        catch (Exception ex)
+        {
+            Db.ChangeTracker.Clear();
+            mensaje = "No se pudo guardar el seguimiento: inténtalo de nuevo. (" + ex.Message + ")"; error = true;
+        }
+        finally { _dbLock.Release(); }
+    }
+
+    // ---------- Ronda de seguimiento ----------
+    private DateTime rondaFecha = DateTime.Today;
+    private List<string> rondaResp = new();
+    private List<FilaRonda> rondaFilas = new();
+
+    private class FilaRonda
+    {
+        public Riesgo Riesgo { get; set; } = default!;
+        public bool Marcado { get; set; }
+        public ResultadoSeguimiento Resultado { get; set; } = ResultadoSeguimiento.NoMaterializado;
+        public string Observacion { get; set; } = "";
+        public DateTime? UltimoSeguimiento { get; set; }
+    }
+
+    private void AbrirRonda()
+    {
+        vista = "ronda";
+        rondaFecha = DateTime.Today;
+        rondaFilas = riesgos
+            .Where(r => !string.Equals(r.EstadoActual, "Cerrado", StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(r => r.Nivel).ThenBy(r => r.Codigo)
+            .Select(r => new FilaRonda
+            {
+                Riesgo = r,
+                UltimoSeguimiento = ultimoSeguimiento.TryGetValue(r.Id, out var f) ? f : null
+            }).ToList();
+    }
+
+    private void MarcarTodosNoMaterializado()
+    {
+        foreach (var f in rondaFilas) { f.Marcado = true; f.Resultado = ResultadoSeguimiento.NoMaterializado; }
+    }
+
+    private async Task GuardarRonda()
+    {
+        var marcados = rondaFilas.Where(f => f.Marcado).ToList();
+        if (marcados.Count == 0 || rondaResp.Count == 0) return;
+        await _dbLock.WaitAsync();
+        try
+        {
+            var fechas = Db.SeguimientosRiesgo.AsNoTracking()
+                .Where(x => x.Fecha == rondaFecha).Select(x => x.RiesgoId).ToHashSet();
+            var repetidos = marcados.Count(f => fechas.Contains(f.Riesgo.Id));
+            foreach (var f in marcados.Where(f => !fechas.Contains(f.Riesgo.Id)))
+            {
+                Db.SeguimientosRiesgo.Add(new SeguimientoRiesgo
+                {
+                    RiesgoId = f.Riesgo.Id,
+                    Fecha = rondaFecha,
+                    Responsable = SelectorMultiple.Unir(rondaResp),
+                    Resultado = f.Resultado,
+                    Observacion = f.Observacion ?? "",
+                    Probabilidad = f.Riesgo.Probabilidad,
+                    Impacto = f.Riesgo.Impacto
+                });
+            }
+            await Db.SaveChangesAsync();
+            Db.ChangeTracker.Clear();
+            var nuevos = marcados.Count - repetidos;
+            var materializados = marcados.Count(f => !fechas.Contains(f.Riesgo.Id) && f.Resultado == ResultadoSeguimiento.Materializado);
+            mensaje = $"Ronda del {rondaFecha:dd/MM/yyyy}: {nuevos} seguimiento(s) registrados" +
+                      (repetidos > 0 ? $"; {repetidos} ya tenían seguimiento en esa fecha y se omitieron" : "") +
+                      (materializados > 0 ? $"; {materializados} materializado(s) — registra sus hallazgos desde el detalle del riesgo." : ".");
+            error = false;
+            vista = "matriz";
+            await CargarAsync();
+        }
+        catch (Exception ex)
+        {
+            Db.ChangeTracker.Clear();
+            mensaje = "No se pudo guardar la ronda: inténtalo de nuevo. (" + ex.Message + ")"; error = true;
+        }
+        finally { _dbLock.Release(); }
+    }
+
+    // ---------- Versiones ----------
+    private VersionMatrizRiesgos? formVersion;
+    private bool formVersionEsNueva, copiarRiesgos = true;
+
+    private void NuevaVersion()
+    {
+        vista = "versiones";
+        formVersion = new VersionMatrizRiesgos { Fecha = DateTime.Today, Codigo = SiguienteCodigoVersion() };
+        formVersionEsNueva = true;
+        copiarRiesgos = versiones.Count > 0;
+    }
+
+    private string SiguienteCodigoVersion()
+    {
+        for (var n = versiones.Count + 1; n < 200; n++)
+        {
+            var c = "Rev. " + n.ToString("00");
+            if (!versiones.Any(v => string.Equals(v.Codigo, c, StringComparison.OrdinalIgnoreCase))) return c;
+        }
+        return "Rev. " + DateTime.Today.Year;
+    }
+
+    private void EditarVersion(VersionMatrizRiesgos v)
+    {
+        formVersion = new VersionMatrizRiesgos
+        {
+            Id = v.Id, Codigo = v.Codigo, Fecha = v.Fecha, Etapa = v.Etapa,
+            ElaboradoPor = v.ElaboradoPor, RevisadoPor = v.RevisadoPor, AprobadoPor = v.AprobadoPor,
+            EstadoDocumento = v.EstadoDocumento, HojaOrigen = v.HojaOrigen,
+            DescripcionCambios = v.DescripcionCambios, Estado = v.Estado, VersionAnteriorId = v.VersionAnteriorId
+        };
+        formVersionEsNueva = false;
+    }
+
+    private async Task GuardarVersion()
+    {
+        if (formVersion is null) return;
+        if (string.IsNullOrWhiteSpace(formVersion.Codigo)) { mensaje = "La revisión necesita un código."; error = true; return; }
+        if (versiones.Any(v => v.Id != formVersion.Id && string.Equals(v.Codigo.Trim(), formVersion.Codigo.Trim(), StringComparison.OrdinalIgnoreCase)))
+        { mensaje = $"Ya existe una revisión con el código \"{formVersion.Codigo}\"."; error = true; return; }
+
+        await _dbLock.WaitAsync();
+        try
+        {
+            if (formVersionEsNueva)
+            {
+                var origen = copiarRiesgos ? (versiones.FirstOrDefault(v => v.Estado == EstadoVersionMatriz.Vigente) ?? versiones.FirstOrDefault())?.Id : null;
+                var nueva = await Servicio.CrearVersionAsync(formVersion, origen);
+                if (versiones.Count == 0) await Servicio.MarcarVigenteAsync(nueva.Id);
+                filtroVersion = nueva.Id;
+                mensaje = $"Revisión {nueva.Codigo} creada" + (origen is null ? "." : " con copia de los riesgos de la revisión anterior.");
+            }
+            else
+            {
+                var ent = await Db.VersionesMatrizRiesgos.FirstOrDefaultAsync(v => v.Id == formVersion.Id);
+                if (ent is not null)
+                {
+                    ent.Codigo = formVersion.Codigo.Trim(); ent.Fecha = formVersion.Fecha;
+                    ent.Etapa = formVersion.Etapa ?? ""; ent.ElaboradoPor = formVersion.ElaboradoPor ?? "";
+                    ent.RevisadoPor = formVersion.RevisadoPor ?? ""; ent.AprobadoPor = formVersion.AprobadoPor ?? "";
+                    ent.EstadoDocumento = formVersion.EstadoDocumento ?? "";
+                    ent.DescripcionCambios = formVersion.DescripcionCambios ?? "";
+                    await Db.SaveChangesAsync();
+                }
+                mensaje = "Revisión guardada.";
+            }
+            error = false;
+            Db.ChangeTracker.Clear();
+            formVersion = null;
+            await CargarAsync();
+        }
+        catch (Exception ex)
+        {
+            Db.ChangeTracker.Clear();
+            mensaje = "No se pudo guardar la revisión: inténtalo de nuevo. (" + ex.Message + ")"; error = true;
+        }
+        finally { _dbLock.Release(); }
+    }
+
+    private async Task MarcarVigente(VersionMatrizRiesgos v)
+    {
+        await _dbLock.WaitAsync();
+        try
+        {
+            await Servicio.MarcarVigenteAsync(v.Id);
+            mensaje = $"{v.Codigo} es ahora la revisión vigente."; error = false;
+            filtroVersion = v.Id;
+            await CargarAsync();
+        }
+        finally { _dbLock.Release(); }
+    }
+
+    private async Task VerVersion(VersionMatrizRiesgos v)
+    {
+        filtroVersion = v.Id;
+        vista = "matriz";
+        await _dbLock.WaitAsync();
+        try { await CargarAsync(); }
+        finally { _dbLock.Release(); }
+    }
+
+    // ---------- Importar el libro de la matriz ----------
+    private LibroMatrizRiesgos? libro;
+    private HashSet<string> yaImportadas = new(StringComparer.OrdinalIgnoreCase);
+    private bool importando;
+
+    private async Task LeerExcel(InputFileChangeEventArgs e)
+    {
+        libro = null; mensaje = "";
+        try
+        {
+            await using var ms = new MemoryStream();
+            await e.File.OpenReadStream(30 * 1024 * 1024).CopyToAsync(ms);
+            ms.Position = 0;
+            libro = LectorLibroMatrizRiesgos.Leer(ms);
+            yaImportadas = versiones.Select(v => v.Codigo).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            foreach (var rv in libro.Revisiones)
+                if (yaImportadas.Contains(rv.Codigo) || rv.Filas.Count == 0) rv.Importar = false;
+        }
+        catch (Exception ex)
+        {
+            mensaje = "No se pudo leer el libro: " + ex.Message; error = true;
+        }
+    }
+
+    private async Task ConfirmarImportar()
+    {
+        if (libro is null) return;
+        var aImportar = libro.Revisiones.Where(rv => rv.Importar && !yaImportadas.Contains(rv.Codigo)).ToList();
+        if (aImportar.Count == 0) return;
+        importando = true;
+        await _dbLock.WaitAsync();
+        try
+        {
+            VersionMatrizRiesgos? ultima = null;
+            var totalRiesgos = 0;
+            // En orden de versión, encadenando cada una con la anterior.
+            foreach (var rv in aImportar.OrderBy(x => x.Numero ?? int.MaxValue).ThenBy(x => x.Fecha))
+            {
+                var nueva = await Servicio.CrearVersionAsync(new VersionMatrizRiesgos
+                {
+                    Codigo = rv.Codigo,
+                    Fecha = rv.Fecha,
+                    Etapa = rv.Etapa,
+                    ElaboradoPor = rv.ElaboradoPor,
+                    RevisadoPor = rv.RevisadoPor,
+                    AprobadoPor = rv.AprobadoPor,
+                    EstadoDocumento = rv.EstadoDocumento,
+                    HojaOrigen = rv.Hoja,
+                    DescripcionCambios = ""
+                }, ultima?.Id);
+
+                var orden = 0;
+                var usados = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var nuevosRiesgos = new List<Riesgo>();
+                foreach (var f in rv.Filas)
+                {
+                    orden++;
+                    var codigo = int.TryParse(f.Item, out var n) ? "R-" + n.ToString("00")
+                        : (string.IsNullOrWhiteSpace(f.Item) ? "R-" + orden.ToString("00") : f.Item.Trim());
+                    // Items repetidos en el Excel: se conserva el número y se
+                    // distingue con una letra (R-22, R-22b) en vez de renumerar.
+                    if (!usados.Add(codigo))
+                    {
+                        var sufijo = 'b';
+                        while (!usados.Add(codigo + sufijo) && sufijo < 'z') sufijo++;
+                        codigo += sufijo;
+                    }
+                    var nr = new Riesgo
+                    {
+                        VersionMatrizRiesgosId = nueva.Id,
+                        Codigo = codigo,
+                        Orden = orden,
+                        Tipo = f.Tipo,
+                        EstadoActual = f.EstadoActual,
+                        Categoria = f.Categoria,
+                        Area = f.Area,
+                        Causa = f.Causa,
+                        Descripcion = f.Descripcion,
+                        Consecuencia = f.Consecuencia,
+                        Probabilidad = f.Probabilidad ?? ProbabilidadRiesgo.Moderada,
+                        Impacto = f.Impacto ?? ImpactoRiesgo.Importante,
+                        Disparadores = f.Disparadores,
+                        Estrategia = f.Estrategia,
+                        PlanRespuesta = f.PlanRespuesta,
+                        ResponsablePlan = f.ResponsablePlan,
+                        EstadoPlan = f.EstadoPlan,
+                        ComoSeHaceSeguimiento = f.ComoSeHaceSeguimiento
+                    };
+                    Db.Riesgos.Add(nr);
+                    nuevosRiesgos.Add(nr);
+                    totalRiesgos++;
+                }
+                await Db.SaveChangesAsync();
+                // Las celdas numeradas del Excel se separan en elementos.
+                foreach (var nr in nuevosRiesgos)
+                {
+                    var els = ElementosRiesgo.DesdeTextos(nr);
+                    Db.ElementosRiesgo.AddRange(els);
+                    ElementosRiesgo.Sincronizar(nr, els);
+                }
+                await Db.SaveChangesAsync();
+                Db.ChangeTracker.Clear();
+                ultima = nueva;
+            }
+
+            // Los riesgos de una revisión se encadenan con los de la anterior por código.
+            await EncadenarRiesgosAsync();
+
+            // Listas de la hoja "Datos" + las áreas que aparecieron en las matrices.
+            var areas = aImportar.SelectMany(rv => rv.Filas).Select(f => f.Area);
+            var nuevosCat = await SembradorCatalogosRiesgo.VolcarAsync(Db, libro.Catalogos, areas);
+            SembradorCatalogosRiesgo.SincronizarConRiesgos(Db);
+
+            // La revisión más nueva importada queda vigente.
+            if (ultima is not null) { await Servicio.MarcarVigenteAsync(ultima.Id); filtroVersion = ultima.Id; }
+
+            mensaje = $"Se importaron {aImportar.Count} revisión(es) y {totalRiesgos} riesgos" +
+                      (nuevosCat > 0 ? $", y {nuevosCat} valores nuevos a Catálogos." : ".") +
+                      (ultima is not null ? $" {ultima.Codigo} queda como revisión vigente." : "");
+            error = false;
+            libro = null;
+            vista = "matriz";
+            await CargarAsync();
+        }
+        catch (Exception ex) { Db.ChangeTracker.Clear(); mensaje = "No se pudo importar: " + ex.Message; error = true; }
+        finally { importando = false; _dbLock.Release(); }
+    }
+
+    // Enlaza cada riesgo con el del mismo código en la revisión anterior, para
+    // poder ver su evolución entre revisiones.
+    private async Task EncadenarRiesgosAsync()
+    {
+        var vs = await Db.VersionesMatrizRiesgos.AsNoTracking().OrderBy(v => v.Fecha).ThenBy(v => v.Id).ToListAsync();
+        VersionMatrizRiesgos? previa = null;
+        foreach (var v in vs)
+        {
+            if (previa is not null)
+            {
+                var anteriores = await Db.Riesgos.AsNoTracking().Where(r => r.VersionMatrizRiesgosId == previa.Id)
+                    .ToDictionaryAsync(r => r.Codigo, r => r.Id);
+                var actuales = await Db.Riesgos.Where(r => r.VersionMatrizRiesgosId == v.Id && r.RiesgoAnteriorId == null).ToListAsync();
+                foreach (var r in actuales)
+                    if (anteriores.TryGetValue(r.Codigo, out var idPrev)) r.RiesgoAnteriorId = idPrev;
+                if (actuales.Count > 0) await Db.SaveChangesAsync();
+            }
+            previa = v;
+        }
+        Db.ChangeTracker.Clear();
+    }
+
+    // ---------- Eliminar (con impacto) ----------
+    private Riesgo? elimRiesgo;
+    private VersionMatrizRiesgos? elimVersion;
+    private SeguimientoRiesgo? elimSeguimiento;
+    private SigWeb.Data.Impacto.InformeImpacto? impacto;
+    private bool impactoOk;
+    private bool BloqueadoPorImpacto => impacto is null || (impacto.RequiereEntender && !impactoOk);
+
+    private async Task CalcularImpacto(Func<Task<SigWeb.Data.Impacto.InformeImpacto>> f)
+    {
+        impacto = null; impactoOk = false;
+        // Se lanza sin "await" desde Pedir* para no congelar el diálogo de
+        // confirmación; por eso toma el semáforo: si el usuario guarda algo
+        // mientras esto sigue consultando, debe esperar su turno en vez de
+        // chocar con la misma conexión de Db.
+        await _dbLock.WaitAsync();
+        try { impacto = await f(); }
+        catch { impacto = new SigWeb.Data.Impacto.InformeImpacto { Elemento = "No se pudo calcular el impacto" }; }
+        finally { _dbLock.Release(); }
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private void PedirEliminarRiesgo(Riesgo r) { elimVersion = null; elimSeguimiento = null; elimRiesgo = r; _ = CalcularImpacto(() => Analizador.Riesgo(r.Id)); }
+    private void PedirEliminarVersion(VersionMatrizRiesgos v) { elimRiesgo = null; elimSeguimiento = null; elimVersion = v; _ = CalcularImpacto(() => Analizador.VersionMatrizRiesgos(v.Id)); }
+    private void PedirEliminarSeguimiento(SeguimientoRiesgo s) { elimRiesgo = null; elimVersion = null; elimSeguimiento = s; _ = CalcularImpacto(() => Analizador.SeguimientoRiesgo(s.Id)); }
+
+    // Reemplazar una carga: desde la pantalla de importar, cuando el código ya
+    // existe, se pide eliminar esa revisión (con su propio aviso de impacto) y,
+    // al confirmarla, se deja la fila del libro lista para volver a importarla.
+    private string? reemplazarCodigoTrasEliminar;
+    private void PedirReemplazarCarga(string codigo)
+    {
+        var v = versiones.FirstOrDefault(x => string.Equals(x.Codigo, codigo, StringComparison.OrdinalIgnoreCase));
+        if (v is null) return;
+        reemplazarCodigoTrasEliminar = codigo;
+        PedirEliminarVersion(v);
+    }
+
+    private async Task ConfirmarEliminarRiesgo()
+    {
+        if (elimRiesgo is null || BloqueadoPorImpacto) return;
+        await _dbLock.WaitAsync();
+        try
+        {
+            var ent = await Db.Riesgos.FirstOrDefaultAsync(r => r.Id == elimRiesgo.Id);
+            if (ent is not null) { ent.Eliminado = true; ent.FechaEliminacion = DateTime.Now; await Db.SaveChangesAsync(); }
+            Db.ChangeTracker.Clear();
+            if (riesgo?.Id == elimRiesgo.Id) { riesgo = null; vista = "matriz"; }
+            elimRiesgo = null; impacto = null;
+            mensaje = "Riesgo enviado a la Papelera."; error = false;
+            await CargarAsync();
+        }
+        catch (Exception ex)
+        {
+            Db.ChangeTracker.Clear();
+            mensaje = "No se pudo eliminar el riesgo: inténtalo de nuevo. (" + ex.Message + ")"; error = true;
+        }
+        finally { _dbLock.Release(); }
+    }
+
+    private async Task ConfirmarEliminarVersion()
+    {
+        if (elimVersion is null || BloqueadoPorImpacto) return;
+        await _dbLock.WaitAsync();
+        try
+        {
+            var ent = await Db.VersionesMatrizRiesgos.FirstOrDefaultAsync(v => v.Id == elimVersion.Id);
+            if (ent is not null) { ent.Eliminado = true; ent.FechaEliminacion = DateTime.Now; await Db.SaveChangesAsync(); }
+            Db.ChangeTracker.Clear();
+            if (filtroVersion == elimVersion.Id) filtroVersion = 0;
+            var codigo = elimVersion.Codigo;
+            elimVersion = null; impacto = null;
+            await CargarAsync();
+
+            if (reemplazarCodigoTrasEliminar is not null && string.Equals(reemplazarCodigoTrasEliminar, codigo, StringComparison.OrdinalIgnoreCase))
+            {
+                // Viene de "reemplazar" en la pantalla de importar: se deja el
+                // mismo libro cargado con esa revisión lista para importarse.
+                reemplazarCodigoTrasEliminar = null;
+                yaImportadas.Remove(codigo);
+                var rv = libro?.Revisiones.FirstOrDefault(x => string.Equals(x.Codigo, codigo, StringComparison.OrdinalIgnoreCase));
+                if (rv is not null) rv.Importar = true;
+                vista = "importar";
+                mensaje = $"Revisión {codigo} enviada a la Papelera. Ya puedes importar la nueva.";
+            }
+            else
+            {
+                mensaje = "Revisión enviada a la Papelera.";
+            }
+            error = false;
+        }
+        catch (Exception ex)
+        {
+            Db.ChangeTracker.Clear();
+            mensaje = "No se pudo eliminar la revisión: inténtalo de nuevo. (" + ex.Message + ")"; error = true;
+        }
+        finally { _dbLock.Release(); }
+    }
+
+    private async Task ConfirmarEliminarSeguimiento()
+    {
+        if (elimSeguimiento is null || BloqueadoPorImpacto) return;
+        await _dbLock.WaitAsync();
+        try
+        {
+            var ent = await Db.SeguimientosRiesgo.FirstOrDefaultAsync(s => s.Id == elimSeguimiento.Id);
+            if (ent is not null) { ent.Eliminado = true; ent.FechaEliminacion = DateTime.Now; await Db.SaveChangesAsync(); }
+            Db.ChangeTracker.Clear();
+            elimSeguimiento = null; impacto = null;
+            mensaje = "Seguimiento enviado a la Papelera."; error = false;
+            await CargarAsync();
+            if (riesgo is not null) CargarDetalle(riesgo.Id);
+        }
+        catch (Exception ex)
+        {
+            Db.ChangeTracker.Clear();
+            mensaje = "No se pudo eliminar el seguimiento: inténtalo de nuevo. (" + ex.Message + ")"; error = true;
+        }
+        finally { _dbLock.Release(); }
+    }
+}

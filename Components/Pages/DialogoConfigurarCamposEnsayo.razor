@@ -1,0 +1,552 @@
+@* Plantilla de campos de un Tipo de Ensayo: qué columnas tiene (ej.
+   Diámetro, Carga máx, Área...) y de qué tipo es cada una. Sirve tanto
+   para la captura manual como para el mapeo al cargar un Excel. *@
+@using Microsoft.EntityFrameworkCore
+@using SigWeb.Data
+@using SigWeb.Data.Ensayos
+@using SigWeb.Models
+@inject AppDbContext Db
+@inject IJSRuntime JS
+
+<div class="modal-backdrop-custom">
+    <div class="modal-box-custom" style="max-width: 820px;">
+        @if (procesando)
+        {
+            <div class="overlay-procesando">
+                <div class="spinner-border text-primary" role="status"></div>
+                <div>Guardando...</div>
+            </div>
+        }
+
+        <div class="d-flex justify-content-between align-items-center mb-2">
+            <h5 class="mb-0">⚙ Campos del ensayo</h5>
+            <button type="button" class="btn-close" aria-label="Cerrar" @onclick="Cerrar"></button>
+        </div>
+
+        @if (tipo is not null)
+        {
+            <div class="d-flex flex-wrap gap-3 mb-3 p-2 border rounded">
+                <div class="form-check form-check-inline mb-0">
+                    <input class="form-check-input" type="checkbox" id="mostrarElemento" checked="@tipo.MostrarElemento"
+                           @onchange="@(e => GuardarColumnaFija(nameof(TipoEnsayo.MostrarElemento), (bool)e.Value!))" />
+                    <label class="form-check-label small" for="mostrarElemento">Elemento</label>
+                </div>
+                <div class="form-check form-check-inline mb-0">
+                    <input class="form-check-input" type="checkbox" id="mostrarInforme" checked="@tipo.MostrarInforme"
+                           @onchange="@(e => GuardarColumnaFija(nameof(TipoEnsayo.MostrarInforme), (bool)e.Value!))" />
+                    <label class="form-check-label small" for="mostrarInforme">Informe</label>
+                </div>
+                @if (tipo.UsaTorre)
+                {
+                    <div class="form-check form-check-inline mb-0">
+                        <input class="form-check-input" type="checkbox" id="mostrarDisenoMezcla" checked="@tipo.MostrarDisenoMezcla"
+                               @onchange="@(e => GuardarColumnaFija(nameof(TipoEnsayo.MostrarDisenoMezcla), (bool)e.Value!))" />
+                        <label class="form-check-label small" for="mostrarDisenoMezcla">Diseño de mezcla</label>
+                    </div>
+                }
+                else
+                {
+                    <div class="form-check form-check-inline mb-0">
+                        <input class="form-check-input" type="checkbox" id="mostrarFechaEjecucion" checked="@tipo.MostrarFechaEjecucion"
+                               @onchange="@(e => GuardarColumnaFija(nameof(TipoEnsayo.MostrarFechaEjecucion), (bool)e.Value!))" />
+                        <label class="form-check-label small" for="mostrarFechaEjecucion">Fecha de ejecución</label>
+                    </div>
+                }
+            </div>
+        }
+
+        <EditForm Model="campoActual" OnValidSubmit="Guardar" FormName="CampoEnsayoForm">
+            <div class="row g-2 align-items-end mb-2">
+                <div class="col-md-3">
+                    <label class="form-label mb-1 small">Etiqueta</label>
+                    <InputText class="form-control form-control-sm" @bind-Value="campoActual.Etiqueta" placeholder="Ej: Diámetro" />
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label mb-1 small">Clave (sin espacios)</label>
+                    <InputText class="form-control form-control-sm" @bind-Value="campoActual.Clave" placeholder="Ej: Diametro" />
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label mb-1 small">Unidad</label>
+                    <InputText class="form-control form-control-sm" @bind-Value="campoActual.Unidad" placeholder="mm, psi..." />
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label mb-1 small">Tipo de dato</label>
+                    <InputSelect class="form-select form-select-sm" @bind-Value="campoActual.TipoDato">
+                        <option value="@TipoDatoCampoEnsayo.Texto">Texto</option>
+                        <option value="@TipoDatoCampoEnsayo.Numero">Número</option>
+                        <option value="@TipoDatoCampoEnsayo.Fecha">Fecha</option>
+                        <option value="@TipoDatoCampoEnsayo.Formula">Fórmula (calculado)</option>
+                        <option value="@TipoDatoCampoEnsayo.DocumentoUnico">Documento</option>
+                    </InputSelect>
+                </div>
+                <div class="col-md-2 d-flex gap-1">
+                    <button class="btn btn-primary btn-sm" type="submit" disabled="@procesando" title="@(modoEdicion ? "Guardar" : "Agregar")"><Ico Nombre="@(modoEdicion ? "guardar" : "agregar")" /></button>
+                    @if (modoEdicion)
+                    {
+                        <button class="btn btn-secondary btn-sm" type="button" disabled="@procesando" @onclick="CancelarEdicion" title="Cancelar"><Ico Nombre="cancelar" /></button>
+                    }
+                </div>
+            </div>
+
+            @if (modoEdicion && campoActual.TipoDato != TipoDatoCampoEnsayo.Formula && !string.IsNullOrWhiteSpace(campoActual.Formula))
+            {
+                <div class="alert alert-warning py-1 px-2 small mb-2">
+                    Con este tipo la columna deja de calcularse con su fórmula (se conserva guardada: si vuelves a «Fórmula» se recupera).
+                    Para resaltar resultados de texto como «OK» no hace falta cambiar el tipo: usa Campos → 🎨 Formatos.
+                </div>
+            }
+            @if (campoActual.TipoDato != TipoDatoCampoEnsayo.Formula)
+            {
+                <div class="form-check mb-2">
+                    <input class="form-check-input" type="checkbox" id="llevaAdjunto" @bind="campoActual.LlevaAdjunto" />
+                    <label class="form-check-label small" for="llevaAdjunto">Lleva adjunto</label>
+                </div>
+                <div class="form-check mb-2">
+                    <input class="form-check-input" type="checkbox" id="editableEnExcel" @bind="campoActual.EditableEnVistaExcel" />
+                    <label class="form-check-label small" for="editableEnExcel" title="Protege el dato de ediciones accidentales en la hoja">
+                        Editable en Vista Excel
+                    </label>
+                </div>
+            }
+
+            @if (campoActual.TipoDato == TipoDatoCampoEnsayo.Formula)
+            {
+                <div class="mb-2">
+                    <label class="form-label mb-1 small">
+                        Fórmula — como en Excel: haz clic en un campo o función para insertarlo donde esté el cursor,
+                        o escribe <code>{Clave}</code> directamente. Ej: <code>{CargaPsi} / {FcDiseno}</code>
+                    </label>
+                    <input id="formula-campo-ensayo" class="form-control form-control-sm font-monospace"
+                           @bind="campoActual.Formula" @bind:event="oninput" placeholder="{CargaPsi} / {FcDiseno}" />
+
+                    @if (CamposParaInsertar.Count > 0)
+                    {
+                        <div class="d-flex flex-wrap gap-1 mt-1">
+                            <span class="text-muted small me-1 align-self-center">Campos:</span>
+                            @foreach (var c in CamposParaInsertar)
+                            {
+                                <button type="button" class="btn btn-sm btn-outline-secondary font-monospace py-0 px-1"
+                                        title="@c.Etiqueta" @onclick='() => InsertarEnFormula($"{{{c.Clave}}}")'>
+                                    {@c.Clave}
+                                </button>
+                            }
+                        </div>
+                    }
+                    <div class="d-flex flex-wrap gap-1 mt-1">
+                        <span class="text-muted small me-1 align-self-center">Funciones:</span>
+                        @foreach (var f in funcionesDisponibles)
+                        {
+                            <button type="button" class="btn btn-sm btn-outline-info font-monospace py-0 px-1"
+                                    @onclick="() => InsertarEnFormula(f)">
+                                @f
+                            </button>
+                        }
+                    </div>
+                </div>
+            }
+        </EditForm>
+
+        @if (!string.IsNullOrEmpty(mensaje))
+        {
+            <div class="alert alert-warning py-1">@mensaje</div>
+        }
+        @if (!string.IsNullOrEmpty(mensajeExito))
+        {
+            <div class="alert alert-success py-1">@mensajeExito</div>
+        }
+
+        <div class="modal-area-flexible">
+            <table class="table table-sm tabla-compacta align-middle">
+                <thead style="position: sticky; top: 0; background: #fff;">
+                    <tr>
+                        <th style="width:22px"></th>
+                        <th>Etiqueta</th>
+                        <th>Clave</th>
+                        <th>Tipo</th>
+                        <th>Unidad</th>
+                        <th>Estado</th>
+                        <th>En Vista Excel</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var c in campos)
+                    {
+                        <tr class="@(arr?.Id == c.Id ? "arr-origen" : "") @(sobre?.Id == c.Id && arr?.Id != c.Id ? "arr-sobre" : "")"
+                            @ondragover:preventDefault="true" @ondragenter="() => sobre = c" @ondrop="() => Soltar(c)">
+                            <td><span class="arr-asa" draggable="true" data-arrastre title="Arrastrar para reordenar" @ondragstart="() => arr = c" @ondragend="() => { arr = null; sobre = null; }">⠿</span></td>
+                            <td>@c.Etiqueta</td>
+                            <td class="text-muted small">@c.Clave</td>
+                            <td>@EtiquetaTipo(c.TipoDato)</td>
+                            <td>@c.Unidad</td>
+                            <td>@(c.Activo ? "Activo" : "Inactivo")</td>
+                            <td class="small text-muted">
+                                @(c.TipoDato == TipoDatoCampoEnsayo.Formula ? "Calculado" : (c.EditableEnVistaExcel ? "Editable" : "Solo lectura"))
+                            </td>
+                            <td>
+                                <button class="btn btn-sm btn-outline-primary" disabled="@procesando" @onclick="() => Editar(c)" title="Editar"><Ico Nombre="editar" /></button>
+                                <button class="btn btn-sm btn-outline-secondary" disabled="@procesando" @onclick="() => CambiarEstado(c)">
+                                    @(c.Activo ? "Desactivar" : "Activar")
+                                </button>
+                            </td>
+                        </tr>
+                    }
+                    @if (campos.Count == 0)
+                    {
+                        <tr><td colspan="8" class="text-muted small text-center py-2">Sin campos todavía.</td></tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+
+        <div class="d-flex justify-content-end mt-2">
+            <button class="btn btn-secondary btn-sm" @onclick="Cerrar">Cerrar</button>
+        </div>
+    </div>
+</div>
+
+@code {
+    [Parameter] public int TipoEnsayoId { get; set; }
+    [Parameter] public EventCallback OnCerrar { get; set; }
+
+    private TipoEnsayo? tipo;
+    private List<CampoEnsayo> campos = new();
+    private CampoEnsayo campoActual = new();
+    private bool modoEdicion = false;
+    private string mensaje = "";
+    private string mensajeExito = "";
+    // Evita que un segundo clic en "Guardar" (o cualquier otro botón que
+    // toque la base de datos) dispare una operación sobre el mismo
+    // DbContext mientras la anterior sigue en curso — sin esto, el
+    // recálculo de la columna (que hace varias llamadas async seguidas)
+    // deja una ventana en la que un doble clic revienta con
+    // "A second operation was started on this context instance...".
+    private bool procesando = false;
+
+    // ---------- Armar la fórmula "como en Excel" (clic para insertar) ----------
+    private static readonly string[] funcionesDisponibles = { "PI()", "ABS()", "REDONDEAR(,)", "IIF(,,)" };
+
+    // No se ofrece el propio campo (evita que se referencie a sí mismo y
+    // quede en fórmula circular); sí se ofrecen otros campos de fórmula,
+    // para poder encadenarlas.
+    private List<CampoEnsayo> CamposParaInsertar =>
+        campos.Where(c => c.Activo && c.TipoDato != TipoDatoCampoEnsayo.DocumentoUnico && c.Id != campoActual.Id).ToList();
+
+    private async Task InsertarEnFormula(string texto)
+    {
+        // Si el texto trae una función con paréntesis (ej. "ABS()"), el
+        // cursor queda justo después del "(" para poder escribir el primer
+        // argumento de una — insertar una {Clave} no tiene paréntesis, así
+        // que ahí el cursor simplemente queda al final de lo insertado.
+        var idxParen = texto.IndexOf('(');
+        var offsetDesdeFinal = idxParen >= 0 ? texto.Length - (idxParen + 1) : 0;
+        await JS.InvokeVoidAsync("sigwebInsertarEnFormula", "formula-campo-ensayo", texto, offsetDesdeFinal);
+    }
+
+    protected override void OnInitialized()
+    {
+        Cargar();
+    }
+
+    private void Cargar()
+    {
+        tipo = Db.TiposEnsayo.AsNoTracking().FirstOrDefault(t => t.Id == TipoEnsayoId);
+        campos = Db.CamposEnsayo.AsNoTracking()
+            .Where(c => c.TipoEnsayoId == TipoEnsayoId)
+            .OrderBy(c => c.Orden).ThenBy(c => c.Etiqueta)
+            .ToList();
+    }
+
+    // Prende/apaga una de las columnas fijas del sistema (Elemento,
+    // Informe, Fecha de ejecución o Diseño de mezcla) para este Tipo de
+    // Ensayo — afecta tanto a Vista Excel como al diálogo Agregar/Editar.
+    private async Task GuardarColumnaFija(string propiedad, bool valor)
+    {
+        if (procesando || tipo is null) return;
+        procesando = true;
+        StateHasChanged();
+        await Task.Yield();
+        try
+        {
+            var item = await Db.TiposEnsayo.FindAsync(tipo.Id);
+            if (item is not null)
+            {
+                switch (propiedad)
+                {
+                    case nameof(TipoEnsayo.MostrarElemento): item.MostrarElemento = valor; break;
+                    case nameof(TipoEnsayo.MostrarInforme): item.MostrarInforme = valor; break;
+                    case nameof(TipoEnsayo.MostrarFechaEjecucion): item.MostrarFechaEjecucion = valor; break;
+                    case nameof(TipoEnsayo.MostrarDisenoMezcla): item.MostrarDisenoMezcla = valor; break;
+                }
+                await Db.SaveChangesAsync();
+            }
+            Db.ChangeTracker.Clear();
+            Cargar();
+        }
+        finally
+        {
+            procesando = false;
+        }
+    }
+
+    private static string EtiquetaTipo(TipoDatoCampoEnsayo t) => t switch
+    {
+        TipoDatoCampoEnsayo.Texto => "Texto",
+        TipoDatoCampoEnsayo.Numero => "Número",
+        TipoDatoCampoEnsayo.Fecha => "Fecha",
+        TipoDatoCampoEnsayo.Formula => "Fórmula",
+        TipoDatoCampoEnsayo.DocumentoUnico => "Documento",
+        _ => t.ToString()
+    };
+
+    private static string Slug(string texto)
+    {
+        var limpio = new string((texto ?? "").Where(char.IsLetterOrDigit).ToArray());
+        return limpio.Length > 0 ? limpio : "Campo" + Guid.NewGuid().ToString("N").Substring(0, 6);
+    }
+
+    private async Task Guardar()
+    {
+        if (procesando) return; // evita un segundo Guardar mientras el primero sigue en curso
+        mensaje = "";
+        mensajeExito = "";
+        var etiqueta = (campoActual.Etiqueta ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(etiqueta)) { mensaje = "La etiqueta es obligatoria."; return; }
+
+        if (string.IsNullOrWhiteSpace(campoActual.Clave)) campoActual.Clave = Slug(etiqueta);
+        campoActual.Etiqueta = etiqueta;
+        campoActual.TipoEnsayoId = TipoEnsayoId;
+
+        bool duplicado = Db.CamposEnsayo.AsNoTracking().Any(c =>
+            c.TipoEnsayoId == TipoEnsayoId && c.Clave.ToLower() == campoActual.Clave.ToLower() && c.Id != campoActual.Id);
+        if (duplicado) { mensaje = $"Ya existe un campo con la clave \"{campoActual.Clave}\"."; return; }
+
+        if (campoActual.TipoDato == TipoDatoCampoEnsayo.Formula)
+        {
+            if (string.IsNullOrWhiteSpace(campoActual.Formula))
+            {
+                mensaje = "Los campos de tipo Fórmula necesitan una fórmula.";
+                return;
+            }
+
+            // Se valida la SINTAXIS antes de guardar nada: se evalúa la
+            // fórmula con valores de prueba (todas las {Clave} = 1). Así se
+            // detectan paréntesis sin cerrar, funciones mal escritas,
+            // número de argumentos incorrecto, etc. sin tocar la base de
+            // datos ni dejar nada a medio guardar si está mal escrita.
+            var errorSintaxis = ValidarSintaxisFormula(campoActual.Formula!);
+            if (errorSintaxis is not null)
+            {
+                mensaje = $"La fórmula tiene un error: {errorSintaxis}";
+                return;
+            }
+        }
+
+        procesando = true;
+        StateHasChanged();
+        await Task.Yield();
+
+        try
+        {
+            if (modoEdicion) Db.CamposEnsayo.Update(campoActual);
+            else
+            {
+                // Nuevo: al final (el orden se cambia arrastrando en la lista).
+                campoActual.Orden = (campos.Count == 0 ? 0 : campos.Max(x => x.Orden)) + 1;
+                Db.CamposEnsayo.Add(campoActual);
+            }
+
+            await Db.SaveChangesAsync();
+            Db.ChangeTracker.Clear();
+
+            // Una fórmula se calcula UNA SOLA VEZ, al guardar cada resultado
+            // (igual que si en Excel pegaras un valor en vez de dejar la celda
+            // con la fórmula viva) — por eso cambiar la fórmula aquí no movía
+            // nada en lo que ya estaba cargado. Para que sí se vea reflejado,
+            // se recalcula y sobrescribe este campo en todos los resultados
+            // existentes de este tipo de ensayo.
+            if (campoActual.TipoDato == TipoDatoCampoEnsayo.Formula)
+            {
+                await RecalcularColumnaAsync(campoActual);
+            }
+
+            CancelarEdicion();
+            Cargar();
+        }
+        catch (Exception ex)
+        {
+            mensaje = $"No se pudo guardar: {ex.Message}";
+        }
+        finally
+        {
+            procesando = false;
+        }
+    }
+
+    // Prueba la fórmula contra valores ficticios (1 para cada {Clave} que
+    // use) solo para ver si PARSEA y EJECUTA sin errores — no valida que el
+    // resultado tenga sentido, solo que la sintaxis esté bien escrita.
+    // Devuelve null si está bien, o el mensaje de error si no.
+    private static string? ValidarSintaxisFormula(string formula)
+    {
+        var claves = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        int i = 0;
+        while (i < formula.Length)
+        {
+            if (formula[i] == '{')
+            {
+                int fin = formula.IndexOf('}', i + 1);
+                if (fin < 0) return "falta cerrar una '}'.";
+                claves.Add(formula.Substring(i + 1, fin - i - 1).Trim());
+                i = fin + 1;
+            }
+            else i++;
+        }
+
+        var valoresDePrueba = claves.ToDictionary(c => c, _ => (string?)"1", StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            EvaluadorFormulas.Evaluar(formula, valoresDePrueba);
+            return null;
+        }
+        catch (Exception ex)
+        {
+            return ex.Message;
+        }
+    }
+
+    private async Task RecalcularColumnaAsync(CampoEnsayo campo)
+    {
+        var todosCampos = await Db.CamposEnsayo.AsNoTracking()
+            .Where(c => c.TipoEnsayoId == TipoEnsayoId)
+            .ToListAsync();
+        var clavePorId = todosCampos.ToDictionary(c => c.Id, c => c.Clave);
+
+        var idsResultado = await Db.ResultadosEnsayo.AsNoTracking()
+            .Where(r => r.TipoEnsayoId == TipoEnsayoId && !r.Eliminado)
+            .Select(r => r.Id)
+            .ToListAsync();
+        if (idsResultado.Count == 0) return;
+
+        var valoresExistentes = await Db.ValoresCampoEnsayo
+            .Where(v => idsResultado.Contains(v.ResultadoEnsayoId))
+            .ToListAsync();
+        var valoresPorResultado = valoresExistentes.GroupBy(v => v.ResultadoEnsayoId).ToDictionary(g => g.Key, g => g.ToList());
+
+        int actualizados = 0;
+        foreach (var idResultado in idsResultado)
+        {
+            valoresPorResultado.TryGetValue(idResultado, out var listaValores);
+
+            var filaValores = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            if (listaValores is not null)
+            {
+                foreach (var v in listaValores)
+                {
+                    if (clavePorId.TryGetValue(v.CampoEnsayoId, out var clave)) filaValores[clave] = v.Valor;
+                }
+            }
+
+            string nuevoValor;
+            try { nuevoValor = EvaluadorFormulas.Evaluar(campo.Formula!, filaValores!); }
+            catch { continue; } // Le faltan datos a esa fila para calcular — se deja como está.
+
+            var existente = listaValores?.FirstOrDefault(v => v.CampoEnsayoId == campo.Id);
+            if (existente is not null)
+            {
+                if (existente.Valor != nuevoValor)
+                {
+                    existente.Valor = nuevoValor;
+                    actualizados++;
+                }
+            }
+            else if (!string.IsNullOrEmpty(nuevoValor))
+            {
+                Db.ValoresCampoEnsayo.Add(new ValorCampoEnsayo { ResultadoEnsayoId = idResultado, CampoEnsayoId = campo.Id, Valor = nuevoValor });
+                actualizados++;
+            }
+        }
+
+        await Db.SaveChangesAsync();
+        Db.ChangeTracker.Clear();
+
+        if (actualizados > 0)
+        {
+            mensajeExito = $"Fórmula recalculada: se actualizó \"{campo.Etiqueta}\" en {actualizados} resultado(s) ya cargados.";
+        }
+    }
+
+    private void Editar(CampoEnsayo c)
+    {
+        campoActual = new CampoEnsayo
+        {
+            Id = c.Id,
+            TipoEnsayoId = c.TipoEnsayoId,
+            Clave = c.Clave,
+            Etiqueta = c.Etiqueta,
+            Unidad = c.Unidad,
+            TipoDato = c.TipoDato,
+            Formula = c.Formula,
+            Orden = c.Orden,
+            Activo = c.Activo,
+            EditableEnVistaExcel = c.EditableEnVistaExcel,
+            LlevaAdjunto = c.LlevaAdjunto
+        };
+        modoEdicion = true;
+    }
+
+    private void CancelarEdicion()
+    {
+        campoActual = new();
+        modoEdicion = false;
+        mensaje = "";
+    }
+
+    // Arrastrar y soltar: el campo queda en la posición del campo destino (renumera Orden 1, 2, 3…).
+    private CampoEnsayo? arr, sobre;
+
+    private async Task Soltar(CampoEnsayo destino)
+    {
+        var c = arr; arr = null; sobre = null;
+        if (c is null || c.Id == destino.Id || procesando) return;
+        var ids = campos.Select(x => x.Id).ToList();
+        int i = ids.IndexOf(c.Id), j = ids.IndexOf(destino.Id);
+        if (i < 0 || j < 0) return;
+        ids.RemoveAt(i);
+        ids.Insert(j, c.Id);
+        procesando = true;
+        try
+        {
+            var ents = await Db.CamposEnsayo.Where(x => x.TipoEnsayoId == TipoEnsayoId).ToListAsync();
+            for (int k = 0; k < ids.Count; k++) { var e = ents.FirstOrDefault(x => x.Id == ids[k]); if (e is not null) e.Orden = k + 1; }
+            await Db.SaveChangesAsync();
+            Db.ChangeTracker.Clear();
+            Cargar();
+        }
+        finally { procesando = false; }
+    }
+
+    private async Task CambiarEstado(CampoEnsayo c)
+    {
+        if (procesando) return;
+        procesando = true;
+        StateHasChanged();
+        await Task.Yield();
+        try
+        {
+            var item = await Db.CamposEnsayo.FindAsync(c.Id);
+            if (item is not null) { item.Activo = !item.Activo; await Db.SaveChangesAsync(); }
+            Db.ChangeTracker.Clear();
+            Cargar();
+        }
+        finally
+        {
+            procesando = false;
+        }
+    }
+
+    private async Task Cerrar()
+    {
+        await OnCerrar.InvokeAsync();
+    }
+}

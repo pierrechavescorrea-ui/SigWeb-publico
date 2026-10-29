@@ -1,0 +1,20 @@
+@* Un campo de formulario: etiqueta (con * si es obligatorio) sobre el control. La etiqueta se
+   resalta con el acento cuando el control tiene el foco (css/formularios.css). *@
+<div class="frm-campo @Ancho @(Destacado ? "frm-destacado" : "") @(Obligatorio ? "frm-obligatorio" : "")">
+    <label class="form-label frm-etq">
+        @Etiqueta
+        @if (Obligatorio)
+        {
+            <span class="frm-req" title="Obligatorio">*</span>
+        }
+    </label>
+    @ChildContent
+</div>
+
+@code {
+    [Parameter] public string Etiqueta { get; set; } = "";
+    [Parameter] public string Ancho { get; set; } = "col-md-4";
+    [Parameter] public bool Obligatorio { get; set; }
+    [Parameter] public bool Destacado { get; set; }
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+}

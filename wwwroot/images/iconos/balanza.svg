@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <!-- Balanza (peso unitario / densidades) -->
+  <line x1="16" y1="4" x2="16" y2="24" stroke="#5b5b5b" stroke-width="1.6" stroke-linecap="round"/>
+  <line x1="6" y1="8" x2="26" y2="8" stroke="#5b5b5b" stroke-width="1.6" stroke-linecap="round"/>
+  <circle cx="16" cy="6" r="1.6" fill="#5b5b5b"/>
+  <rect x="9" y="24" width="14" height="3" rx="0.8" fill="#5b5b5b"/>
+  <path d="M3 8 L9 8 L6 16 A3.2 3.2 0 0 1 3 16 Z" fill="#DCDCDC" stroke="#5b5b5b" stroke-width="1.2" stroke-linejoin="round"/>
+  <path d="M23 8 L29 8 L29 16 A3.2 3.2 0 0 1 26 16 Z" fill="#DCDCDC" stroke="#5b5b5b" stroke-width="1.2" stroke-linejoin="round"/>
+</svg>

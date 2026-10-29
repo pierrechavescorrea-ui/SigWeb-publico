@@ -1,0 +1,171 @@
+@* Asistente de fórmulas tipo Excel: campos y funciones con un clic, constructor guiado de SI
+   y vista previa del resultado sobre una fila real de la tabla. *@
+@using SigWeb.Data.Tablas
+@using SigWeb.Models
+@inject IJSRuntime JS
+
+<div class="af">
+    <div class="af-fila">
+        <span class="af-igual">ƒx</span>
+        <textarea id="@idEntrada" class="form-control form-control-sm af-entrada" rows="2" spellcheck="false"
+                  placeholder="=SI([Fecha] < HOY(); &quot;Vencido&quot;; &quot;Al día&quot;)"
+                  value="@Formula" @oninput="Escribir"></textarea>
+    </div>
+
+    <div class="af-bloque">
+        <div class="af-titulo">Campos</div>
+        <div class="af-chips">
+            @foreach (var c in Motor.Ordenados.Where(c => c.Id != CampoId))
+            {
+                <button type="button" class="af-chip" title="Insertar [@c.Nombre]" @onclick="() => Insertar(Ref(c.Nombre), 0)">@c.Nombre</button>
+            }
+        </div>
+    </div>
+
+    <div class="af-bloque">
+        <div class="af-titulo">
+            Funciones
+            @foreach (var g in grupos)
+            {
+                <button type="button" class="af-tab @(grupo == g ? "activo" : "")" @onclick="() => grupo = g">@g</button>
+            }
+        </div>
+        <div class="af-chips">
+            @foreach (var f in FormulaExcel.Funciones.Where(f => f.Grupo == grupo))
+            {
+                <button type="button" class="af-chip af-fn" title="@f.Plantilla — @f.Descripcion" @onclick='() => Insertar(f.Nombre + "()", 1)'>@f.Nombre</button>
+            }
+        </div>
+    </div>
+
+    <details class="af-bloque" open>
+        <summary class="af-titulo">Asistente: si… entonces…</summary>
+        <div class="af-guiado">
+            <span>Si</span>
+            <select class="form-select form-select-sm" @bind="gCampo">
+                <option value="">campo…</option>
+                @foreach (var c in Motor.Ordenados.Where(c => c.Id != CampoId)) { <option value="@c.Nombre">@c.Nombre</option> }
+            </select>
+            <select class="form-select form-select-sm" @bind="gOp">
+                @foreach (var o in operadores) { <option value="@o.Clave">@o.Nombre</option> }
+            </select>
+            @if (gOp is not ("vacio" or "novacio" or "antes_hoy" or "despues_hoy"))
+            {
+                <input class="form-control form-control-sm" placeholder="valor" @bind="gValor" />
+            }
+            <span>entonces</span>
+            <input class="form-control form-control-sm" placeholder="resultado" @bind="gSi" />
+            <span>si no</span>
+            <input class="form-control form-control-sm" placeholder="otro resultado" @bind="gNo" />
+            <button type="button" class="btn btn-sm btn-primary" title="Escribir la fórmula" disabled="@string.IsNullOrEmpty(gCampo)" @onclick="ArmarSi">✓</button>
+        </div>
+        <div class="af-rapidas">
+            @foreach (var c in Motor.Ordenados.Where(c => c.Id != CampoId && c.Tipo == TipoCampoTabla.Fecha))
+            {
+                <button type="button" class="af-chip" title="Días que faltan (negativo si ya pasó)" @onclick="() => Reemplazar(FormulaDias(c.Nombre))">Días hasta @c.Nombre</button>
+                <button type="button" class="af-chip" title="Texto tipo «Faltan N días / Vencido hace N días»" @onclick="() => Reemplazar(FormulaVence(c.Nombre))">Vence / faltan (@c.Nombre)</button>
+            }
+        </div>
+    </details>
+
+    <div class="af-prueba">
+        <span class="af-titulo mb-0">Probar con</span>
+        <select class="form-select form-select-sm" style="max-width:260px" @bind="filaPrueba">
+            @foreach (var f in Motor.Filas) { <option value="@f.Id">@f.Etiqueta</option> }
+        </select>
+        @if (!string.IsNullOrWhiteSpace(Formula))
+        {
+            var (ok, res) = Probar();
+            <span class="@(ok ? "af-ok" : "af-error")">@res</span>
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public MotorTabla Motor { get; set; } = default!;
+    [Parameter] public int CampoId { get; set; }
+    [Parameter] public TipoCampoTabla TipoResultado { get; set; }
+    [Parameter] public string? Formula { get; set; }
+    [Parameter] public EventCallback<string?> FormulaChanged { get; set; }
+
+    private readonly string idEntrada = "af-" + Guid.NewGuid().ToString("N")[..8];
+    private static readonly string[] grupos = { "Lógicas", "Fechas", "Matemáticas", "Texto" };
+    private string grupo = "Lógicas";
+    private int filaPrueba;
+
+    private record Op(string Clave, string Nombre);
+    private static readonly Op[] operadores =
+    {
+        new("=", "es igual a"), new("<>", "es diferente de"), new(">", "es mayor que"), new(">=", "es mayor o igual que"),
+        new("<", "es menor que"), new("<=", "es menor o igual que"), new("contiene", "contiene"),
+        new("vacio", "está vacío"), new("novacio", "no está vacío"), new("antes_hoy", "es anterior a hoy"), new("despues_hoy", "es posterior a hoy"),
+    };
+    private string gCampo = "", gOp = "=", gValor = "", gSi = "", gNo = "";
+
+    protected override void OnParametersSet()
+    {
+        if (filaPrueba == 0 && Motor.Filas.Count > 0) filaPrueba = Motor.Filas[0].Id;
+    }
+
+    private static string Ref(string nombre) => "[" + nombre + "]";
+
+    private async Task Escribir(ChangeEventArgs e) => await FormulaChanged.InvokeAsync(e.Value?.ToString());
+
+    // Inserta en la posición del cursor (el cambio vuelve por el evento "input" del textarea).
+    private async Task Insertar(string texto, int retroceso)
+    {
+        if (string.IsNullOrEmpty(Formula)) { await FormulaChanged.InvokeAsync("=" + texto); return; }
+        await JS.InvokeVoidAsync("sigwebInsertarEnFormula", idEntrada, texto, retroceso);
+    }
+
+    private async Task Reemplazar(string f) => await FormulaChanged.InvokeAsync(f);
+
+    private static string FormulaDias(string campo) => $"=DIAS({Ref(campo)}; HOY())";
+
+    private static string FormulaVence(string campo)
+    {
+        var c = Ref(campo);
+        return "=SI(ESBLANCO(" + c + "); \"\"; SI(" + c + " < HOY(); \"Vencido hace \" & DIAS(HOY(); " + c + ") & \" días\"; \"Faltan \" & DIAS(" + c + "; HOY()) & \" días\"))";
+    }
+
+    // Número, fecha o texto escrito en el asistente → literal de la fórmula.
+    private string Literal(string v)
+    {
+        v = (v ?? "").Trim();
+        if (v.Length == 0) return "\"\"";
+        if (v.StartsWith('[') && v.EndsWith(']')) return v;
+        if (double.TryParse(v.Replace(',', '.'), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var n))
+            return n.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        if (DateTime.TryParse(v, FormulaExcel.Co, System.Globalization.DateTimeStyles.None, out var f))
+            return $"FECHA({f.Year}; {f.Month}; {f.Day})";
+        return "\"" + v.Replace("\"", "\"\"") + "\"";
+    }
+
+    private async Task ArmarSi()
+    {
+        var c = Ref(gCampo);
+        var cond = gOp switch
+        {
+            "contiene" => $"CONTIENE({c}; {Literal(gValor)})",
+            "vacio" => $"ESBLANCO({c})",
+            "novacio" => $"NO(ESBLANCO({c}))",
+            "antes_hoy" => $"{c} < HOY()",
+            "despues_hoy" => $"{c} > HOY()",
+            _ => $"{c} {gOp} {Literal(gValor)}"
+        };
+        await FormulaChanged.InvokeAsync($"=SI({cond}; {Literal(gSi)}; {Literal(gNo)})");
+    }
+
+    private (bool, string) Probar()
+    {
+        if (Motor.Filas.Count == 0) return (true, "Sin filas para probar.");
+        try
+        {
+            var r = Motor.Probar(Formula!, filaPrueba);
+            if (TipoResultado == TipoCampoTabla.Fecha && r is double d) r = DateTime.FromOADate(d);
+            return (true, "= " + FormulaExcel.ATexto(r));
+        }
+        catch (FormulaExcel.ErrorFormula e) { return (false, e.Message); }
+        catch (Exception e) { return (false, e.Message); }
+    }
+}

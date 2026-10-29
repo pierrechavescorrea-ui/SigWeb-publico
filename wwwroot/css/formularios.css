@@ -1,0 +1,333 @@
+/* =====================================================================
+   Formularios de creación/edición (todos los módulos).
+   - Mejoras generales sobre lo existente: .panel-formulario y ventanas
+     .modal-box-custom (etiquetas, cajas de texto, foco, pie de acciones).
+   - Piezas compartidas: <FormularioSig> (.frm), <SeccionFormulario>
+     (.frm-sec, numeradas), <CampoFormulario> (.frm-campo) y .frm-linea
+     (alta rápida en una línea: grupos, actividades, parámetros…).
+   Usa las variables de temas.css; sin tema = rojo institucional.
+   Va después de temas.css (App.razor).
+   ===================================================================== */
+
+:root {
+    --frm-ac: var(--t-acento, var(--sig-rojo, #EC1C24));
+    --frm-sup: var(--t-superficie, #ffffff);
+    --frm-sup-2: var(--t-superficie-2, #f6f8fb);
+    --frm-borde: var(--t-borde, #dfe4ec);
+    --frm-borde-fuerte: #b9c2d0;
+    --frm-texto: var(--t-texto, #1f2a3a);
+    --frm-texto-2: var(--t-texto-2, #5f6b7c);
+    --frm-anillo: color-mix(in srgb, var(--frm-ac) 16%, transparent);
+    --frm-tinte: color-mix(in srgb, var(--frm-ac) 6%, var(--frm-sup));
+}
+html[data-tema="oscuro"] { --frm-borde-fuerte: #4a4a55; }
+
+/* ---------- Contenedores ---------- */
+.panel-formulario {
+    border: 1px solid var(--frm-borde);
+    border-radius: 12px;
+    box-shadow: 0 1px 2px rgba(16, 24, 40, .04), 0 4px 14px rgba(16, 24, 40, .05);
+}
+.panel-formulario > .card-header {
+    font-weight: 700;
+    letter-spacing: .01em;
+    padding: .65rem 1rem;
+    border-radius: 12px 12px 0 0;
+}
+
+.modal-box-custom {
+    border-radius: 14px;
+    border-top: 4px solid var(--frm-ac);
+    box-shadow: 0 20px 50px rgba(16, 24, 40, .28);
+    padding: 1.25rem 1.4rem;
+}
+.modal-box-custom h5 {
+    font-weight: 700;
+    font-size: 1.05rem;
+    color: var(--frm-texto);
+    display: flex;
+    align-items: center;
+    gap: .5rem;
+}
+.modal-box-custom > .d-flex > h5::before {
+    content: "";
+    width: 4px;
+    height: 1.1em;
+    border-radius: 2px;
+    background: var(--frm-ac);
+}
+
+/* ---------- Etiquetas ---------- */
+/* Sin mayúsculas forzadas: las etiquetas llevan unidades (MPa, kN, mm). */
+:is(.panel-formulario, .modal-box-custom, .frm-linea) .form-label {
+    font-size: .8rem !important;
+    font-weight: 600;
+    letter-spacing: .01em;
+    margin-bottom: .3rem !important;
+    transition: color .15s ease;
+}
+:is(.panel-formulario, .modal-box-custom, .frm-linea) .form-label:not(.label-campo-diligenciar) {
+    color: var(--frm-texto-2) !important;
+}
+/* La etiqueta del campo que se está diligenciando toma el acento. */
+:is(.panel-formulario, .modal-box-custom, .frm-linea) :is([class*="col"], .frm-campo):focus-within > .form-label:not(.label-campo-diligenciar) {
+    color: var(--frm-ac) !important;
+}
+.frm-req {
+    color: var(--frm-ac);
+    font-weight: 800;
+    margin-left: .15rem;
+}
+
+/* ---------- Cajas de texto y listas (fuera de tablas) ---------- */
+:is(.panel-formulario, .modal-box-custom, .frm-linea) :is(.form-control, .form-select):not(td *):not(.form-control-color):not([type="file"]) {
+    background-color: var(--frm-sup-2);
+    border: 1px solid var(--frm-borde);
+    border-radius: 8px;
+    min-height: 34px;
+    color: var(--frm-texto);
+    transition: border-color .15s ease, box-shadow .15s ease, background-color .15s ease;
+}
+:is(.panel-formulario, .modal-box-custom, .frm-linea) :is(.form-control, .form-select):not(td *):not(.form-control-color):hover {
+    border-color: var(--frm-borde-fuerte);
+}
+:is(.panel-formulario, .modal-box-custom, .frm-linea) :is(.form-control, .form-select):not(td *):focus,
+article.content:has(.pg-cab) :is(.panel-formulario, .modal-box-custom, .frm-linea) :is(.form-control, .form-select):not(td *):focus,
+html[data-tema] :is(.panel-formulario, .modal-box-custom, .frm-linea) :is(.form-control, .form-select):not(td *):focus {
+    background-color: var(--frm-sup);
+    border-color: var(--frm-ac);
+    box-shadow: 0 0 0 3px var(--frm-anillo);
+    outline: none;
+}
+:is(.panel-formulario, .modal-box-custom, .frm-linea) textarea.form-control:not(td *) { line-height: 1.45; }
+:is(.panel-formulario, .modal-box-custom, .frm-linea) .form-control::placeholder { color: var(--frm-texto-2); opacity: .6; }
+:is(.panel-formulario, .modal-box-custom, .frm-linea) .form-check-input:checked { background-color: var(--frm-ac); border-color: var(--frm-ac); }
+:is(.panel-formulario, .modal-box-custom, .frm-linea) .form-check-input:focus { box-shadow: 0 0 0 3px var(--frm-anillo); border-color: var(--frm-ac); }
+
+/* ---------- <FormularioSig> ---------- */
+.frm {
+    position: relative;
+    counter-reset: frmsec;
+    background: var(--frm-sup);
+    margin-bottom: 1rem;
+}
+.frm::before {
+    content: "";
+    position: absolute;
+    left: -1px;
+    top: -1px;
+    bottom: -1px;
+    width: 4px;
+    border-radius: 12px 0 0 12px;
+    background: var(--frm-ac);
+}
+.frm-cab {
+    display: flex;
+    align-items: center;
+    gap: .65rem;
+    padding: .8rem 1.1rem .7rem 1.3rem;
+    border-bottom: 1px solid var(--frm-borde);
+    background: linear-gradient(180deg, var(--frm-tinte), var(--frm-sup));
+    border-radius: 12px 12px 0 0;
+}
+.frm-cab-ico {
+    width: 34px;
+    height: 34px;
+    flex: 0 0 34px;
+    border-radius: 9px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--frm-ac);
+    color: #fff;
+    box-shadow: 0 3px 8px var(--frm-anillo);
+}
+.frm-cab-ico .ico-img { filter: brightness(0) invert(1); }
+.frm-cab-tit {
+    font-weight: 700;
+    font-size: 1.02rem;
+    color: var(--frm-texto);
+    letter-spacing: .01em;
+}
+.frm-cab-sub {
+    font-size: .82rem;
+    color: var(--frm-texto-2);
+    padding-left: .65rem;
+    border-left: 1px solid var(--frm-borde);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+}
+.frm-cerrar {
+    margin-left: auto;
+    border: 0;
+    background: transparent;
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    color: var(--frm-texto-2);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+.frm-cerrar:hover { background: var(--frm-anillo); color: var(--frm-ac); }
+.frm-cuerpo { padding: 1rem 1.2rem 1.1rem 1.3rem; }
+
+/* Pie de acciones (también suelto, al final de cualquier formulario). */
+.frm-pie {
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    gap: .5rem;
+    padding: .7rem 1.2rem;
+    border-top: 1px solid var(--frm-borde);
+    background: var(--frm-sup-2);
+    border-radius: 0 0 12px 12px;
+}
+.frm-cuerpo .frm-pie,
+.modal-box-custom .frm-pie {
+    margin: 1rem -1.2rem -1.1rem -1.3rem;
+}
+.modal-box-custom .frm-pie { margin: 1.1rem -1.4rem -1.25rem; border-radius: 0 0 14px 14px; }
+.frm-pie .btn { min-width: 40px; min-height: 34px; border-radius: 8px; }
+
+/* ---------- <SeccionFormulario> ---------- */
+.frm-sec { counter-increment: frmsec; }
+.frm-sec + .frm-sec { margin-top: 1.15rem; padding-top: 1rem; border-top: 1px dashed var(--frm-borde); }
+.frm-sec-tit {
+    display: flex;
+    align-items: center;
+    gap: .5rem;
+    margin-bottom: .75rem;
+    font-size: .78rem;
+    font-weight: 800;
+    letter-spacing: .07em;
+    text-transform: uppercase;
+    color: var(--frm-texto);
+}
+.frm-sec-tit::before {
+    content: counter(frmsec);
+    width: 22px;
+    height: 22px;
+    flex: 0 0 22px;
+    border-radius: 50%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: .72rem;
+    font-weight: 700;
+    letter-spacing: 0;
+    background: var(--frm-anillo);
+    color: var(--frm-ac);
+    border: 1px solid color-mix(in srgb, var(--frm-ac) 35%, transparent);
+}
+.frm-sec-ico { display: inline-flex; color: var(--frm-texto-2); }
+.frm-sec-extra { margin-left: auto; display: inline-flex; gap: .35rem; align-items: center; text-transform: none; letter-spacing: 0; font-weight: 400; }
+
+/* ---------- <CampoFormulario> ---------- */
+.frm-campo { display: flex; flex-direction: column; }
+.frm-campo > .form-label { display: flex; align-items: center; gap: .1rem; line-height: 1.25; min-height: 1.25em; }
+.frm-req { line-height: 1; }
+/* Campo principal (nombre, consecutivo, código): más grande y con peso. */
+.frm-destacado :is(.form-control, .form-select):not(td *) {
+    font-size: 1rem !important;
+    font-weight: 600;
+    border-left: 3px solid var(--frm-ac) !important;
+}
+/* Obligatorio vacío: borde de acento suave para que salte a la vista. */
+.frm-obligatorio :is(input.form-control, select.form-select):placeholder-shown,
+.frm-obligatorio input.form-control[value=""] {
+    border-color: color-mix(in srgb, var(--frm-ac) 40%, var(--frm-borde));
+}
+
+/* ---------- .frm-linea: alta rápida (una línea) ---------- */
+.frm-linea {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: .75rem;
+    padding: .8rem 1rem;
+    margin-bottom: .9rem;
+    border: 1px solid color-mix(in srgb, var(--frm-ac) 25%, var(--frm-borde));
+    border-left: 4px solid var(--frm-ac);
+    border-radius: 10px;
+    background: var(--frm-tinte);
+}
+.frm-linea > .frm-campo { flex: 1 1 220px; min-width: 0; }
+.frm-linea > .frm-campo.frm-corto { flex: 0 1 140px; }
+.frm-linea-btns { display: flex; gap: .4rem; align-items: center; }
+.frm-linea-btns .btn { min-width: 40px; min-height: 34px; border-radius: 8px; }
+.frm-icono-btn {
+    width: 52px;
+    height: 52px;
+    flex: 0 0 52px;
+    padding: 4px;
+    border-radius: 10px;
+    border: 2px dashed var(--frm-borde-fuerte);
+    background: var(--frm-sup);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: border-color .15s ease;
+}
+.frm-icono-btn:hover { border-color: var(--frm-ac); }
+.frm-icono-btn img { width: 100%; height: 100%; object-fit: contain; }
+
+/* Lista de filas repetibles dentro de un formulario (campos de un catálogo, etc.). */
+.frm-filas { display: flex; flex-direction: column; gap: .45rem; }
+.frm-fila {
+    display: flex;
+    gap: .5rem;
+    align-items: center;
+    padding: .45rem .55rem;
+    border: 1px solid var(--frm-borde);
+    border-radius: 9px;
+    background: var(--frm-sup);
+}
+.frm-fila > .frm-fila-n {
+    width: 22px;
+    text-align: center;
+    font-size: .75rem;
+    font-weight: 700;
+    color: var(--frm-texto-2);
+}
+.frm-vacio {
+    border: 1px dashed var(--frm-borde-fuerte);
+    border-radius: 9px;
+    padding: .6rem;
+    text-align: center;
+    color: var(--frm-texto-2);
+    font-size: .85rem;
+}
+
+@media (max-width: 767.98px) {
+    .frm-cuerpo { padding: .85rem .9rem; }
+    .frm-cuerpo .frm-pie { margin: 1rem -.9rem -.85rem; }
+}
+
+/* Mismo tamaño para todos los controles de un formulario (normales y -sm, incl. Campos personalizados). */
+:is(.frm, .modal-box-custom, .frm-linea) :is(.form-control, .form-select):not(td *):not(.form-control-color):not([type="file"]) {
+    font-size: .9rem;
+    padding-top: .4rem;
+    padding-bottom: .4rem;
+    min-height: 36px;
+}
+:is(.frm, .modal-box-custom, .frm-linea) .form-control:not(td *):not(.form-control-color):not([type="file"]) { padding-left: .7rem; padding-right: .7rem; }
+:is(.frm, .modal-box-custom, .frm-linea) .form-select:not(td *) { padding-left: .7rem; }
+
+/* Ventanas (.modal-box-custom): secciones numeradas y cabecera (la fila con el h5) separada. */
+.modal-box-custom { counter-reset: frmsec; }
+.modal-box-custom > .d-flex:has(> h5):first-of-type {
+    margin: -1.25rem -1.4rem 1rem !important;
+    padding: .9rem 1.4rem .8rem;
+    border-bottom: 1px solid var(--frm-borde);
+    background: linear-gradient(180deg, var(--frm-tinte), var(--frm-sup));
+    border-radius: 10px 10px 0 0;
+}
+.panel-formulario, .rg-plan-borrador { counter-reset: frmsec; }
+.frm-nivel { display: inline-flex; align-items: center; min-height: 36px; padding: 0 .9rem; font-weight: 700; align-self: flex-start; }
+.frm-cab-sub:empty { display: none; }
+:is(.panel-formulario, .modal-box-custom, .frm-linea) .input-group > :is(.form-control, .form-select, .btn, .input-group-text):not(:first-child) { border-top-left-radius: 0 !important; border-bottom-left-radius: 0 !important; }
+:is(.panel-formulario, .modal-box-custom, .frm-linea) .input-group > :is(.form-control, .form-select, .btn, .input-group-text):not(:last-child) { border-top-right-radius: 0 !important; border-bottom-right-radius: 0 !important; }
+:is(.panel-formulario, .modal-box-custom, .frm-linea) .input-group-text { background: var(--frm-sup-2); border-color: var(--frm-borde); font-size: .8rem; font-weight: 600; color: var(--frm-texto-2); }

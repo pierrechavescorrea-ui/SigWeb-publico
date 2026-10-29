@@ -1,0 +1,1390 @@
+@page "/indicadores"
+@rendermode InteractiveServer
+@using Microsoft.EntityFrameworkCore
+@using SigWeb.Data
+@using SigWeb.Data.Indicadores
+@using SigWeb.Models
+@inject AppDbContext Db
+@inject IServiceScopeFactory Scopes
+@inject IWebHostEnvironment Env
+@inject IJSRuntime JS
+
+<PageTitle>Indicadores</PageTitle>
+
+@* Matriz de indicadores del SGI. Cada indicador dice de dónde sale su valor (Fuente): se digita
+   (con soportes) o se calcula de Matriz PIE, Comunicados o Planes de acción para el periodo de su
+   frecuencia. Lo calculado se ve en vivo hasta que se congela (queda el valor, el cálculo y la fecha).
+   Lógica en Data/Indicadores/CalculoIndicadores.cs. *@
+
+<div class="@(pantallaCompleta ? "ens-pantalla" : "") @(vista == "matriz" && celda is not null ? "ind-con-panel" : "")">
+<EncabezadoPagina Titulo="Indicadores" Icono="indicadores" Subtitulo="@($"{indicadores.Count} indicador{(indicadores.Count == 1 ? "" : "es")} · {anio}")" OnAtras="AtrasPantalla">
+    <Acciones>
+        <button type="button" class="pg-btn @(pantallaCompleta ? "activo" : "")" title="@(pantallaCompleta ? "Salir de pantalla completa" : "Pantalla completa")" @onclick="() => pantallaCompleta = !pantallaCompleta"><Ico Nombre="pantalla-completa" /></button>
+        <button type="button" class="pg-btn @(vista == "indicador" ? "activo" : "")" title="Indicador por indicador" @onclick='() => CambiarVista("indicador")'><Ico Nombre="indicador" /></button>
+        <button type="button" class="pg-btn @(vista == "tablero" ? "activo" : "")" title="Todos (tablero)" @onclick='() => CambiarVista("tablero")'><Ico Nombre="tablero" /></button>
+        <button type="button" class="pg-btn @(vista == "matriz" ? "activo" : "")" title="Matriz" @onclick='() => CambiarVista("matriz")'><Ico Nombre="listado" /></button>
+        <button type="button" class="pg-btn @(vista == "graficos" ? "activo" : "")" title="Gráficos" @onclick='() => CambiarVista("graficos")'>📈</button>
+        @if (vista == "matriz")
+        {
+            <button type="button" class="pg-btn @(verDescripcion ? "activo" : "")" title="@(verDescripcion ? "Ocultar columnas de descripción" : "Mostrar columnas de descripción")" @onclick="() => verDescripcion = !verDescripcion"><Ico Nombre="informacion" /></button>
+        }
+        <button type="button" class="pg-btn @(congelarMes is not null ? "activo" : "")" title="Congelar un periodo (todos los indicadores)" @onclick="AbrirCongelar"><Ico Nombre="candado" /></button>
+        <span class="pg-sep"></span>
+        <button type="button" class="pg-btn pg-btn-peligro" title="Eliminar indicador seleccionado" disabled="@(selId is null)" @onclick="PedirEliminar"><Ico Nombre="eliminar" /></button>
+        <button type="button" class="pg-btn @(form is not null && !formNuevo ? "activo" : "")" title="Editar indicador seleccionado" disabled="@(selId is null)" @onclick="Editar"><Ico Nombre="editar" /></button>
+        <button type="button" class="pg-btn pg-btn-primario @(form is not null && formNuevo ? "activo" : "")" title="Nuevo indicador" @onclick="Nuevo"><Ico Nombre="agregar" /></button>
+    </Acciones>
+</EncabezadoPagina>
+
+@if (!string.IsNullOrEmpty(mensaje))
+{
+    <div class="alert @(error ? "alert-warning" : "alert-success") py-1 px-2 small d-flex align-items-center gap-2">
+        <span class="flex-grow-1">@mensaje</span>
+        <button type="button" class="btn-close btn-sm" @onclick='() => mensaje = ""'></button>
+    </div>
+}
+
+@* ---------- Nuevo / editar indicador ---------- *@
+@if (form is not null)
+{
+    <FormularioSig Titulo="@(formNuevo ? "Nuevo indicador" : "Editar indicador")" Icono="indicador" Clase="mb-3 ind-form" OnCerrar="() => form = null">
+        <Subtitulo>@(formNuevo ? null : form.Nombre)</Subtitulo>
+        <ChildContent>
+            <SeccionFormulario Titulo="Indicador">
+                <CampoFormulario Etiqueta="Nombre" Ancho="col-lg-5" Obligatorio="true" Destacado="true">
+                    <input class="form-control" @bind="form.Nombre" @bind:event="oninput" />
+                </CampoFormulario>
+                <div class="col-sm-6 col-lg-3">
+                    <label class="form-label mb-1 small">Tipo de indicador</label>
+                    <input class="form-control form-control-sm" list="dl-ind-tipo" @bind="form.TipoIndicador" />
+                </div>
+                <div class="col-sm-6 col-lg-4">
+                    <label class="form-label mb-1 small">Responsable</label>
+                    <input class="form-control form-control-sm" list="dl-ind-resp" @bind="form.Responsable" />
+                </div>
+                <div class="col-lg-7">
+                    <label class="form-label mb-1 small">Fórmula de medición</label>
+                    <textarea class="form-control form-control-sm" rows="2" @bind="form.Formula"></textarea>
+                </div>
+                <div class="col-lg-5">
+                    <label class="form-label mb-1 small">Fuente de información</label>
+                    <input class="form-control form-control-sm" list="dl-ind-finfo" @bind="form.FuenteInformacion" />
+                </div>
+            </SeccionFormulario>
+
+            <SeccionFormulario Titulo="Meta y periodicidad">
+                <div class="col-sm-6 col-lg-3">
+                    <label class="form-label mb-1 small">Objetivo (como se escribe)</label>
+                    <input class="form-control form-control-sm" placeholder="mayor = 90%" @bind="form.Objetivo" />
+                </div>
+                <div class="col-sm-6 col-lg-3">
+                    <label class="form-label mb-1 small">Meta (para evaluar)</label>
+                    <div class="input-group input-group-sm">
+                        <select class="form-select form-select-sm" style="max-width:72px;" @bind="form.OperadorMeta">
+                            <option value=">=">≥</option>
+                            <option value=">">&gt;</option>
+                            <option value="<=">≤</option>
+                            <option value="<">&lt;</option>
+                            <option value="=">=</option>
+                        </select>
+                        <input type="number" step="any" class="form-control" @bind="form.Meta" />
+                    </div>
+                </div>
+                <div class="col-sm-4 col-lg-2">
+                    <label class="form-label mb-1 small">Unidad</label>
+                    <select class="form-select form-select-sm" @bind="form.Unidad">
+                        <option value="porcentaje">Porcentaje</option>
+                        <option value="dias">Días</option>
+                        <option value="numero">Número</option>
+                    </select>
+                </div>
+                <div class="col-sm-4 col-lg-2">
+                    <label class="form-label mb-1 small">Tendencia</label>
+                    <select class="form-select form-select-sm" @bind="form.Tendencia">
+                        <option value="positiva">Positiva</option>
+                        <option value="negativa">Negativa</option>
+                    </select>
+                </div>
+                <div class="col-sm-4 col-lg-2">
+                    <label class="form-label mb-1 small">Frecuencia</label>
+                    <select class="form-select form-select-sm" @bind="form.Frecuencia">
+                        @foreach (var f in Enum.GetValues<FrecuenciaIndicador>())
+                        {
+                            <option value="@f">@CalculoIndicadores.NombreFrecuencia(f)</option>
+                        }
+                    </select>
+                </div>
+                <div class="col-sm-6 col-lg-4">
+                    <label class="form-label mb-1 small">Frecuencia (como se escribe)</label>
+                    <input class="form-control form-control-sm" placeholder="@CalculoIndicadores.NombreFrecuencia(form.Frecuencia)" @bind="form.FrecuenciaTexto" />
+                </div>
+                <div class="col-sm-6 col-lg-4">
+                    <label class="form-label mb-1 small">Periodo de cálculo</label>
+                    <div class="input-group input-group-sm">
+                        <select class="form-select form-select-sm" value="@(form.Acumulado ? "acum" : "periodo")" @onchange="@(e => form.Acumulado = e.Value?.ToString() == "acum")">
+                            <option value="periodo">Solo el periodo</option>
+                            <option value="acum">Acumulado desde</option>
+                        </select>
+                        @if (form.Acumulado)
+                        {
+                            <input type="date" class="form-control" @bind="form.FechaInicio" />
+                        }
+                    </div>
+                </div>
+            </SeccionFormulario>
+
+            <SeccionFormulario Titulo="Vigencia" SinFila="true">
+            <div class="ind-estado-fila mt-0">
+                <label class="ind-interruptor" title="@(form.Inactivo ? "Inactivo: no sale en las vistas" : "Activo")">
+                    <input type="checkbox" checked="@(!form.Inactivo)" @onchange="@(e => CambiarActivo(e.Value is true))" />
+                    <span class="ind-interruptor-pista"></span>
+                    <span>@(form.Inactivo ? "Inactivo" : "Activo")</span>
+                </label>
+                <div class="input-group input-group-sm" style="width:auto;">
+                    <span class="input-group-text">Medir hasta</span>
+                    <input type="date" class="form-control" @bind="form.FechaFin" />
+                    @if (form.FechaFin is not null)
+                    {
+                        <button type="button" class="btn btn-outline-secondary" title="Sin fecha final" @onclick="() => form.FechaFin = null">✕</button>
+                    }
+                </div>
+            </div>
+
+            </SeccionFormulario>
+
+            @* Origen del dato: se digita o se calcula desde otra interfaz *@
+            <SeccionFormulario Titulo="Origen del dato" SinFila="true">
+            <div class="ind-fuentes mt-0">
+                @foreach (var f in Enum.GetValues<FuenteIndicador>())
+                {
+                    var fuente = f;
+                    <button type="button" class="ind-fuente @(form.Fuente == fuente ? "activo" : "")" @onclick="() => CambiarFuente(fuente)">
+                        <span class="ind-fuente-ico">@IconoFuente(fuente)</span>
+                        <span>@CalculoIndicadores.NombreFuente(fuente)</span>
+                    </button>
+                }
+            </div>
+
+            @if (form.Fuente == FuenteIndicador.Comunicados)
+            {
+                <div class="row g-2 ind-config">
+                    <div class="col-sm-4 col-lg-3">
+                        <label class="form-label mb-1 small">Cálculo</label>
+                        <select class="form-select form-select-sm" value="@formCfg.Calculo" @onchange="CambiarCalculoComunicados">
+                            <option value="cobertura">Cobertura: respondidos / requieren respuesta × 100</option>
+                            <option value="oportunidad">Oportunidad: respondidos en el plazo / requieren respuesta × 100</option>
+                            <option value="tiempo">Tiempo promedio de respuesta (días)</option>
+                        </select>
+                    </div>
+                    <div class="col-sm-3 col-lg-2">
+                        <label class="form-label mb-1 small">Sentido</label>
+                        <select class="form-select form-select-sm" @bind="formCfg.Sentido">
+                            <option value="Entrada">Entrada</option>
+                            <option value="Salida">Salida</option>
+                            <option value="">Todos</option>
+                        </select>
+                    </div>
+                    <div class="col-sm-5 col-lg-4">
+                        <label class="form-label mb-1 small">Remitente contiene</label>
+                        <input class="form-control form-control-sm" list="dl-ind-rem" placeholder="Todos" @bind="formCfg.Remitente" />
+                    </div>
+                    <div class="col-sm-3 col-lg-2">
+                        <label class="form-label mb-1 small">Plazo (días)</label>
+                        <input type="number" min="0" class="form-control form-control-sm" placeholder="@ctx.Ajustes.PlazoDias" disabled="@(formCfg.Calculo != "oportunidad")" @bind="formCfg.PlazoDias" />
+                    </div>
+                </div>
+            }
+            else if (form.Fuente == FuenteIndicador.CumplimientoPie)
+            {
+                <div class="row g-2 ind-config">
+                    <div class="col-sm-6 col-lg-4">
+                        <label class="form-label mb-1 small" title="Por defecto; cada mes se puede cambiar">Medir con</label>
+                        <select class="form-select form-select-sm" @bind="formCfg.BasePie">
+                            @foreach (var b in CalculoIndicadores.BasesPie)
+                            {
+                                <option value="@b.Clave">@b.Nombre</option>
+                            }
+                        </select>
+                    </div>
+                </div>
+            }
+            else if (form.Fuente == FuenteIndicador.PlanesAccion)
+            {
+                <div class="ind-config">
+                    @Pildoras("Tipo de hallazgo", tiposHallazgo, formCfg.TiposHallazgo)
+                    @Pildoras("Origen del hallazgo", origenes, formCfg.Origenes)
+                    @Pildoras("Proceso", procesos, formCfg.Procesos)
+                </div>
+            }
+
+            @if (CalculoIndicadores.Calculado(form.Fuente))
+            {
+                var mesPrev = UltimoCierre(form);
+                var prev = Previa(mesPrev.Anio, mesPrev.Mes);
+                <div class="ind-previa">
+                    <span class="ind-previa-per">@CalculoIndicadores.NombrePeriodo(FormComoIndicador(), mesPrev.Anio, mesPrev.Mes)</span>
+                    <span class="ind-previa-val @ClaseCumple(FormComoIndicador(), prev?.Valor)">@(prev is null ? "—" : prev.NoAplica || prev.Valor is null ? "N/A" : CalculoIndicadores.Formato(FormComoIndicador(), prev.Valor))</span>
+                    <span class="ind-previa-det">@prev?.Detalle</span>
+                </div>
+            }
+
+            </SeccionFormulario>
+        </ChildContent>
+        <Acciones>
+            <button type="button" class="btn btn-secondary btn-sm" title="Cancelar" @onclick="() => form = null"><Ico Nombre="cancelar" /></button>
+            <button type="button" class="btn btn-primary btn-sm" title="Guardar" disabled="@(guardando || string.IsNullOrWhiteSpace(form.Nombre))" @onclick="GuardarForm"><Ico Nombre="guardar" /></button>
+        </Acciones>
+    </FormularioSig>
+}
+<datalist id="dl-ind-tipo"><option value="Eficacia"></option><option value="Eficiencia"></option><option value="Efectividad"></option><option value="cualitativo y/o cuantitativo"></option>@foreach (var o in indicadores.Select(i => i.TipoIndicador).Where(t => !string.IsNullOrWhiteSpace(t)).Distinct()) { <option value="@o"></option> }</datalist>
+<datalist id="dl-ind-resp">@foreach (var o in indicadores.Select(i => i.Responsable).Where(t => !string.IsNullOrWhiteSpace(t)).Distinct()) { <option value="@o"></option> }</datalist>
+<datalist id="dl-ind-finfo">@foreach (var o in indicadores.Select(i => i.FuenteInformacion).Where(t => !string.IsNullOrWhiteSpace(t)).Distinct()) { <option value="@o"></option> }</datalist>
+<datalist id="dl-ind-rem">@foreach (var o in remitentes) { <option value="@o"></option> }</datalist>
+
+@* ---------- Eliminar (Papelera, con sus mediciones y soportes) ---------- *@
+@if (elimId is int eid && indicadores.FirstOrDefault(i => i.Id == eid) is { } indElim)
+{
+    <div class="card panel-formulario mb-3 border-danger">
+        <div class="card-body">
+            <div class="mb-2"><Ico Nombre="eliminar" /> <strong>@indElim.Nombre</strong></div>
+            <PanelImpacto Informe="impacto" OnEntendido="@(v => impactoOk = v)" />
+            <div class="d-flex gap-2">
+                <button class="btn btn-secondary btn-sm" type="button" title="Cancelar" @onclick="() => elimId = null"><Ico Nombre="cancelar" /></button>
+                <button class="btn btn-danger btn-sm" type="button" title="Eliminar (va a la Papelera)" disabled="@(impacto is null || (impacto.RequiereEntender && !impactoOk))" @onclick="ConfirmarEliminar"><Ico Nombre="eliminar" /></button>
+            </div>
+        </div>
+    </div>
+}
+
+@* ---------- Congelar un periodo para todos los indicadores ---------- *@
+@if (congelarMes is int cm)
+{
+    var lista = PorCongelar(cm);
+    <div class="card panel-formulario mb-3">
+        <div class="card-body">
+            <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
+                <Ico Nombre="candado" />
+                <select class="form-select form-select-sm" style="width:auto;" value="@cm" @onchange="@(e => congelarMes = int.TryParse(e.Value?.ToString(), out var v) ? v : cm)">
+                    @for (var m = 1; m <= 12; m++)
+                    {
+                        var mm = m;
+                        <option value="@mm">@CalculoIndicadores.Mes(anio, mm)</option>
+                    }
+                </select>
+                <span class="small text-muted">@lista.Count indicador(es)</span>
+            </div>
+            @if (lista.Count > 0)
+            {
+                <table class="table table-sm tabla-compacta mb-2 ind-tabla-congelar">
+                    <tbody>
+                        @foreach (var x in lista)
+                        {
+                            <tr>
+                                <td class="small">@x.Ind.Nombre</td>
+                                <td class="small text-muted">@CalculoIndicadores.NombreFuente(x.Ind.Fuente)</td>
+                                <td class="small text-end fw-semibold">@x.Texto</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+            <div class="d-flex gap-2">
+                <button type="button" class="btn btn-secondary btn-sm" title="Cancelar" @onclick="() => congelarMes = null"><Ico Nombre="cancelar" /></button>
+                <button type="button" class="btn btn-primary btn-sm" title="Congelar" disabled="@(lista.Count == 0 || guardando)" @onclick="() => CongelarPeriodo(cm)"><Ico Nombre="candado" /> @lista.Count</button>
+            </div>
+        </div>
+    </div>
+}
+
+@* ---------- Filtros ---------- *@
+<div class="mpie-barra mb-2 ind-filtros">
+    <select class="form-select form-select-sm" style="width:auto;" title="Año" value="@anio" @onchange="CambiarAnio">
+        @foreach (var a in anios)
+        {
+            <option value="@a">@a</option>
+        }
+    </select>
+    <select class="form-select form-select-sm" style="width:auto;" title="Fuente" @bind="fFuente">
+        <option value="">Todas las fuentes</option>
+        @foreach (var f in Enum.GetValues<FuenteIndicador>())
+        {
+            <option value="@((int)f)">@CalculoIndicadores.NombreFuente(f)</option>
+        }
+    </select>
+    <input class="form-control form-control-sm" style="max-width:260px;" placeholder="Buscar indicador…" @bind="buscar" @bind:event="oninput" />
+    @if (indicadores.Any(i => i.Inactivo))
+    {
+        <label class="form-check form-check-inline mb-0 small"><input class="form-check-input" type="checkbox" @bind="verInactivos" /> Ver inactivos (@indicadores.Count(i => i.Inactivo))</label>
+    }
+    <span class="ind-leyenda">
+        <span class="ind-ley ind-ok">Cumple</span>
+        <span class="ind-ley ind-mal">No cumple</span>
+        <span class="ind-ley ind-na">N/A</span>
+        <span class="ind-ley"><Ico Nombre="candado" /> Congelado</span>
+        <span class="ind-ley ind-vivo-ley">En vivo</span>
+    </span>
+</div>
+
+@if (vista == "indicador")
+{
+    var foco = Mostrados.FirstOrDefault(i => i.Id == selId) ?? Mostrados.FirstOrDefault();
+    <div class="ind-foco">
+        @* Lista de indicadores: valor más reciente y los 12 meses en miniatura *@
+        <nav class="ind-rail">
+            @foreach (var ind in Mostrados)
+            {
+                var i = ind;
+                var ult = UltimoMedido(i);
+                <button type="button" class="ind-rail-item @(foco?.Id == i.Id ? "activo" : "")" @onclick="() => Enfocar(i)">
+                    <span class="ind-rail-cab">
+                        <span class="ind-rail-ico ind-origen-@((int)i.Fuente)" title="@CalculoIndicadores.NombreFuente(i.Fuente)">@IconoFuente(i.Fuente)</span>
+                        <span class="ind-rail-nom">@i.Nombre @if (i.Inactivo) { <span class="ind-inactivo">Inactivo</span> }</span>
+                        <span class="ind-rail-val @(ult is null ? "" : ult.Value.C.Clase)">@(ult?.C.Texto ?? "—")</span>
+                    </span>
+                    <span class="ind-tira">
+                        @for (var m = 1; m <= 12; m++)
+                        {
+                            var c = CeldaDe(i, m);
+                            <span class="ind-tira-m @c.Clase" title="@($"{CalculoIndicadores.Mes(anio, m)}: {(c.Texto == "" ? "—" : c.Texto)}")"></span>
+                        }
+                    </span>
+                </button>
+            }
+            @if (!Mostrados.Any())
+            {
+                <span class="text-muted small p-2">Sin indicadores.</span>
+            }
+        </nav>
+
+        @if (foco is not null)
+        {
+            var f = foco;
+            var ult = UltimoMedido(f);
+            var res = ResumenAnio(f);
+            var lista = Mostrados.ToList();
+            var pos = lista.FindIndex(x => x.Id == f.Id);
+            <section class="ind-det">
+                <div class="ind-det-cab">
+                    <button type="button" class="ind-nav" title="Anterior" disabled="@(pos <= 0)" @onclick="() => Enfocar(lista[pos - 1])">‹</button>
+                    <div class="ind-det-tits">
+                        <h2 class="ind-det-nom">@f.Nombre</h2>
+                        <div class="ind-chips">
+                            <span class="ind-origen ind-origen-@((int)f.Fuente)">@IconoFuente(f.Fuente) @CalculoIndicadores.NombreFuente(f.Fuente)</span>
+                            <span class="ind-chip">@(string.IsNullOrWhiteSpace(f.FrecuenciaTexto) ? CalculoIndicadores.NombreFrecuencia(f.Frecuencia) : f.FrecuenciaTexto)</span>
+                            @if (!string.IsNullOrWhiteSpace(f.TipoIndicador)) { <span class="ind-chip">@f.TipoIndicador</span> }
+                            @if (!string.IsNullOrWhiteSpace(f.Responsable)) { <span class="ind-chip">@f.Responsable</span> }
+                            <span class="ind-chip">Tendencia @f.Tendencia</span>
+                            @if (f.FechaFin is DateTime ff) { <span class="ind-chip @(f.Inactivo ? "ind-chip-off" : "")">@(f.Inactivo ? "Inactivo · " : "")Hasta @ff.ToString("dd/MM/yyyy")</span> }
+                            else if (f.Inactivo) { <span class="ind-chip ind-chip-off">Inactivo</span> }
+                        </div>
+                    </div>
+                    <span class="ind-det-pos">@(pos + 1) / @lista.Count</span>
+                    <button type="button" class="ind-nav" title="Siguiente" disabled="@(pos >= lista.Count - 1)" @onclick="() => Enfocar(lista[pos + 1])">›</button>
+                </div>
+
+                <div class="ind-kpis">
+                    <div class="ind-kpi ind-kpi-grande @(ult is null ? "" : ult.Value.C.Clase)">
+                        <span class="ind-kpi-tit">@(ult is null ? "Sin medición" : $"Último · {CalculoIndicadores.Mes(anio, ult.Value.Mes)}")</span>
+                        <span class="ind-kpi-val">@(ult?.C.Texto ?? "—")</span>
+                        @if (ult is not null)
+                        {
+                            <span class="ind-kpi-est">@(CalculoIndicadores.Cumple(f, ult.Value.C.Valor) switch { true => "Cumple la meta", false => "No cumple la meta", _ => "" })@(ult.Value.C.Congelado ? " · congelado" : CalculoIndicadores.Calculado(f.Fuente) ? " · en vivo" : "")</span>
+                        }
+                    </div>
+                    <div class="ind-kpi ind-kpi-meta">
+                        <span class="ind-kpi-tit">Meta @Operador(f.OperadorMeta) @CalculoIndicadores.Formato(f, f.Meta)</span>
+                        <div class="ind-barra" title="@(ult is null ? "" : $"{ult.Value.C.Texto} frente a la meta")">
+                            <span class="ind-barra-relleno @(ult is null ? "" : ult.Value.C.Clase)" style="width:@Pct(f, ult?.C.Valor)%;"></span>
+                            @if (f.Meta is decimal)
+                            {
+                                <span class="ind-barra-meta" style="left:@Pct(f, f.Meta)%;"></span>
+                            }
+                        </div>
+                        <span class="ind-kpi-sub">@f.Objetivo</span>
+                    </div>
+                    <div class="ind-kpi">
+                        <span class="ind-kpi-tit">Meses que cumplen</span>
+                        <span class="ind-kpi-val">@res.Cumplen<small> / @res.Medidos</small></span>
+                        <span class="ind-kpi-sub">@anio</span>
+                    </div>
+                    <div class="ind-kpi">
+                        <span class="ind-kpi-tit">Promedio del año</span>
+                        <span class="ind-kpi-val">@CalculoIndicadores.Formato(f, res.Promedio)</span>
+                        <span class="ind-kpi-sub">@(res.Medidos == 0 ? "sin datos" : $"{res.Medidos} medición(es)")</span>
+                    </div>
+                </div>
+
+                @* Meses del año: clic = medición de ese mes (se edita aquí mismo, sin tapar nada) *@
+                <div class="ind-meses">
+                    @for (var m = 1; m <= 12; m++)
+                    {
+                        var mes = m;
+                        var c = CeldaDe(f, mes);
+                        <button type="button" class="ind-mes-t @c.Clase @(celda == (f.Id, mes) ? "sel" : "") @(EsMesActual(mes) ? "hoy" : "")" title="@c.Titulo" @onclick="() => AlternarCelda(f, mes)">
+                            <span class="ind-mes-n">@CalculoIndicadores.Mes(anio, mes)</span>
+                            <span class="ind-mes-v">@(c.Texto == "" ? (c.Clase.Contains("ind-no") ? "·" : "＋") : c.Texto)</span>
+                            <span class="ind-mes-marcas">
+                                @if (c.Congelado) { <Ico Nombre="candado" /> }
+                                @if (c.Soportes > 0) { <span>📎@c.Soportes</span> }
+                            </span>
+                        </button>
+                    }
+                </div>
+
+                @if (celda is (int ci, int cm2) && ci == f.Id)
+                {
+                    <div class="ind-editor-linea">
+                        <div class="ind-editor-cab">
+                            <span class="ind-panel-per">@CalculoIndicadores.NombrePeriodo(f, anio, cm2)</span>
+                            <button type="button" class="gf-x" title="Cerrar" @onclick="() => celda = null">✕</button>
+                        </div>
+                        @EditorMedicion(f, cm2)
+                    </div>
+                }
+
+                <div class="ind-det-cuerpo">
+                    <div class="com-grafico ind-det-graf">
+                        <div class="com-grafico-cab">
+                            <div class="com-grafico-tit">@anio</div>
+                            <button type="button" class="gx-mas" title="Elementos del gráfico" data-grafico="ind-foco-g" data-clave="@($"indicadores:{f.Id}")" onclick="sigwebElementosGrafico(this)">+</button>
+                        </div>
+                        <div class="com-grafico-lienzo"><canvas id="ind-foco-g"></canvas></div>
+                    </div>
+                    <dl class="ind-ficha">
+                        <dt>Fórmula de medición</dt><dd>@(string.IsNullOrWhiteSpace(f.Formula) ? "—" : f.Formula)</dd>
+                        <dt>Objetivo</dt><dd>@(string.IsNullOrWhiteSpace(f.Objetivo) ? "—" : f.Objetivo)</dd>
+                        <dt>Unidad</dt><dd>@CalculoIndicadores.NombreUnidad(f.Unidad)</dd>
+                        <dt>Fuente de información</dt><dd>@(string.IsNullOrWhiteSpace(f.FuenteInformacion) ? "—" : f.FuenteInformacion)</dd>
+                        <dt>Periodo de cálculo</dt><dd>@(f.Acumulado ? $"Acumulado desde {f.FechaInicio:dd/MM/yyyy}" : "Solo el periodo")</dd>
+                    </dl>
+                </div>
+            </section>
+        }
+    </div>
+}
+else if (vista == "tablero")
+{
+    <div class="ind-tablero">
+        @foreach (var ind in Mostrados)
+        {
+            var i = ind;
+            var ult = UltimoMedido(i);
+            var ant = ult is null ? null : AnteriorMedido(i, ult.Value.Mes);
+            var res = ResumenAnio(i);
+            <div class="ind-tarjeta @(ult is null ? "" : ult.Value.C.Clase.Replace("ind-vivo", ""))" @onclick="() => AbrirTarjeta(i, null)">
+                <div class="ind-tarjeta-cab">
+                    <span class="ind-rail-ico ind-origen-@((int)i.Fuente)" title="@CalculoIndicadores.NombreFuente(i.Fuente)">@IconoFuente(i.Fuente)</span>
+                    <span class="ind-tarjeta-nom">@i.Nombre @if (i.Inactivo) { <span class="ind-inactivo">Inactivo</span> }</span>
+                </div>
+                <div class="ind-tarjeta-val">
+                    <span class="ind-tarjeta-num">@(ult?.C.Texto ?? "—")</span>
+                    @if (ult is not null && ant?.Valor is decimal va && ult.Value.C.Valor is decimal vu && va != vu)
+                    {
+                        <span class="ind-tend @ClaseTendencia(i, vu, va)" title="@($"Antes: {CalculoIndicadores.Formato(i, va)}")">@(vu > va ? "▲" : "▼") @CalculoIndicadores.Formato(i, Math.Abs(vu - va))</span>
+                    }
+                </div>
+                <div class="ind-tarjeta-meta">
+                    <span>@(ult is null ? "Sin medición" : CalculoIndicadores.Mes(anio, ult.Value.Mes))</span>
+                    <span>Meta @Operador(i.OperadorMeta) @CalculoIndicadores.Formato(i, i.Meta)</span>
+                </div>
+                <div class="ind-barra ind-barra-chica">
+                    <span class="ind-barra-relleno @(ult is null ? "" : ult.Value.C.Clase)" style="width:@Pct(i, ult?.C.Valor)%;"></span>
+                    @if (i.Meta is decimal)
+                    {
+                        <span class="ind-barra-meta" style="left:@Pct(i, i.Meta)%;"></span>
+                    }
+                </div>
+                <div class="ind-tira ind-tira-grande">
+                    @for (var m = 1; m <= 12; m++)
+                    {
+                        var mes = m;
+                        var c = CeldaDe(i, mes);
+                        <span class="ind-tira-m @c.Clase" title="@($"{CalculoIndicadores.Mes(anio, mes)}: {(c.Texto == "" ? "—" : c.Texto)}")"
+                              @onclick="() => AbrirTarjeta(i, mes)" @onclick:stopPropagation="true"></span>
+                    }
+                </div>
+                <div class="ind-tarjeta-pie">@res.Cumplen de @res.Medidos meses cumplen</div>
+            </div>
+        }
+        @if (!Mostrados.Any())
+        {
+            <span class="text-muted small">Sin indicadores.</span>
+        }
+    </div>
+}
+else if (vista == "graficos")
+{
+    <div class="com-graficos mb-3">
+        @foreach (var ind in Mostrados)
+        {
+            <div @key="ind.Id" class="ind-graf-caja">@GraficoCaja(ind)</div>
+        }
+    </div>
+}
+else
+{
+<div class="tabla-scroll tabla-auto"><table class="table table-sm table-bordered table-hover tabla-compacta align-middle mb-0 tabla-pin ind-tabla">
+    <thead>
+        <tr>
+            <th style="min-width:230px;">Nombre</th>
+            @if (verDescripcion)
+            {
+                <th style="min-width:220px;">Fórmula de medición</th>
+                <th style="width:100px;">Objetivo</th>
+                <th style="width:100px;">Unidad de medida</th>
+                <th style="width:120px;">Frecuencia de medición</th>
+                <th style="width:95px;">Tendencia</th>
+                <th style="width:120px;">Tipo de indicador</th>
+                <th style="width:140px;">Responsable</th>
+                <th style="width:150px;">Fuente de información</th>
+            }
+            <th style="width:120px;">Origen del dato</th>
+            @for (var m = 1; m <= 12; m++)
+            {
+                <th class="ind-mes @(EsMesActual(m) ? "ind-mes-hoy" : "")">@CalculoIndicadores.Mes(anio, m)</th>
+            }
+        </tr>
+    </thead>
+    <tbody>
+        @foreach (var ind in Mostrados)
+        {
+            var i = ind;
+            <tr class="@(selId == i.Id ? "table-active" : "")" @onclick="() => selId = i.Id" @ondblclick="() => { selId = i.Id; Editar(); }">
+                <td class="small fw-semibold">@i.Nombre @if (i.Inactivo) { <span class="ind-inactivo">Inactivo</span> }</td>
+                @if (verDescripcion)
+                {
+                    <td class="small rg-multi">@i.Formula</td>
+                    <td class="small text-center">@i.Objetivo</td>
+                    <td class="small text-center">@CalculoIndicadores.NombreUnidad(i.Unidad)</td>
+                    <td class="small text-center">@(string.IsNullOrWhiteSpace(i.FrecuenciaTexto) ? CalculoIndicadores.NombreFrecuencia(i.Frecuencia) : i.FrecuenciaTexto)</td>
+                    <td class="small text-center">@i.Tendencia</td>
+                    <td class="small text-center">@i.TipoIndicador</td>
+                    <td class="small text-center">@i.Responsable</td>
+                    <td class="small text-center">@i.FuenteInformacion</td>
+                }
+                <td class="small"><span class="ind-origen ind-origen-@((int)i.Fuente)">@IconoFuente(i.Fuente) @CalculoIndicadores.NombreFuente(i.Fuente)</span></td>
+                @for (var m = 1; m <= 12; m++)
+                {
+                    var mes = m;
+                    var c = CeldaDe(i, mes);
+                    <td class="ind-celda @c.Clase @(celda == (i.Id, mes) ? "ind-celda-sel" : "")" title="@c.Titulo" @onclick="() => AbrirCelda(i, mes)" @onclick:stopPropagation="true">
+                        <span class="ind-valor">@c.Texto</span>
+                        @if (c.Congelado)
+                        {
+                            <span class="ind-marca" title="Congelado"><Ico Nombre="candado" /></span>
+                        }
+                        @if (c.Soportes > 0)
+                        {
+                            <span class="ind-clip" title="@($"{c.Soportes} soporte(s)")">📎</span>
+                        }
+                    </td>
+                }
+            </tr>
+        }
+        @if (!Mostrados.Any())
+        {
+            <tr><td colspan="@(verDescripcion ? 22 : 14)" class="text-muted small text-center py-2"><em>Sin indicadores.</em></td></tr>
+        }
+    </tbody>
+</table></div>
+}
+
+@* ---------- Panel de la medición (lateral, solo en la matriz: la página se corre para no tapar meses) ---------- *@
+@if (vista == "matriz" && celda is (int cInd, int cMes) && indicadores.FirstOrDefault(x => x.Id == cInd) is { } indSel)
+{
+    <aside class="ind-panel">
+        <div class="ind-panel-cab">
+            <div class="ind-panel-tits">
+                <span class="ind-panel-per">@CalculoIndicadores.NombrePeriodo(indSel, anio, cMes)</span>
+                <span class="ind-panel-tit">@indSel.Nombre</span>
+            </div>
+            <button type="button" class="gf-x" title="Cerrar" @onclick="() => celda = null">✕</button>
+        </div>
+        <div class="ind-panel-cuerpo">@EditorMedicion(indSel, cMes)</div>
+    </aside>
+}
+</div>
+
+@code {
+    private const long MaxArchivo = 50L * 1024 * 1024;
+
+    private bool pantallaCompleta, verDescripcion = true, guardando, error;
+    private string vista = "indicador";   // indicador | tablero | matriz | graficos
+    private EventCallback AtrasPantalla => pantallaCompleta ? EventCallback.Factory.Create(this, () => pantallaCompleta = false) : default;
+    private string mensaje = "", buscar = "", fFuente = "";
+
+    private List<Indicador> indicadores = new();
+    private Dictionary<(int Ind, int Anio, int Mes), MedicionIndicador> mediciones = new();
+    private Dictionary<int, List<ArchivoMedicionIndicador>> archivos = new();
+    private ContextoIndicadores ctx = new();
+    private readonly Dictionary<(int Ind, int Mes), ResultadoIndicador?> vivo = new();
+    private int anio = DateTime.Today.Year;
+    private List<int> anios = new();
+    private int? selId;
+    private int version;
+    private List<string> tiposHallazgo = new(), origenes = new(), procesos = new(), remitentes = new();
+
+    protected override void OnInitialized() => Cargar();
+
+    // ?indicador={id} (tablero de inicio): abre ese indicador en la vista indicador.
+    [SupplyParameterFromQuery(Name = "indicador")] public int? IndicadorQ { get; set; }
+    private int? indicadorAplicado;
+    protected override void OnParametersSet()
+    {
+        if (IndicadorQ == indicadorAplicado) return;
+        indicadorAplicado = IndicadorQ;
+        if (IndicadorQ is int i && indicadores.Any(x => x.Id == i)) { selId = i; vista = "indicador"; celda = null; }
+    }
+
+    private void Cargar()
+    {
+        Db.ChangeTracker.Clear();
+        indicadores = Db.Indicadores.AsNoTracking().OrderBy(i => i.Orden).ThenBy(i => i.Id).ToList();
+        var meds = Db.MedicionesIndicador.AsNoTracking().ToList();
+        mediciones = meds.GroupBy(m => (m.IndicadorId, m.Anio, m.Mes)).ToDictionary(g => g.Key, g => g.OrderByDescending(m => m.Id).First());
+        var idsMed = meds.Select(m => m.Id).ToList();
+        archivos = Db.ArchivosMedicionIndicador.AsNoTracking().Where(a => idsMed.Contains(a.MedicionIndicadorId)).ToList()
+            .GroupBy(a => a.MedicionIndicadorId).ToDictionary(g => g.Key, g => g.OrderBy(a => a.Id).ToList());
+        ctx = ContextoIndicadores.Cargar(Db);
+
+        static IEnumerable<string> Lineas(string? t) => (t ?? "").Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        List<string> Catalogo(string tipo, IEnumerable<string> usados) =>
+            Db.Catalogos.AsNoTracking().Where(c => c.Tipo == tipo && c.Activo).Select(c => c.Nombre).ToList()
+                .Concat(usados).Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(x => x).ToList();
+        tiposHallazgo = Catalogo(SigWeb.Data.Riesgos.SembradorCatalogosRiesgo.TipoHallazgo, ctx.Planes.Select(p => p.TipoHallazgo));
+        origenes = Catalogo(SigWeb.Data.Riesgos.SembradorCatalogosRiesgo.OrigenHallazgo, ctx.Planes.Select(p => p.OrigenHallazgo));
+        procesos = Catalogo(SigWeb.Data.Riesgos.SembradorCatalogosRiesgo.ProcesoPlan, ctx.Planes.SelectMany(p => Lineas(p.Proceso)));
+        remitentes = ctx.Comunicados.Select(c => c.Remitente ?? "").Where(x => x.Trim().Length > 0).Select(x => x.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(x => x).ToList();
+
+        var hoy = DateTime.Today.Year;
+        // Años con datos en cualquier fuente (mediciones, comunicados, planes, registros del PIE, inicio de
+        // indicadores acumulados), sin huecos entre el más antiguo y el siguiente al actual.
+        var conDatos = meds.Select(m => m.Anio)
+            .Concat(ctx.Comunicados.Where(c => c.Fecha is not null).Select(c => c.Fecha!.Value.Year))
+            .Concat(ctx.Planes.Select(p => p.Fecha.Year))
+            .Concat(ctx.PieCeldas.SelectMany(c => new[] { c.Fecha?.Year, c.Facturado?.Year }).Where(y => y is not null).Select(y => y!.Value))
+            .Concat(indicadores.Where(i => i.FechaInicio is not null).Select(i => i.FechaInicio!.Value.Year))
+            .Where(y => y >= 2000 && y <= hoy + 1)
+            .Append(hoy).ToList();
+        var desde = conDatos.Min();
+        anios = Enumerable.Range(desde, hoy + 1 - desde + 1).OrderByDescending(a => a).ToList();
+        if (selId is null || !indicadores.Any(i => i.Id == selId)) selId = indicadores.FirstOrDefault()?.Id;
+        Recalcular();
+        version++;
+    }
+
+    // Valores en vivo del año elegido (lo calculado sin congelar).
+    private void Recalcular()
+    {
+        vivo.Clear();
+        foreach (var ind in indicadores.Where(i => CalculoIndicadores.Calculado(i.Fuente)))
+            for (var m = 1; m <= 12; m++)
+                if (CalculoIndicadores.Mide(ind, anio, m))
+                    vivo[(ind.Id, m)] = CalculoIndicadores.Calcular(ind, anio, m, ctx, BaseMes(ind.Id, m));
+    }
+
+    // Base elegida para ese mes (Matriz PIE); null = la del indicador.
+    private string? BaseMes(int indId, int mes) => mediciones.TryGetValue((indId, anio, mes), out var m) ? m.BaseCalculo : null;
+
+    private void CambiarAnio(ChangeEventArgs e)
+    {
+        if (!int.TryParse(e.Value?.ToString(), out var a)) return;
+        anio = a; celda = null;
+        if (congelarMes is not null) congelarMes = 12;
+        Recalcular();
+        version++;
+    }
+
+    private bool verInactivos;
+
+    private IEnumerable<Indicador> Mostrados => indicadores.Where(i =>
+        (verInactivos || !i.Inactivo) &&
+        (fFuente == "" || ((int)i.Fuente).ToString() == fFuente) &&
+        (string.IsNullOrWhiteSpace(buscar) || i.Nombre.Contains(buscar.Trim(), StringComparison.OrdinalIgnoreCase)
+            || i.Formula.Contains(buscar.Trim(), StringComparison.OrdinalIgnoreCase) || i.Responsable.Contains(buscar.Trim(), StringComparison.OrdinalIgnoreCase)));
+
+    private bool EsMesActual(int m) => anio == DateTime.Today.Year && m == DateTime.Today.Month;
+
+    // ---------- Valor de cada celda ----------
+    private sealed record Celda(string Texto, string Clase, string Titulo, bool Congelado, int Soportes, decimal? Valor);
+
+    private Celda CeldaDe(Indicador ind, int mes)
+    {
+        mediciones.TryGetValue((ind.Id, anio, mes), out var m);
+        var cierre = CalculoIndicadores.Mide(ind, anio, mes);
+        var sop = m is not null && archivos.TryGetValue(m.Id, out var l) ? l.Count : 0;
+        var obs = string.IsNullOrWhiteSpace(m?.Observaciones) ? "" : "\n" + m!.Observaciones;
+        if (m?.Congelado == true || !CalculoIndicadores.Calculado(ind.Fuente))
+        {
+            if (m is null || (!m.NoAplica && m.Valor is null))
+                return new("", cierre ? "ind-vacio" : "ind-no", (cierre ? "Sin registrar" : "No es mes de medición") + obs, m?.Congelado == true, sop, null);
+            if (m.NoAplica) return new("N/A", "ind-na", (m.Detalle ?? "") + obs, m.Congelado, sop, null);
+            return new(CalculoIndicadores.Formato(ind, m.Valor), ClaseCumple(ind, m.Valor),
+                (m.Detalle ?? (m.Numerador is not null ? $"{Num(m.Numerador)} / {Num(m.Denominador)}" : "")) + obs, m.Congelado, sop, m.Valor);
+        }
+        if (!cierre) return new("", "ind-no", "No es mes de medición" + obs, false, sop, null);
+        vivo.TryGetValue((ind.Id, mes), out var r);
+        if (r is null) return new("", "ind-futuro", "Periodo por venir" + obs, false, sop, null);
+        if (r.NoAplica || r.Valor is null) return new("N/A", "ind-na ind-vivo", r.Detalle + obs, false, sop, null);
+        return new(CalculoIndicadores.Formato(ind, r.Valor), ClaseCumple(ind, r.Valor) + " ind-vivo", "En vivo: " + r.Detalle + obs, false, sop, r.Valor);
+    }
+
+    private static string ClaseCumple(Indicador ind, decimal? v) => CalculoIndicadores.Cumple(ind, v) switch { true => "ind-ok", false => "ind-mal", _ => "" };
+
+    private static string Num(decimal? v) => v is decimal x ? x.ToString("0.##", System.Globalization.CultureInfo.GetCultureInfo("es-CO")) : "—";
+
+    private static string Operador(string o) => o switch { ">=" => "≥", "<=" => "≤", _ => o };
+
+    private static string IconoFuente(FuenteIndicador f) => f switch
+    {
+        FuenteIndicador.CumplimientoPie => "▦",
+        FuenteIndicador.Comunicados => "✉",
+        FuenteIndicador.PlanesAccion => "☑",
+        FuenteIndicador.CurvaS => "∫",
+        _ => "✎"
+    };
+
+    // ---------- Panel de una celda ----------
+    private (int Ind, int Mes)? celda;
+    private decimal? pValor, pNum, pDen;
+    private bool pNA;
+    private string? pObs;
+
+    private void AbrirCelda(Indicador ind, int mes)
+    {
+        selId = ind.Id;
+        celda = (ind.Id, mes);
+        mediciones.TryGetValue((ind.Id, anio, mes), out var m);
+        pValor = m?.Valor; pNum = m?.Numerador; pDen = m?.Denominador; pNA = m?.NoAplica ?? false; pObs = m?.Observaciones;
+    }
+
+    // Medición del periodo (con seguimiento), creada si no existe.
+    private async Task<MedicionIndicador> MedicionAsync(int indId, int mes)
+    {
+        var m = await Db.MedicionesIndicador.Where(x => x.IndicadorId == indId && x.Anio == anio && x.Mes == mes).OrderByDescending(x => x.Id).FirstOrDefaultAsync();
+        if (m is null) { m = new MedicionIndicador { IndicadorId = indId, Anio = anio, Mes = mes }; Db.MedicionesIndicador.Add(m); }
+        return m;
+    }
+
+    // Valor digitado: el valor, o numerador / denominador (× 100 si es porcentaje).
+    private void PasarDigitado(Indicador ind, MedicionIndicador m)
+    {
+        m.NoAplica = pNA;
+        m.Numerador = pNA ? null : pNum;
+        m.Denominador = pNA ? null : pDen;
+        m.Valor = pNA ? null : pValor ?? (pNum is decimal n && pDen is decimal d && d != 0 ? Math.Round(n / d * (ind.Unidad == "porcentaje" ? 100 : 1), 2) : null);
+    }
+
+    private async Task GuardarCelda()
+    {
+        if (celda is not (int idInd, int mes) || indicadores.FirstOrDefault(i => i.Id == idInd) is not { } ind) return;
+        guardando = true;
+        try
+        {
+            var m = await MedicionAsync(idInd, mes);
+            if (!CalculoIndicadores.Calculado(ind.Fuente) && !m.Congelado) PasarDigitado(ind, m);
+            m.Observaciones = string.IsNullOrWhiteSpace(pObs) ? null : pObs.Trim();
+            await Db.SaveChangesAsync();
+            Cargar();
+            AbrirCelda(ind, mes);
+            mensaje = ""; error = false;
+        }
+        catch (Exception ex) { Db.ChangeTracker.Clear(); mensaje = "No se pudo guardar: " + ex.Message; error = true; }
+        finally { guardando = false; }
+    }
+
+    private async Task CongelarCelda()
+    {
+        if (celda is not (int idInd, int mes) || indicadores.FirstOrDefault(i => i.Id == idInd) is not { } ind) return;
+        guardando = true;
+        try
+        {
+            var m = await MedicionAsync(idInd, mes);
+            if (CalculoIndicadores.Calculado(ind.Fuente))
+            {
+                if (CalculoIndicadores.Calcular(ind, anio, mes, ctx, BaseMes(ind.Id, mes)) is not { } r) return;
+                Fijar(m, r);
+            }
+            else PasarDigitado(ind, m);
+            m.Observaciones = string.IsNullOrWhiteSpace(pObs) ? null : pObs.Trim();
+            m.Congelado = true; m.FechaCongelado = DateTime.Now;
+            await Db.SaveChangesAsync();
+            Cargar();
+            AbrirCelda(ind, mes);
+        }
+        catch (Exception ex) { Db.ChangeTracker.Clear(); mensaje = "No se pudo congelar: " + ex.Message; error = true; }
+        finally { guardando = false; }
+    }
+
+    private static void Fijar(MedicionIndicador m, ResultadoIndicador r)
+    {
+        m.Valor = r.NoAplica ? null : r.Valor;
+        m.NoAplica = r.NoAplica || r.Valor is null;
+        m.Numerador = r.Numerador; m.Denominador = r.Denominador;
+        m.Detalle = r.Detalle;
+    }
+
+    private async Task CambiarBaseMes(ChangeEventArgs e)
+    {
+        if (celda is not (int idInd, int mes) || indicadores.FirstOrDefault(i => i.Id == idInd) is not { } ind) return;
+        guardando = true;
+        try
+        {
+            var m = await MedicionAsync(idInd, mes);
+            if (m.Congelado) return;
+            var v = e.Value?.ToString();
+            m.BaseCalculo = string.IsNullOrEmpty(v) ? null : v;
+            await Db.SaveChangesAsync();
+            var obs = pObs;
+            Cargar();
+            AbrirCelda(ind, mes);
+            pObs = obs;
+        }
+        catch (Exception ex) { Db.ChangeTracker.Clear(); mensaje = "No se pudo cambiar: " + ex.Message; error = true; }
+        finally { guardando = false; }
+    }
+
+    private async Task DescongelarCelda()
+    {
+        if (celda is not (int idInd, int mes) || indicadores.FirstOrDefault(i => i.Id == idInd) is not { } ind) return;
+        guardando = true;
+        try
+        {
+            var m = await MedicionAsync(idInd, mes);
+            m.Congelado = false; m.FechaCongelado = null;
+            // Lo calculado vuelve a verse en vivo: no se guarda un valor viejo.
+            if (CalculoIndicadores.Calculado(ind.Fuente)) { m.Valor = null; m.NoAplica = false; m.Numerador = null; m.Denominador = null; m.Detalle = null; }
+            await Db.SaveChangesAsync();
+            Cargar();
+            AbrirCelda(ind, mes);
+        }
+        catch (Exception ex) { Db.ChangeTracker.Clear(); mensaje = "No se pudo descongelar: " + ex.Message; error = true; }
+        finally { guardando = false; }
+    }
+
+    // ---------- Soportes de la medición ----------
+    private async Task CargarSoportes(InputFileChangeEventArgs e)
+    {
+        if (celda is not (int idInd, int mes) || indicadores.FirstOrDefault(i => i.Id == idInd) is not { } ind) return;
+        var fallos = new List<string>();
+        try
+        {
+            var m = await MedicionAsync(idInd, mes);
+            await Db.SaveChangesAsync();
+            var carpeta = Path.Combine(Env.WebRootPath, "uploads", "indicadores");
+            Directory.CreateDirectory(carpeta);
+            foreach (var f in e.GetMultipleFiles(50))
+            {
+                if (f.Size > MaxArchivo) { fallos.Add($"{f.Name} (supera 50 MB)"); continue; }
+                try
+                {
+                    var nombre = $"{Guid.NewGuid():N}{Path.GetExtension(f.Name)}";
+                    await using (var s = f.OpenReadStream(MaxArchivo))
+                    await using (var destino = File.Create(Path.Combine(carpeta, nombre)))
+                        await s.CopyToAsync(destino);
+                    Db.ArchivosMedicionIndicador.Add(new ArchivoMedicionIndicador { MedicionIndicadorId = m.Id, NombreOriginal = f.Name, RutaArchivo = $"/uploads/indicadores/{nombre}" });
+                    await Db.SaveChangesAsync();
+                }
+                catch (Exception ex) { fallos.Add($"{f.Name} ({ex.Message})"); }
+            }
+        }
+        catch (Exception ex) { Db.ChangeTracker.Clear(); fallos.Add(ex.Message); }
+        mensaje = fallos.Count > 0 ? "No se cargaron: " + string.Join("; ", fallos) : ""; error = fallos.Count > 0;
+        var obs = pObs;
+        Cargar();
+        AbrirCelda(ind, mes);
+        pObs = obs;
+    }
+
+    private async Task EliminarSoporte(ArchivoMedicionIndicador a)
+    {
+        var ent = await Db.ArchivosMedicionIndicador.FirstOrDefaultAsync(x => x.Id == a.Id);
+        if (ent is not null) { ent.Eliminado = true; ent.FechaEliminacion = DateTime.Now; await Db.SaveChangesAsync(); }
+        mensaje = $"{a.NombreOriginal} enviado a la Papelera."; error = false;
+        var c = celda;
+        Cargar();
+        celda = c;
+    }
+
+    // ---------- Congelar un periodo (todos los indicadores) ----------
+    private int? congelarMes;
+
+    private void AbrirCongelar()
+    {
+        if (congelarMes is not null) { congelarMes = null; return; }
+        // Por defecto, el mes anterior (el último cerrado).
+        var hoy = DateTime.Today;
+        congelarMes = anio == hoy.Year ? Math.Max(1, hoy.Month - 1) : 12;
+        form = null; elimId = null;
+    }
+
+    private sealed record PorCongelarItem(Indicador Ind, string Texto);
+
+    // Lo calculado sin congelar y lo digitado sin bloquear del mes elegido (sin consultar la base).
+    private List<PorCongelarItem> PorCongelar(int mes)
+    {
+        var l = new List<PorCongelarItem>();
+        foreach (var ind in indicadores)
+        {
+            if (!CalculoIndicadores.Mide(ind, anio, mes)) continue;
+            mediciones.TryGetValue((ind.Id, anio, mes), out var m);
+            if (m?.Congelado == true) continue;
+            if (CalculoIndicadores.Calculado(ind.Fuente))
+            {
+                if (vivo.TryGetValue((ind.Id, mes), out var r) && r is not null)
+                    l.Add(new(ind, r.NoAplica || r.Valor is null ? "N/A" : CalculoIndicadores.Formato(ind, r.Valor)));
+            }
+            else if (m is not null && (m.NoAplica || m.Valor is not null))
+                l.Add(new(ind, m.NoAplica ? "N/A" : CalculoIndicadores.Formato(ind, m.Valor)));
+        }
+        return l;
+    }
+
+    private async Task CongelarPeriodo(int mes)
+    {
+        guardando = true;
+        try
+        {
+            var ahora = DateTime.Now;
+            var n = 0;
+            foreach (var x in PorCongelar(mes))
+            {
+                var m = await MedicionAsync(x.Ind.Id, mes);
+                if (CalculoIndicadores.Calculado(x.Ind.Fuente))
+                {
+                    if (CalculoIndicadores.Calcular(x.Ind, anio, mes, ctx, BaseMes(x.Ind.Id, mes)) is not { } r) continue;
+                    Fijar(m, r);
+                }
+                m.Congelado = true; m.FechaCongelado = ahora;
+                n++;
+            }
+            await Db.SaveChangesAsync();
+            mensaje = $"{n} indicador(es) congelados en {CalculoIndicadores.Mes(anio, mes)}."; error = false;
+            congelarMes = null;
+            Cargar();
+        }
+        catch (Exception ex) { Db.ChangeTracker.Clear(); mensaje = "No se pudo congelar: " + ex.Message; error = true; }
+        finally { guardando = false; }
+    }
+
+    // ---------- Nuevo / editar ----------
+    private Indicador? form;
+    private ConfigIndicador formCfg = new();
+    private bool formNuevo;
+
+    private void Nuevo()
+    {
+        if (form is not null && formNuevo) { form = null; return; }
+        form = new Indicador { Responsable = indicadores.LastOrDefault()?.Responsable ?? "" };
+        formCfg = new ConfigIndicador();
+        formNuevo = true; elimId = null; congelarMes = null;
+    }
+
+    private void Editar()
+    {
+        if (selId is not int id || indicadores.FirstOrDefault(i => i.Id == id) is not { } ind) return;
+        form = new Indicador();
+        Copiar(ind, form);
+        form.Id = ind.Id;
+        formCfg = ConfigIndicador.Leer(ind.Configuracion);
+        formNuevo = false; elimId = null; congelarMes = null;
+    }
+
+    private static void Copiar(Indicador o, Indicador d)
+    {
+        d.Nombre = o.Nombre.Trim(); d.Formula = o.Formula; d.Objetivo = o.Objetivo; d.Meta = o.Meta; d.OperadorMeta = o.OperadorMeta;
+        d.Unidad = o.Unidad; d.Frecuencia = o.Frecuencia; d.FrecuenciaTexto = string.IsNullOrWhiteSpace(o.FrecuenciaTexto) ? null : o.FrecuenciaTexto.Trim();
+        d.Tendencia = o.Tendencia; d.TipoIndicador = o.TipoIndicador; d.Responsable = o.Responsable; d.FuenteInformacion = o.FuenteInformacion;
+        d.Fuente = o.Fuente; d.Configuracion = o.Configuracion; d.Acumulado = o.Acumulado; d.FechaInicio = o.FechaInicio;
+        d.Inactivo = o.Inactivo; d.FechaFin = o.FechaFin;
+    }
+
+    // Al inhabilitar, por defecto se mide hasta hoy (se puede cambiar la fecha).
+    private void CambiarActivo(bool activo)
+    {
+        if (form is null) return;
+        form.Inactivo = !activo;
+        if (form.Inactivo && form.FechaFin is null) form.FechaFin = DateTime.Today;
+    }
+
+    private void CambiarFuente(FuenteIndicador f)
+    {
+        if (form is null) return;
+        form.Fuente = f;
+        if (f == FuenteIndicador.Comunicados && formCfg.Calculo == "tiempo") form.Unidad = "dias";
+    }
+
+    private void CambiarCalculoComunicados(ChangeEventArgs e)
+    {
+        formCfg.Calculo = e.Value?.ToString() ?? "cobertura";
+        if (form is not null) form.Unidad = formCfg.Calculo == "tiempo" ? "dias" : "porcentaje";
+    }
+
+    private Indicador FormComoIndicador()
+    {
+        var x = new Indicador();
+        if (form is null) return x;
+        Copiar(form, x);
+        x.Configuracion = form.Fuente is FuenteIndicador.Comunicados or FuenteIndicador.PlanesAccion or FuenteIndicador.CumplimientoPie ? formCfg.Escribir() : null;
+        return x;
+    }
+
+    // Último mes de medición ya empezado (para la vista previa del formulario).
+    private static (int Anio, int Mes) UltimoCierre(Indicador ind)
+    {
+        var p = new DateTime(DateTime.Today.Year, DateTime.Today.Month, 1);
+        for (var i = 0; i < 24; i++, p = p.AddMonths(-1))
+            if (CalculoIndicadores.EsCierre(ind, p.Month)) return (p.Year, p.Month);
+        return (DateTime.Today.Year, DateTime.Today.Month);
+    }
+
+    private ResultadoIndicador? Previa(int a, int m) => CalculoIndicadores.Calcular(FormComoIndicador(), a, m, ctx);
+
+    private async Task GuardarForm()
+    {
+        if (form is null || string.IsNullOrWhiteSpace(form.Nombre)) return;
+        guardando = true;
+        try
+        {
+            var datos = FormComoIndicador();
+            if (formNuevo)
+            {
+                var nuevo = new Indicador();
+                Copiar(datos, nuevo);
+                nuevo.Orden = (indicadores.Count == 0 ? 0 : indicadores.Max(i => i.Orden)) + 1;
+                Db.Indicadores.Add(nuevo);
+                await Db.SaveChangesAsync();
+                selId = nuevo.Id;
+            }
+            else if (await Db.Indicadores.FirstOrDefaultAsync(i => i.Id == form.Id) is { } ent)
+            {
+                Copiar(datos, ent);
+                await Db.SaveChangesAsync();
+            }
+            mensaje = $"{datos.Nombre} guardado."; error = false;
+            form = null;
+            Cargar();
+        }
+        catch (Exception ex) { Db.ChangeTracker.Clear(); mensaje = "No se pudo guardar: " + ex.Message; error = true; }
+        finally { guardando = false; }
+    }
+
+    // Selección múltiple con píldoras (ninguna = todas).
+    private RenderFragment Pildoras(string titulo, List<string> opciones, List<string> sel) => __builder =>
+    {
+        <div class="ind-pildoras">
+            <span class="ind-pildoras-tit">@titulo <span class="text-muted fw-normal">@(sel.Count == 0 ? "· todos" : $"· {sel.Count}")</span></span>
+            <div class="gf-valores">
+                @foreach (var o in opciones)
+                {
+                    var op = o;
+                    <button type="button" class="gf-pill @(sel.Contains(op, StringComparer.OrdinalIgnoreCase) ? "activo" : "")" @onclick="() => Alternar(sel, op)">@op</button>
+                }
+                @if (opciones.Count == 0)
+                {
+                    <span class="text-muted small">(sin valores)</span>
+                }
+            </div>
+        </div>
+    };
+
+    private static void Alternar(List<string> sel, string v)
+    {
+        if (sel.RemoveAll(x => string.Equals(x, v, StringComparison.OrdinalIgnoreCase)) == 0) sel.Add(v);
+    }
+
+    // ---------- Eliminar (Papelera) ----------
+    private int? elimId;
+    private SigWeb.Data.Impacto.InformeImpacto? impacto;
+    private bool impactoOk;
+
+    private void PedirEliminar()
+    {
+        if (selId is not int id) return;
+        form = null; congelarMes = null; elimId = id; impacto = null; impactoOk = false;
+        _ = CalcularImpacto(id);
+    }
+
+    private async Task CalcularImpacto(int id)
+    {
+        try
+        {
+            using var scope = Scopes.CreateScope();
+            impacto = await scope.ServiceProvider.GetRequiredService<SigWeb.Data.Impacto.AnalizadorImpacto>().Indicadores(id);
+        }
+        catch { impacto = new SigWeb.Data.Impacto.InformeImpacto { Elemento = "No se pudo calcular el impacto" }; }
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task ConfirmarEliminar()
+    {
+        if (elimId is not int id) return;
+        var ahora = DateTime.Now; ahora = new DateTime(ahora.Year, ahora.Month, ahora.Day, ahora.Hour, ahora.Minute, ahora.Second);
+        var ind = await Db.Indicadores.FirstOrDefaultAsync(x => x.Id == id);
+        if (ind is not null)
+        {
+            ind.Eliminado = true; ind.FechaEliminacion = ahora;
+            var meds = await Db.MedicionesIndicador.Where(m => m.IndicadorId == id).ToListAsync();
+            var idsMed = meds.Select(m => m.Id).ToList();
+            foreach (var m in meds) { m.Eliminado = true; m.FechaEliminacion = ahora; }
+            foreach (var a in await Db.ArchivosMedicionIndicador.Where(a => idsMed.Contains(a.MedicionIndicadorId)).ToListAsync()) { a.Eliminado = true; a.FechaEliminacion = ahora; }
+            await Db.SaveChangesAsync();
+        }
+        mensaje = $"{ind?.Nombre} enviado a la Papelera."; error = false;
+        elimId = null; selId = null; celda = null;
+        Cargar();
+    }
+
+
+    // ---------- Edición de la medición de un mes (panel lateral en la matriz o en línea en "indicador por indicador") ----------
+    private RenderFragment EditorMedicion(Indicador indSel, int cMes) => __builder =>
+    {
+        var cInd = indSel.Id;
+        mediciones.TryGetValue((cInd, anio, cMes), out var med);
+        var calculado = CalculoIndicadores.Calculado(indSel.Fuente);
+        var congelado = med?.Congelado == true;
+        vivo.TryGetValue((cInd, cMes), out var rVivo);
+        var soportes = med is not null && archivos.TryGetValue(med.Id, out var ls) ? ls : new List<ArchivoMedicionIndicador>();
+        <div class="ind-editor">
+            <div class="ind-panel-meta">
+                <span class="ind-origen ind-origen-@((int)indSel.Fuente)">@IconoFuente(indSel.Fuente) @CalculoIndicadores.NombreFuente(indSel.Fuente)</span>
+                <span>Meta @Operador(indSel.OperadorMeta) @CalculoIndicadores.Formato(indSel, indSel.Meta)</span>
+                @if (!CalculoIndicadores.Mide(indSel, anio, cMes))
+                {
+                    <span class="text-muted">· no es mes de medición</span>
+                }
+            </div>
+
+            @if (indSel.Fuente == FuenteIndicador.CumplimientoPie)
+            {
+                var basePorDefecto = ConfigIndicador.Leer(indSel.Configuracion).BasePie;
+                <div class="ind-base">
+                    <span>Medir con</span>
+                    <select class="form-select form-select-sm" disabled="@(congelado || guardando)" value="@(med?.BaseCalculo ?? "")" @onchange="CambiarBaseMes">
+                        <option value="">@($"Del indicador ({CalculoIndicadores.NombreBasePie(basePorDefecto)})")</option>
+                        @foreach (var b in CalculoIndicadores.BasesPie)
+                        {
+                            <option value="@b.Clave">@b.Nombre</option>
+                        }
+                    </select>
+                </div>
+            }
+
+            @if (calculado)
+            {
+                @if (congelado && med is not null)
+                {
+                    <div class="ind-caja ind-caja-congelado">
+                        <div class="ind-caja-cab"><Ico Nombre="candado" /> Congelado @med.FechaCongelado?.ToString("dd/MM/yyyy HH:mm")</div>
+                        <div class="ind-caja-valor @ClaseCumple(indSel, med.Valor)">@(med.NoAplica || med.Valor is null ? "N/A" : CalculoIndicadores.Formato(indSel, med.Valor))</div>
+                        @if (med.Numerador is not null || med.Denominador is not null)
+                        {
+                            <div class="ind-caja-frac">@Num(med.Numerador) / @Num(med.Denominador)</div>
+                        }
+                        <div class="ind-caja-det">@med.Detalle</div>
+                    </div>
+                }
+                <div class="ind-caja">
+                    <div class="ind-caja-cab">@(congelado ? "Cálculo de hoy" : "En vivo")</div>
+                    @if (rVivo is null)
+                    {
+                        <div class="ind-caja-det">@(new DateTime(anio, cMes, 1) > DateTime.Today ? "Periodo por venir." : "No se calcula en este mes.")</div>
+                    }
+                    else
+                    {
+                        <div class="ind-caja-valor @ClaseCumple(indSel, rVivo.Valor)">@(rVivo.NoAplica || rVivo.Valor is null ? "N/A" : CalculoIndicadores.Formato(indSel, rVivo.Valor))</div>
+                        @if (rVivo.Numerador is not null && indSel.Fuente != FuenteIndicador.CumplimientoPie)
+                        {
+                            <div class="ind-caja-frac">@Num(rVivo.Numerador) / @Num(rVivo.Denominador)</div>
+                        }
+                        <div class="ind-caja-det">@rVivo.Detalle</div>
+                    }
+                </div>
+            }
+            else
+            {
+                <div class="ind-caja">
+                    <div class="row g-2">
+                        <div class="col-6">
+                            <label class="form-label mb-1 small">Valor</label>
+                            <input type="number" step="any" class="form-control form-control-sm" disabled="@(congelado || pNA)" @bind="pValor" />
+                        </div>
+                        <div class="col-6 d-flex align-items-end">
+                            <label class="form-check mb-1 small"><input class="form-check-input" type="checkbox" disabled="@congelado" @bind="pNA" /> N/A</label>
+                        </div>
+                        <div class="col-6">
+                            <label class="form-label mb-1 small">Numerador</label>
+                            <input type="number" step="any" class="form-control form-control-sm" disabled="@(congelado || pNA)" @bind="pNum" />
+                        </div>
+                        <div class="col-6">
+                            <label class="form-label mb-1 small">Denominador</label>
+                            <input type="number" step="any" class="form-control form-control-sm" disabled="@(congelado || pNA)" @bind="pDen" />
+                        </div>
+                    </div>
+                    @if (congelado && med is not null)
+                    {
+                        <div class="ind-caja-cab mt-2"><Ico Nombre="candado" /> Congelado @med.FechaCongelado?.ToString("dd/MM/yyyy HH:mm")</div>
+                    }
+                </div>
+            }
+
+            <label class="form-label mb-1 small mt-2">Observaciones</label>
+            <textarea class="form-control form-control-sm" rows="2" @bind="pObs"></textarea>
+
+            <div class="ind-panel-acciones">
+                <button type="button" class="btn btn-sm btn-primary" title="Guardar" disabled="@guardando" @onclick="GuardarCelda"><Ico Nombre="guardar" /></button>
+                @if (congelado)
+                {
+                    <button type="button" class="btn btn-sm btn-outline-secondary" title="Descongelar" disabled="@guardando" @onclick="DescongelarCelda"><Ico Nombre="candado-abierto" /></button>
+                }
+                else
+                {
+                    <button type="button" class="btn btn-sm btn-outline-secondary" title="@(calculado ? "Congelar el valor calculado" : "Congelar (bloquea la edición)")" disabled="@(guardando || (calculado && rVivo is null))" @onclick="CongelarCelda"><Ico Nombre="candado" /></button>
+                }
+            </div>
+
+            <div class="ind-soportes">
+                <div class="ind-soportes-cab">
+                    <span><Ico Nombre="documento" /> Soportes (@soportes.Count)</span>
+                    <label class="ens-mini mb-0" title="Cargar soportes"><Ico Nombre="agregar" /><InputFile class="d-none" multiple OnChange="CargarSoportes" /></label>
+                </div>
+                @foreach (var a in soportes)
+                {
+                    var adj = a;
+                    <div class="ind-soporte">
+                        <a href="@adj.RutaArchivo" target="_blank" rel="noopener" class="ind-soporte-nom" title="@adj.NombreOriginal">@adj.NombreOriginal</a>
+                        <span class="ind-soporte-fecha">@adj.FechaRegistro.ToString("dd/MM/yyyy")</span>
+                        <a class="ens-mini" href="@adj.RutaArchivo" download="@adj.NombreOriginal" title="Descargar"><Ico Nombre="importar" /></a>
+                        <button type="button" class="ens-mini" title="Eliminar (va a la Papelera)" @onclick="() => EliminarSoporte(adj)"><Ico Nombre="eliminar" /></button>
+                    </div>
+                }
+            </div>
+        </div>
+    };
+
+    // ---------- Gráficos: uno por indicador (valor de cada mes de medición + meta) ----------
+    private string? firmaGraficos;
+
+    private void CambiarVista(string v) { vista = v; firmaGraficos = null; celda = null; }
+
+    // ---------- Indicador por indicador / tablero ----------
+    private void Enfocar(Indicador i)
+    {
+        selId = i.Id;
+        if (celda is (int ci, _) && ci != i.Id) celda = null;
+        firmaGraficos = null;
+    }
+
+    private void AlternarCelda(Indicador i, int mes)
+    {
+        if (celda == (i.Id, mes)) { celda = null; return; }
+        AbrirCelda(i, mes);
+    }
+
+    private void AbrirTarjeta(Indicador i, int? mes)
+    {
+        CambiarVista("indicador");
+        Enfocar(i);
+        if (mes is int m) AbrirCelda(i, m);
+    }
+
+    // Último mes del año con valor (calculado, congelado o digitado).
+    private (int Mes, Celda C)? UltimoMedido(Indicador ind)
+    {
+        for (var m = 12; m >= 1; m--)
+        {
+            var c = CeldaDe(ind, m);
+            if (c.Valor is not null) return (m, c);
+        }
+        return null;
+    }
+
+    private Celda? AnteriorMedido(Indicador ind, int mes)
+    {
+        for (var m = mes - 1; m >= 1; m--)
+        {
+            var c = CeldaDe(ind, m);
+            if (c.Valor is not null) return c;
+        }
+        return null;
+    }
+
+    // Verde si el cambio va hacia donde está la meta (subir si la meta es "≥", bajar si es "≤").
+    private static string ClaseTendencia(Indicador i, decimal ahora, decimal antes) =>
+        (ahora > antes) == !(i.OperadorMeta is "<=" or "<") ? "sube" : "baja";
+
+    private sealed record Resumen(int Cumplen, int Medidos, decimal? Promedio);
+
+    private Resumen ResumenAnio(Indicador ind)
+    {
+        var v = Enumerable.Range(1, 12).Select(m => CeldaDe(ind, m).Valor).Where(x => x is not null).Select(x => x!.Value).ToList();
+        return new(v.Count(x => CalculoIndicadores.Cumple(ind, x) == true), v.Count, v.Count == 0 ? null : Math.Round(v.Average(), 2));
+    }
+
+    // Posición (0–100) de un valor en la barra de meta: porcentaje sobre 100; lo demás, sobre el mayor de meta y valor (+25 %).
+    private string Pct(Indicador ind, decimal? v)
+    {
+        if (v is not decimal x) return "0";
+        var tope = ind.Unidad == "porcentaje" ? Math.Max(100m, Math.Max(ind.Meta ?? 0, x)) : Math.Max(ind.Meta ?? 0, x) * 1.25m;
+        if (tope <= 0) tope = 1;
+        return Math.Clamp(x / tope * 100, 0, 100).ToString("0.#", System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    private RenderFragment GraficoCaja(Indicador ind) => __builder =>
+    {
+        <div class="com-grafico">
+            <div class="com-grafico-cab">
+                <div class="com-grafico-tit">@ind.Nombre</div>
+                <button type="button" class="gx-mas" title="Elementos del gráfico" data-grafico="@($"ind-g-{ind.Id}")" data-clave="@($"indicadores:{ind.Id}")" onclick="sigwebElementosGrafico(this)">+</button>
+            </div>
+            <div class="com-grafico-lienzo"><canvas id="@($"ind-g-{ind.Id}")"></canvas></div>
+        </div>
+    };
+
+    private object ConfigGrafico(Indicador ind)
+    {
+        var meses = Enumerable.Range(1, 12).Where(m => CalculoIndicadores.Mide(ind, anio, m)).ToList();
+        var celdas = meses.Select(m => CeldaDe(ind, m)).ToList();
+        var colores = celdas.Select(c => CalculoIndicadores.Cumple(ind, c.Valor) switch { true => "#2e9e5b", false => "#d64545", _ => "#adb5bd" }).ToArray();
+        var datasets = new List<object>
+        {
+            new { type = "bar", label = ind.Nombre, data = celdas.Select(c => (object?)c.Valor).ToArray(), backgroundColor = colores, borderRadius = 4, maxBarThickness = 38, sigwebEtiquetas = true, order = 2 }
+        };
+        if (ind.Meta is decimal meta)
+            datasets.Add(new { type = "line", label = $"Meta ({Operador(ind.OperadorMeta)} {CalculoIndicadores.Formato(ind, meta)})", data = meses.Select(_ => (object?)meta).ToArray(), borderColor = "#3b4658", backgroundColor = "#3b4658", borderDash = new[] { 6, 4 }, pointRadius = 0, borderWidth = 2, fill = false, order = 1 });
+        return new
+        {
+            type = "bar",
+            data = new { labels = meses.Select(m => CalculoIndicadores.Mes(anio, m)).ToArray(), datasets },
+            options = new
+            {
+                responsive = true, maintainAspectRatio = false,
+                plugins = new { legend = new { position = "bottom", labels = new { boxWidth = 12 } } },
+                scales = new { x = new { grid = new { display = false } }, y = new { beginAtZero = true, suggestedMax = ind.Unidad == "porcentaje" ? 100 : (int?)null } }
+            }
+        };
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (vista is not ("graficos" or "indicador")) return;
+        var lista = Mostrados.ToList();
+        if (vista == "indicador")
+        {
+            var f = lista.FirstOrDefault(x => x.Id == selId) ?? lista.FirstOrDefault();
+            lista = f is null ? new() : new() { f };
+        }
+        var firma = $"{vista}|{version}|{anio}|{fFuente}|{buscar}|{string.Join(",", lista.Select(i => i.Id))}";
+        if (firma == firmaGraficos) return;
+        firmaGraficos = firma;
+        try
+        {
+            foreach (var ind in lista)
+                await JS.InvokeVoidAsync("sigwebRenderGrafico", vista == "indicador" ? "ind-foco-g" : $"ind-g-{ind.Id}", ConfigGrafico(ind));
+        }
+        catch (JSDisconnectedException) { }
+        catch (JSException) { firmaGraficos = null; }
+    }
+}

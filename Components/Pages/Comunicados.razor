@@ -1,0 +1,1476 @@
+@page "/comunicados"
+@rendermode InteractiveServer
+@using Microsoft.EntityFrameworkCore
+@using SigWeb.Data
+@using SigWeb.Data.Comunicados
+@using SigWeb.Data.Documentos
+@using SigWeb.Data.Tablas
+@using SigWeb.Models
+@inject AppDbContext Db
+@inject IServiceScopeFactory Scopes
+@inject IWebHostEnvironment Env
+@inject IJSRuntime JS
+
+<PageTitle>Comunicados</PageTitle>
+
+@* Listado de comunicados (seguimiento de respuestas). Columnas propias con la lógica del Excel de
+   control (estado, plazo, responsable, respuesta sugerida) + Campos del Excel o creados a mano +
+   Adjuntos (archivos y enlaces a la nube). Ver Data/Comunicados/LogicaComunicados.cs. *@
+
+@if (verTodosAdj is int vtId && porId.TryGetValue(vtId, out var comVer))
+{
+    var todos = AdjuntosDe(vtId);
+    <EncabezadoPagina Titulo="@comVer.Consecutivo" Icono="comunicados" Subtitulo="@($"Adjuntos ({todos.Count})")" OnAtras="() => verTodosAdj = null" />
+    <div class="tabla-scroll tabla-auto"><table class="table table-sm table-bordered table-hover tabla-compacta align-middle mb-0 tabla-pin">
+        <thead><tr><th style="width:90px;">Tipo</th><th>Nombre</th><th>Dirección / archivo</th><th style="width:130px;">Cargado</th><th style="width:130px;"></th></tr></thead>
+        <tbody>
+            @foreach (var a in todos)
+            {
+                var adj = a;
+                <tr>
+                    <td class="small"><Ico Nombre="@(adj.Clase == AdjuntoComunicado.Nube ? "nube" : "documento")" /> @adj.Clase</td>
+                    <td class="small">@adj.Nombre</td>
+                    <td class="small text-truncate" style="max-width:420px;" title="@adj.Ruta">@(adj.Clase == AdjuntoComunicado.Nube ? adj.Ruta : Path.GetFileName(adj.Ruta))</td>
+                    <td class="small text-nowrap text-muted">@adj.FechaCarga.ToString("dd/MM/yyyy HH:mm")</td>
+                    <td class="text-nowrap">
+                        <a class="ens-mini" href="@adj.Ruta" target="_blank" rel="noopener" title="Abrir"><Ico Nombre="ubicar" /></a>
+                        @if (adj.Clase == AdjuntoComunicado.Archivo)
+                        {
+                            <a class="ens-mini" href="@adj.Ruta" download="@adj.Nombre" title="Descargar"><Ico Nombre="importar" /></a>
+                        }
+                        <button type="button" class="ens-mini" title="Eliminar (va a la Papelera)" @onclick="() => EliminarAdjunto(adj)"><Ico Nombre="eliminar" /></button>
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table></div>
+}
+else
+{
+<div class="@(pantallaCompleta ? "ens-pantalla" : "")">
+<EncabezadoPagina Titulo="Comunicados" Icono="comunicados" Subtitulo="@($"{comunicados.Count} comunicado{(comunicados.Count == 1 ? "" : "s")}")" OnAtras="AtrasPantalla">
+    <Acciones>
+        <button type="button" class="pg-btn @(pantallaCompleta ? "activo" : "")" title="@(pantallaCompleta ? "Salir de pantalla completa" : "Pantalla completa")" @onclick="() => pantallaCompleta = !pantallaCompleta"><Ico Nombre="pantalla-completa" /></button>
+        <button type="button" class="pg-btn @(verPanel ? "activo" : "")" title="@(verPanel ? "Ocultar filtros e indicadores" : "Mostrar filtros e indicadores")" @onclick="() => verPanel = !verPanel"><Ico Nombre="filtro" /></button>
+        <button type="button" class="pg-btn @(verGraficos ? "activo" : "")" title="@(verGraficos ? "Volver a la tabla" : "Gráficos")" @onclick="AlternarGraficos">📈</button>
+        <button type="button" class="pg-btn @(verRevision ? "activo" : "")" title="@($"Respuestas sugeridas ({conSugerencia.Count}) · códigos con espacios ({conEspacios.Count})")" disabled="@modoEdicion" @onclick="() => { verRevision = !verRevision; verAjustes = false; }">
+            <Ico Nombre="sugerencia" />@(conSugerencia.Count + conEspacios.Count > 0 ? $" {conSugerencia.Count + conEspacios.Count}" : "")
+        </button>
+        <button type="button" class="pg-btn @(verAjustes ? "activo" : "")" title="Ajustes (plazo y responsables)" disabled="@modoEdicion" @onclick="AbrirAjustes"><Ico Nombre="mantenimiento" /></button>
+        <button type="button" class="pg-btn @(verCargas ? "activo" : "")" title="@($"Cargas ({cargas.Count})")" disabled="@modoEdicion" @onclick="AlternarCargas"><Ico Nombre="cargas" />@(cargas.Count > 0 ? $" {cargas.Count}" : "")</button>
+        <span class="pg-sep"></span>
+        <BotonCampos Activo="verCampos" Deshabilitado="motor is null || modoEdicion" OnClick="() => verCampos = true" />
+        <button type="button" class="pg-btn @(mostrarImportar ? "activo" : "")" title="Importar listado (Excel)" disabled="@modoEdicion" @onclick="AlternarImportar"><Ico Nombre="cargar-excel" /></button>
+        <BotonExportar Titulo="Comunicados" Motor="motor" Filas="() => Mostrados.Select(m => m.Id)" Deshabilitado="motor is null" />
+        <span class="pg-sep"></span>
+        @if (!modoEdicion)
+        {
+            <button type="button" class="pg-btn pg-btn-peligro" title="Eliminar comunicado seleccionado" disabled="@(selId is null)" @onclick="PedirEliminar"><Ico Nombre="eliminar" /></button>
+            <button type="button" class="pg-btn" title="Editar" disabled="@(motor is null)" @onclick="EntrarEdicion"><Ico Nombre="editar" /></button>
+            <button type="button" class="pg-btn pg-btn-primario @(form is not null ? "activo" : "")" title="Nuevo comunicado" disabled="@(motor is null)" @onclick="Nuevo"><Ico Nombre="agregar" /></button>
+        }
+        else
+        {
+            <button type="button" class="pg-btn" title="Descartar cambios y salir de edición" @onclick="SalirEdicion"><Ico Nombre="cancelar" /></button>
+            <button type="button" class="pg-btn pg-btn-primario" title="Guardar cambios" disabled="@(cambios.Count == 0 || guardando)" @onclick="GuardarEdicion"><Ico Nombre="guardar" />@(cambios.Count > 0 ? $" {cambios.Count}" : "")</button>
+        }
+    </Acciones>
+</EncabezadoPagina>
+
+@if (verCampos && motor is not null)
+{
+    <PanelCampos Motor="motor" OnCerrar="() => verCampos = false" OnCambio="StateHasChanged" />
+}
+
+@if (!string.IsNullOrEmpty(mensaje))
+{
+    <div class="alert @(error ? "alert-warning" : "alert-success") py-1 px-2 small d-flex align-items-center gap-2">
+        <span class="flex-grow-1">@mensaje</span>
+        <button type="button" class="btn-close btn-sm" @onclick='() => mensaje = ""'></button>
+    </div>
+}
+
+@* ---------- Ajustes: plazo de respuesta y quién responde según el sentido ---------- *@
+@if (verAjustes)
+{
+    <div class="card panel-formulario mb-3">
+        <div class="card-body">
+            <div class="row g-2 align-items-end">
+                <div class="col-sm-3 col-lg-2">
+                    <label class="form-label mb-1 small">Plazo de respuesta (días)</label>
+                    <input type="number" min="0" class="form-control form-control-sm" @bind="ajPlazo" />
+                </div>
+                <div class="col-sm-4 col-lg-3">
+                    <label class="form-label mb-1 small">Responde los de salida</label>
+                    <input class="form-control form-control-sm" @bind="ajSalida" />
+                </div>
+                <div class="col-sm-4 col-lg-3">
+                    <label class="form-label mb-1 small">Responde los de entrada</label>
+                    <input class="form-control form-control-sm" @bind="ajEntrada" />
+                </div>
+                <div class="col-auto ms-auto d-flex gap-2">
+                    <button type="button" class="btn btn-secondary btn-sm" title="Cancelar" @onclick="() => verAjustes = false"><Ico Nombre="cancelar" /></button>
+                    <button type="button" class="btn btn-primary btn-sm" title="Guardar" @onclick="GuardarAjustes"><Ico Nombre="guardar" /></button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@* ---------- Revisión: respuestas sugeridas y códigos con espacios ---------- *@
+@if (verRevision)
+{
+    <div class="card panel-formulario mb-3">
+        <div class="card-body">
+            <div class="d-flex align-items-center gap-2 flex-wrap mb-2">
+                <div class="btn-group btn-group-sm" role="group">
+                    <button type="button" class="btn @(pestanaRevision == "sugerencias" ? "btn-dark" : "btn-outline-secondary")" title="Respuestas sugeridas" @onclick='() => pestanaRevision = "sugerencias"'><Ico Nombre="sugerencia" /> @conSugerencia.Count</button>
+                    <button type="button" class="btn @(pestanaRevision == "codigos" ? "btn-dark" : "btn-outline-secondary")" title="Códigos con espacios junto a los guiones" @onclick='() => pestanaRevision = "codigos"'><Ico Nombre="corregir" /> @conEspacios.Count</button>
+                </div>
+                <span class="ms-auto"></span>
+                @if (pestanaRevision == "sugerencias")
+                {
+                    <button type="button" class="btn btn-primary btn-sm" title="@($"Aceptar todas las sugerencias ({conSugerencia.Count})")" disabled="@(conSugerencia.Count == 0 || guardando)" @onclick="AceptarTodas"><Ico Nombre="aceptar" /> @conSugerencia.Count</button>
+                }
+                else
+                {
+                    <button type="button" class="btn btn-primary btn-sm" title="@($"Corregir todos ({conEspacios.Count})")" disabled="@(conEspacios.Count == 0 || guardando)" @onclick="CorregirCodigos"><Ico Nombre="corregir" /> @conEspacios.Count</button>
+                }
+            </div>
+            @if (pestanaRevision == "sugerencias")
+            {
+                if (conSugerencia.Count == 0) { <div class="text-muted small">—</div> }
+                else
+                {
+                    <div class="tabla-scroll" style="max-height:340px;">
+                        <table class="table table-sm table-bordered align-middle mb-0 com-sug-tabla">
+                            <thead><tr><th>Pendiente</th><th style="width:28px;"></th><th>Respuesta sugerida</th><th style="width:76px;"></th></tr></thead>
+                            <tbody>
+                                @foreach (var c in conSugerencia)
+                                {
+                                    var com = c;
+                                    var s = calc[com.Id].Sugerida!;
+                                    <tr>
+                                        <td class="small"><strong>@com.Consecutivo</strong> <span class="text-muted">· @com.Fecha?.ToString("dd/MM/yyyy") · @com.Sentido</span><div class="text-muted text-truncate" style="max-width:420px;" title="@com.Descripcion">@com.Descripcion</div></td>
+                                        <td class="text-center text-muted">→</td>
+                                        <td class="small"><strong>@s.Consecutivo</strong> <span class="text-muted">· @s.Fecha?.ToString("dd/MM/yyyy") · @s.Sentido</span><div class="text-muted text-truncate" style="max-width:420px;" title="@s.Descripcion">@s.Descripcion</div></td>
+                                        <td class="text-nowrap text-center">
+                                            <button type="button" class="ens-mini com-ok" title="Aceptar: queda como su respuesta" @onclick="() => AceptarSugerencia(com.Id)"><Ico Nombre="aceptar" /></button>
+                                            <button type="button" class="ens-mini" title="Descartar esta sugerencia" @onclick="() => DescartarSugerencia(com.Id)"><Ico Nombre="cancelar" /></button>
+                                        </td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                }
+            }
+            else
+            {
+                if (conEspacios.Count == 0) { <div class="text-muted small">—</div> }
+                else
+                {
+                    <div class="tabla-scroll" style="max-height:340px;">
+                        <table class="table table-sm table-bordered align-middle mb-0">
+                            <thead><tr><th>Consecutivo</th><th>Consecutivo RTA</th><th>Descripción</th></tr></thead>
+                            <tbody>
+                                @foreach (var c in conEspacios)
+                                {
+                                    <tr>
+                                        <td class="small @(LogicaComunicados.TieneEspaciosIndebidos(c.Consecutivo) ? "com-espacio" : "")">@c.Consecutivo</td>
+                                        <td class="small @(LogicaComunicados.TieneEspaciosIndebidos(c.ConsecutivoRespuesta) ? "com-espacio" : "")">@c.ConsecutivoRespuesta</td>
+                                        <td class="small @(LogicaComunicados.TieneEspaciosIndebidos(c.Descripcion) ? "com-espacio" : "")">@c.Descripcion</td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                }
+            }
+        </div>
+    </div>
+}
+
+@* ---------- Cargas (bases de datos Excel) ---------- *@
+@if (verCargas)
+{
+    <div class="card panel-formulario mb-3">
+        <div class="card-body">
+            @if (cargas.Count == 0) { <div class="text-muted small">—</div> }
+            else
+            {
+                <div class="tabla-scroll mb-2" style="max-height:280px;">
+                    <table class="table table-sm table-bordered align-middle mb-0">
+                        <thead>
+                            <tr>
+                                <th style="width:32px;"><input type="checkbox" class="form-check-input" title="Todas" checked="@(cargasSel.Count == cargas.Count)" @onchange="@(e => { cargasSel = (bool)e.Value! ? cargas.Select(c => c.Id).ToHashSet() : new(); elimCargas = null; })" /></th>
+                                <th>Archivo</th><th>Hoja</th><th>Fecha</th><th title="Comunicados nuevos">Nuevos</th><th title="Comunicados actualizados">Act.</th>
+                                <th style="width:40px;"></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var c in cargas)
+                            {
+                                var id = c.Id;
+                                <tr class="@(cargaFiltro == id ? "table-active" : "")">
+                                    <td><input type="checkbox" class="form-check-input" checked="@cargasSel.Contains(id)" @onchange="@(e => { if ((bool)e.Value!) cargasSel.Add(id); else cargasSel.Remove(id); elimCargas = null; })" /></td>
+                                    <td class="small">@c.NombreArchivo</td>
+                                    <td class="small">@c.Hoja</td>
+                                    <td class="small text-nowrap">@c.Fecha.ToString("dd/MM/yyyy HH:mm")</td>
+                                    <td class="small text-end">@c.FilasCreadas</td>
+                                    <td class="small text-end">@c.FilasActualizadas</td>
+                                    <td><button type="button" class="ens-mini @(cargaFiltro == id ? "activo" : "")" title="Ver solo esta carga" @onclick="() => cargaFiltro = cargaFiltro == id ? null : id"><Ico Nombre="ubicar" /></button></td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+                <div class="d-flex justify-content-end">
+                    <button type="button" class="btn btn-danger btn-sm" title="@($"Eliminar cargas seleccionadas ({cargasSel.Count})")" disabled="@(cargasSel.Count == 0)" @onclick="PedirEliminarCargas"><Ico Nombre="eliminar" /> @cargasSel.Count</button>
+                </div>
+            }
+            @if (elimCargas is not null)
+            {
+                <div class="border border-danger rounded p-2 mt-2">
+                    <PanelImpacto Informe="impactoCargas" OnEntendido="@(v => impactoCargasOk = v)" />
+                    <div class="d-flex gap-2">
+                        <button class="btn btn-secondary btn-sm" type="button" title="Cancelar" @onclick="() => elimCargas = null"><Ico Nombre="cancelar" /></button>
+                        <button class="btn btn-danger btn-sm" type="button" title="Eliminar (va a la Papelera)" disabled="@(impactoCargas is null || (impactoCargas.RequiereEntender && !impactoCargasOk))" @onclick="ConfirmarEliminarCargas"><Ico Nombre="eliminar" /></button>
+                    </div>
+                </div>
+            }
+        </div>
+    </div>
+}
+
+@if (mostrarImportar)
+{
+    <PanelImportarExcel Destinos="DestinosImportacion" Importando="importando" OnImportar="ImportarExcel" OnCancelar="() => mostrarImportar = false" />
+}
+
+@* ---------- Nuevo comunicado ---------- *@
+@if (form is not null && motor is not null)
+{
+    <FormularioSig Titulo="Nuevo comunicado" Icono="agregar" Clase="mb-3" OnCerrar="() => form = null">
+        <ChildContent>
+            <SeccionFormulario Titulo="Identificación">
+                <CampoFormulario Etiqueta="Consecutivo" Ancho="col-md-4" Obligatorio="true" Destacado="true"><input class="form-control" @bind="form.Consecutivo" @bind:event="oninput" /></CampoFormulario>
+                <CampoFormulario Etiqueta="Fecha" Ancho="col-md-2"><input type="date" class="form-control" @bind="form.Fecha" /></CampoFormulario>
+                <CampoFormulario Etiqueta="Entrada / Salida" Ancho="col-md-2">
+                    <select class="form-select" @bind="form.Sentido"><option value=""></option><option>@LogicaComunicados.Entrada</option><option>@LogicaComunicados.Salida</option></select>
+                </CampoFormulario>
+                <CampoFormulario Etiqueta="Tipo" Ancho="col-md-2"><input class="form-control" list="dl-com-tipo" @bind="form.Tipo" /></CampoFormulario>
+                <CampoFormulario Etiqueta="Remitente" Ancho="col-md-2"><input class="form-control" list="dl-com-rem" @bind="form.Remitente" /></CampoFormulario>
+            </SeccionFormulario>
+            <SeccionFormulario Titulo="Contenido">
+                <CampoFormulario Etiqueta="Descripción" Ancho="col-md-7"><textarea class="form-control" rows="3" @bind="form.Descripcion"></textarea></CampoFormulario>
+                <CampoFormulario Etiqueta="Observaciones" Ancho="col-md-5"><textarea class="form-control" rows="3" @bind="form.Observaciones"></textarea></CampoFormulario>
+            </SeccionFormulario>
+            <SeccionFormulario Titulo="Respuesta">
+                <CampoFormulario Etiqueta="Requiere respuesta" Ancho="col-md-2">
+                    <select class="form-select" @bind="form.Requiere"><option value=""></option><option value="SI">Sí</option><option value="NO">No</option></select>
+                </CampoFormulario>
+                <CampoFormulario Etiqueta="Responsable de RTA" Ancho="col-md-4"><SelectorEtiquetas Valor="@form.ResponsableRta" Opciones="areasTodas" OnCambio="@(v => form.ResponsableRta = v)" /></CampoFormulario>
+                <CampoFormulario Etiqueta="Consecutivo RTA" Ancho="col-md-3"><input class="form-control" @bind="form.ConsecutivoRta" /></CampoFormulario>
+                <CampoFormulario Etiqueta="Fecha respuesta" Ancho="col-md-3"><input type="date" class="form-control" @bind="form.FechaRta" /></CampoFormulario>
+            </SeccionFormulario>
+            @if (CamposEditables.Any())
+            {
+                <SeccionFormulario Titulo="Campos adicionales">
+                    @foreach (var c in CamposEditables)
+                    {
+                        var campo = c;
+                        <CampoFormulario Etiqueta="@campo.Nombre" Ancho="col-md-3">
+                            @EntradaCampo(campo, form.Campos.TryGetValue(campo.Id, out var v) ? v : null, val => form.Campos[campo.Id] = val)
+                        </CampoFormulario>
+                    }
+                </SeccionFormulario>
+            }
+        </ChildContent>
+        <Acciones>
+            <button type="button" class="btn btn-secondary btn-sm" title="Cancelar" @onclick="() => form = null"><Ico Nombre="cancelar" /></button>
+            <button type="button" class="btn btn-primary btn-sm" title="Guardar" disabled="@(guardando || string.IsNullOrWhiteSpace(form.Consecutivo))" @onclick="GuardarNuevo"><Ico Nombre="guardar" /></button>
+        </Acciones>
+    </FormularioSig>
+}
+<datalist id="dl-com-tipo">@foreach (var o in Sugerencias(c => c.Tipo)) { <option value="@o"></option> }</datalist>
+<datalist id="dl-com-rem">@foreach (var o in Sugerencias(c => c.Remitente)) { <option value="@o"></option> }</datalist>
+<datalist id="dl-com-area">@foreach (var o in areasTodas) { <option value="@o"></option> }</datalist>
+
+@if (elimId is int eid && porId.TryGetValue(eid, out var comElim))
+{
+    <div class="card panel-formulario mb-3 border-danger">
+        <div class="card-body">
+            <div class="mb-2"><Ico Nombre="eliminar" /> <strong>@comElim.Consecutivo</strong> <span class="text-muted small">@comElim.Descripcion</span></div>
+            <PanelImpacto Informe="impacto" OnEntendido="@(v => impactoOk = v)" />
+            <div class="d-flex gap-2">
+                <button class="btn btn-secondary btn-sm" type="button" title="Cancelar" @onclick="() => elimId = null"><Ico Nombre="cancelar" /></button>
+                <button class="btn btn-danger btn-sm" type="button" title="Eliminar (va a la Papelera)" disabled="@(impacto is null || (impacto.RequiereEntender && !impactoOk))" @onclick="ConfirmarEliminar"><Ico Nombre="eliminar" /></button>
+            </div>
+        </div>
+    </div>
+}
+
+@if (verPanel)
+{
+@* ---------- Filtros ---------- *@
+<div class="mpie-barra mb-2 com-filtros">
+    <input class="form-control form-control-sm" style="max-width:240px;" placeholder="Buscar consecutivo, descripción…" @bind="filtro" @bind:event="oninput" />
+    <select class="form-select form-select-sm" style="max-width:150px;" title="Periodo" value="@periodo" @onchange="CambiarPeriodo">
+        <option value="">Todo el tiempo</option>
+        <option value="mes">Este mes</option>
+        <option value="30">Últimos 30 días</option>
+        <option value="90">Últimos 90 días</option>
+        <option value="anio">Este año</option>
+        <option value="rango">Rango…</option>
+    </select>
+    @if (periodo == "rango")
+    {
+        <input type="date" class="form-control form-control-sm" style="max-width:140px;" title="Desde" @bind="desde" />
+        <input type="date" class="form-control form-control-sm" style="max-width:140px;" title="Hasta" @bind="hasta" />
+    }
+    <select class="form-select form-select-sm" style="max-width:130px;" title="Entrada / Salida" @bind="fSentido">
+        <option value="">Entrada y salida</option><option>@LogicaComunicados.Entrada</option><option>@LogicaComunicados.Salida</option>
+    </select>
+    <select class="form-select form-select-sm" style="max-width:130px;" title="Estado" @bind="fEstado">
+        <option value="">Todo estado</option><option>@LogicaComunicados.Pendiente</option><option>@LogicaComunicados.Cerrado</option><option>@LogicaComunicados.NA</option>
+    </select>
+    <select class="form-select form-select-sm" style="max-width:130px;" title="Plazo" @bind="fPlazo">
+        <option value="">Todo plazo</option><option>@LogicaComunicados.ATiempo</option><option>@LogicaComunicados.Vencida</option>
+    </select>
+    <select class="form-select form-select-sm" style="max-width:150px;" title="Responsable" @bind="fResponsable">
+        <option value="">Todo responsable</option>
+        @foreach (var o in calc.Values.Select(x => x.Responsable).Where(x => x != "").Distinct().OrderBy(x => x)) { <option value="@o">@o</option> }
+    </select>
+    <select class="form-select form-select-sm" style="max-width:170px;" title="Responsable de RTA (área)" @bind="fArea">
+        <option value="">Toda área</option>
+        @foreach (var o in areasTodas) { <option value="@o">@o</option> }
+    </select>
+    <button type="button" class="btn btn-sm @(soloSugeridas ? "btn-dark" : "btn-outline-secondary")" title="Solo con respuesta sugerida" @onclick="() => soloSugeridas = !soloSugeridas"><Ico Nombre="sugerencia" /></button>
+    <button type="button" class="btn btn-sm @(soloRepetidos ? "btn-dark" : "btn-outline-secondary")" title="Solo consecutivos repetidos" @onclick="() => soloRepetidos = !soloRepetidos">⧉</button>
+    @if (cargaFiltro is int cf && cargas.FirstOrDefault(c => c.Id == cf) is { } cg)
+    {
+        <span class="rg-chip"><Ico Nombre="cargas" /> @cg.NombreArchivo <button type="button" class="rg-chip-x" title="Quitar" @onclick="() => cargaFiltro = null">✕</button></span>
+    }
+    @if (HayFiltros)
+    {
+        <button type="button" class="btn btn-sm btn-outline-secondary" title="Quitar filtros" @onclick="LimpiarFiltros">✕</button>
+    }
+    <span class="text-muted small ms-auto">@Mostrados.Count() / @comunicados.Count</span>
+</div>
+
+@* ---------- Indicadores (de lo filtrado; clic = filtrar) ---------- *@
+var ind = Indicadores();
+<div class="com-kpis mb-2">
+    <button type="button" class="com-kpi" title="Comunicados mostrados" @onclick="QuitarEstadoPlazo"><span class="com-kpi-n">@ind.Total</span><span class="com-kpi-t">Comunicados</span></button>
+    <button type="button" class="com-kpi" title="Requieren respuesta" @onclick="QuitarEstadoPlazo"><span class="com-kpi-n">@ind.Requieren</span><span class="com-kpi-t">Requieren respuesta</span></button>
+    <button type="button" class="com-kpi com-kpi-verde @(fEstado == LogicaComunicados.Cerrado ? "activo" : "")" @onclick="() => AlternarEstado(LogicaComunicados.Cerrado)"><span class="com-kpi-n">@ind.Cerrados</span><span class="com-kpi-t">Cerrados</span></button>
+    <button type="button" class="com-kpi com-kpi-ambar @(fEstado == LogicaComunicados.Pendiente ? "activo" : "")" @onclick="() => AlternarEstado(LogicaComunicados.Pendiente)"><span class="com-kpi-n">@ind.Pendientes</span><span class="com-kpi-t">Pendientes</span></button>
+    <button type="button" class="com-kpi com-kpi-rojo @(fPlazo == LogicaComunicados.Vencida ? "activo" : "")" @onclick="AlternarVencidas"><span class="com-kpi-n">@ind.Vencidas</span><span class="com-kpi-t">Vencidas</span></button>
+    <div class="com-kpi com-kpi-fijo"><span class="com-kpi-n">@(ind.PctATiempo is double p ? $"{p:0}%" : "—")</span><span class="com-kpi-t">A tiempo</span></div>
+    <div class="com-kpi com-kpi-fijo"><span class="com-kpi-n">@(ind.PromedioDias is double d ? d.ToString("0.0") : "—")</span><span class="com-kpi-t">Días promedio</span></div>
+</div>
+}
+
+@* ---------- Gráficos (de lo filtrado). Con los gráficos abiertos no se muestra la tabla. ---------- *@
+@if (verGraficos)
+{
+    <div class="com-graficos mb-3">
+        @GraficoCaja("com-g-mes", TituloMes, "comunicados:mes", true)
+        @GraficoCaja("com-g-estado", "Estado", "comunicados:estado", false)
+        @GraficoCaja("com-g-tiempo", "Tiempo promedio de respuesta (días)", "comunicados:tiempo", true)
+        @GraficoCaja("com-g-plazo", "Plazo de respuesta", "comunicados:plazo", false)
+        @GraficoCaja("com-g-resp", "Por responsable", "comunicados:responsable", false)
+        @GraficoCaja("com-g-tresp", "Tiempo promedio por responsable", "comunicados:tiempo-responsable", false)
+        @GraficoCaja("com-g-area", "Por área (Responsable de RTA)", "comunicados:area", true)
+    </div>
+}
+else
+{
+    var nMostrados = Mostrados.Count();
+    @if (nMostrados > limite)
+    {
+        @* Solo se dibujan las primeras filas (rápido con miles de comunicados); el resto, a pedido. *@
+        <div class="com-mas-filas">
+            <span>@limite.ToString("N0") de @nMostrados.ToString("N0")</span>
+            <button type="button" class="btn btn-sm btn-outline-secondary" title="Mostrar 500 filas más" @onclick="() => limite += 500">＋ 500</button>
+            <button type="button" class="btn btn-sm btn-outline-secondary" title="Mostrar todas las filas" @onclick="() => limite = int.MaxValue">Todas</button>
+        </div>
+    }
+<div class="tabla-scroll tabla-auto"><table class="table table-sm table-bordered @(modoEdicion ? "" : "table-hover") tabla-compacta align-middle mb-0 tabla-pin tabla-docs @(modoEdicion ? "doc-editando" : "")">
+    <thead>
+        <tr>
+            @foreach (var c in Columnas)
+            {
+                if (modoEdicion)
+                {
+                    @* En edición: el borde derecho del encabezado se arrastra para cambiar el ancho de la columna. *@
+                    <th style="@Ancho(c)"><div class="th-redim" title="Arrastra la esquina para cambiar el ancho">@c.Nombre</div></th>
+                }
+                else
+                {
+                    <th class="th-ordenable" style="@Ancho(c)" @onclick="() => OrdenarPor(c.Clave)">@c.Nombre@(Flecha(c.Clave))</th>
+                }
+            }
+        </tr>
+    </thead>
+    <tbody>
+        @if (motor is not null)
+        {
+            @foreach (var m in Mostrados.Take(limite))
+            {
+                var com = m;
+                var id = m.Id;
+                <tr class="@(!modoEdicion && selId == id ? "table-active" : "")" @onclick="() => { if (!modoEdicion) selId = id; }">
+                    @foreach (var c in Columnas)
+                    {
+                        var campo = c;
+                        var nat = campo.Origen == OrigenCampoTabla.Nativo;
+                        if (nat && campo.Clave == ColAdjuntos)
+                        {
+                            <td class="text-center">@CeldaAdjuntos(id)</td>
+                        }
+                        else if (nat && campo.Clave == ColSugerida && !modoEdicion)
+                        {
+                            <td class="small">@CeldaSugerida(com)</td>
+                        }
+                        else if (modoEdicion && EsEditable(campo))
+                        {
+                            <td class="small p-0 @(cambios.ContainsKey((id, ClaveCambio(campo))) ? "doc-cambio" : "")">@EntradaEdicion(com, campo)</td>
+                        }
+                        else if (nat && !string.IsNullOrWhiteSpace(filtro) && ColumnasResaltables.Contains(campo.Clave) && Motor.Estilo(id, campo) is null)
+                        {
+                            <td class="small @(campo.Clave == "Descripcion" ? "rg-multi" : "")">@Resaltar(Motor.Texto(id, campo, out _))</td>
+                        }
+                        else
+                        {
+                            <CeldaCampo Motor="Motor" Campo="campo" Fila="id" SoloLectura="true" Clase="@(nat && campo.Clave is "Descripcion" or "Observaciones" ? "rg-multi" : null)" OnCambio="StateHasChanged" />
+                        }
+                    }
+                </tr>
+            }
+            @if (!Mostrados.Any())
+            {
+                <tr><td colspan="@Math.Max(1, Columnas.Count())" class="text-muted small text-center py-2"><em>Sin comunicados.</em></td></tr>
+            }
+        }
+    </tbody>
+</table></div>
+}
+@MenuAdjuntos()
+</div>
+}
+
+@code {
+    private const string Tabla = LogicaComunicados.Tabla;
+    private const string ColAdjuntos = "Adjuntos", ColSugerida = "Sugerida";
+    private const long MaxArchivo = 50L * 1024 * 1024;
+    private const int MaxMenu = 3;
+    private static readonly HashSet<string> ColumnasResaltables = new() { "Consecutivo", "Descripcion", "ConsecutivoRta", "Remitente", "Observaciones" };
+
+    private bool pantallaCompleta;
+    private EventCallback AtrasPantalla => pantallaCompleta ? EventCallback.Factory.Create(this, () => pantallaCompleta = false) : default;
+
+    private List<Comunicado> comunicados = new();
+    private Dictionary<int, Comunicado> porId = new();
+    private Dictionary<int, LogicaComunicados.Calculo> calc = new();
+    private Dictionary<int, List<AdjuntoComunicado>> adjuntos = new();
+    private List<Comunicado> conSugerencia = new(), conEspacios = new();
+    private List<string> areasTodas = new();
+    // Valores del Excel de control (SGMTO. COMUNICADOS): plazo 8 días; SALIDA → INGETEC, ENTRADA → JEJ.
+    private static readonly LogicaComunicados.Ajustes AjustesExcel = new(8, "INGETEC", "JEJ");
+    private LogicaComunicados.Ajustes ajustes = AjustesExcel;
+    private int? selId;
+    private string mensaje = "";
+    private bool error, guardando;
+    private int limite = 500;
+
+    [SupplyParameterFromQuery(Name = "buscar")] public string? BuscarQ { get; set; }
+    // ?estado=…&plazo=…&responsable=… (tablero de inicio): llegan como filtros.
+    [SupplyParameterFromQuery(Name = "estado")] public string? EstadoQ { get; set; }
+    [SupplyParameterFromQuery(Name = "plazo")] public string? PlazoQ { get; set; }
+    [SupplyParameterFromQuery(Name = "responsable")] public string? ResponsableQ { get; set; }
+    private string? buscarAplicado, filtrosAplicados;
+    protected override void OnParametersSet()
+    {
+        var f = $"{EstadoQ}|{PlazoQ}|{ResponsableQ}";
+        if (f != filtrosAplicados)
+        {
+            filtrosAplicados = f;
+            if (!string.IsNullOrWhiteSpace(EstadoQ)) fEstado = EstadoQ;
+            if (!string.IsNullOrWhiteSpace(PlazoQ)) fPlazo = PlazoQ;
+            if (!string.IsNullOrWhiteSpace(ResponsableQ)) fResponsable = ResponsableQ;
+        }
+        if (BuscarQ == buscarAplicado) return;
+        buscarAplicado = BuscarQ;
+        if (!string.IsNullOrWhiteSpace(BuscarQ)) filtro = BuscarQ;
+    }
+
+    protected override void OnInitialized() => Cargar();
+
+    private void Cargar()
+    {
+        motorPendiente = true;
+        Db.ChangeTracker.Clear();
+        try
+        {
+            var cfg = Db.Configuracion.AsNoTracking().FirstOrDefault(c => c.Id == 1);
+            if (cfg is not null) ajustes = new(cfg.ComunicadosPlazoDias ?? AjustesExcel.PlazoDias,
+                string.IsNullOrWhiteSpace(cfg.ComunicadosRespondeSalida) ? AjustesExcel.RespondeSalida : cfg.ComunicadosRespondeSalida,
+                string.IsNullOrWhiteSpace(cfg.ComunicadosRespondeEntrada) ? AjustesExcel.RespondeEntrada : cfg.ComunicadosRespondeEntrada);
+            comunicados = Db.Comunicados.AsNoTracking().OrderBy(c => c.Fecha).ThenBy(c => c.Id).ToList();
+            var ids = comunicados.Select(c => c.Id).ToList();
+            adjuntos = Db.AdjuntosComunicado.AsNoTracking().Where(a => ids.Contains(a.ComunicadoId)).ToList()
+                .GroupBy(a => a.ComunicadoId).ToDictionary(g => g.Key, g => g.OrderBy(a => a.Clase).ThenByDescending(a => a.FechaCarga).ToList());
+            cargas = Db.CargasComunicados.AsNoTracking().OrderByDescending(c => c.Fecha).ToList();
+        }
+        catch (Exception ex) { comunicados = new(); adjuntos = new(); cargas = new(); mensaje = "No se pudo leer el listado (¿falta aplicar la migración?): " + ex.Message; error = true; }
+        porId = comunicados.ToDictionary(c => c.Id);
+        calc = LogicaComunicados.Calcular(comunicados, ajustes, DateTime.Today);
+        conSugerencia = comunicados.Where(c => calc[c.Id].Sugerida is not null).OrderByDescending(c => c.Fecha).ToList();
+        conEspacios = comunicados.Where(c => calc[c.Id].EspaciosIndebidos || LogicaComunicados.TieneEspaciosIndebidos(c.Descripcion)).ToList();
+        areasTodas = comunicados.SelectMany(c => LogicaComunicados.Areas(c.ResponsableRespuesta)).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(a => a).ToList();
+        cargasSel.RemoveWhere(id => cargas.All(c => c.Id != id));
+        if (cargaFiltro is int cf && cargas.All(c => c.Id != cf)) cargaFiltro = null;
+        if (selId is int s && !porId.ContainsKey(s)) selId = null;
+        firmaGraficos = null;
+    }
+
+    private List<AdjuntoComunicado> AdjuntosDe(int id) => adjuntos.TryGetValue(id, out var l) ? l : new();
+    private LogicaComunicados.Calculo Calc(int id) => calc.TryGetValue(id, out var c) ? c : new();
+    private IEnumerable<string> Sugerencias(Func<Comunicado, string?> f) =>
+        comunicados.Select(f).Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x!.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(x => x).Take(300);
+
+    // ---------- Campos (columnas propias + Excel + creadas) ----------
+    private MotorTabla? motor;
+    private MotorTabla Motor => motor!;
+    private bool verCampos, motorPendiente = true;
+    private string? colOrden;
+    private bool ordenAsc = true;
+
+    private IEnumerable<CampoTabla> Columnas => motor?.Visibles ?? Enumerable.Empty<CampoTabla>();
+    private IEnumerable<CampoTabla> CamposEditables => motor?.Ordenados.Where(c => c.Origen != OrigenCampoTabla.Nativo && !c.Calculado) ?? Enumerable.Empty<CampoTabla>();
+
+    private IEnumerable<ColumnaNativa> ColumnasNativas()
+    {
+        Comunicado? C(int id) => porId.TryGetValue(id, out var c) ? c : null;
+        var nombreCarga = cargas.ToDictionary(c => c.Id, c => c.NombreArchivo + (string.IsNullOrWhiteSpace(c.Hoja) ? "" : " › " + c.Hoja));
+        return new[]
+        {
+            new ColumnaNativa("Tipo", "Tipo", TipoCampoTabla.Texto, id => C(id)?.Tipo),
+            new ColumnaNativa("Remitente", "Remitente", TipoCampoTabla.Texto, id => C(id)?.Remitente),
+            new ColumnaNativa("Sentido", "Entrada / Salida", TipoCampoTabla.Texto, id => C(id)?.Sentido),
+            new ColumnaNativa("Consecutivo", "Consecutivo", TipoCampoTabla.Texto, id => C(id)?.Consecutivo),
+            new ColumnaNativa("Fecha", "Fecha", TipoCampoTabla.Fecha, id => C(id)?.Fecha),
+            new ColumnaNativa("Descripcion", "Descripción", TipoCampoTabla.Texto, id => C(id)?.Descripcion),
+            new ColumnaNativa("Requiere", "Requiere respuesta", TipoCampoTabla.Texto, id => C(id)?.RequiereRespuesta switch { true => "Sí", false => "No", _ => null }),
+            new ColumnaNativa("Estado", "Estado", TipoCampoTabla.Texto, id => Calc(id).Estado),
+            new ColumnaNativa("ConsecutivoRta", "Consecutivo RTA", TipoCampoTabla.Texto, id => C(id)?.ConsecutivoRespuesta),
+            new ColumnaNativa(ColSugerida, "Respuesta sugerida", TipoCampoTabla.Texto, id => Calc(id).Sugerida?.Consecutivo),
+            new ColumnaNativa("FechaRta", "Fecha respuesta", TipoCampoTabla.Fecha, id => Calc(id).FechaRespuesta),
+            new ColumnaNativa("Dias", "Tiempo transcurrido (días)", TipoCampoTabla.Numero, id => Calc(id).Dias),
+            new ColumnaNativa("Plazo", "Plazo", TipoCampoTabla.Texto, id => Calc(id).Plazo),
+            new ColumnaNativa("ResponsableRta", "Responsable de RTA", TipoCampoTabla.Texto, id => C(id)?.ResponsableRespuesta),
+            new ColumnaNativa("Observaciones", "Observaciones", TipoCampoTabla.Texto, id => C(id)?.Observaciones),
+            new ColumnaNativa("Responsable", "Responsable", TipoCampoTabla.Texto, id => Calc(id).Responsable),
+            new ColumnaNativa(ColAdjuntos, "Adjuntos", TipoCampoTabla.Numero, id => (double)AdjuntosDe(id).Count),
+            new ColumnaNativa("Carga", "Carga", TipoCampoTabla.Texto, id => C(id)?.CargaComunicadosId is int k && nombreCarga.TryGetValue(k, out var n) ? n : null, visiblePorDefecto: false),
+        };
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (motorPendiente)
+        {
+            motorPendiente = false;
+            try
+            {
+                var primeraVez = !await Db.CamposTabla.AnyAsync(c => c.Tabla == Tabla);
+                motor = await MotorTabla.CargarAsync(Db, Tabla, ColumnasNativas(), comunicados.Select(c => (c.Id, c.Consecutivo)));
+                if (primeraVez) await SembrarFormatosAsync();
+            }
+            catch { motor = null; }
+            StateHasChanged();
+            return;
+        }
+        await DibujarGraficosAsync();
+    }
+
+    // La primera vez, los mismos formatos condicionales del Excel: consecutivo repetido, Estado y Plazo.
+    private async Task SembrarFormatosAsync()
+    {
+        if (motor is null) return;
+        async Task Regla(string clave, OperadorFormato op, string? valor, string estilo, string forma)
+        {
+            if (motor.PorClave(clave) is { } c)
+                await motor.GuardarFormatoAsync(Db, new FormatoCondicional { CampoTablaId = c.Id, Operador = op, Valor1 = valor, Estilo = estilo, Forma = forma, Negrita = forma == "pildora" });
+        }
+        await Regla("Consecutivo", OperadorFormato.Duplicado, null, "rojo-suave", "celda");
+        await Regla("Consecutivo", OperadorFormato.CodigoConEspacios, null, "amarillo-suave", "celda");
+        // Mismos colores del Excel: Pendiente/Vencida en rojo suave, Cerrado/A tiempo en verde suave.
+        await Regla("Estado", OperadorFormato.Igual, LogicaComunicados.Pendiente, "rojo-suave", "pildora");
+        await Regla("Estado", OperadorFormato.Igual, LogicaComunicados.Cerrado, "verde-suave", "pildora");
+        await Regla("Estado", OperadorFormato.Igual, LogicaComunicados.NA, "gris-suave", "pildora");
+        await Regla("Plazo", OperadorFormato.Igual, LogicaComunicados.ATiempo, "verde-suave", "pildora");
+        await Regla("Plazo", OperadorFormato.Igual, LogicaComunicados.Vencida, "rojo-suave", "pildora");
+    }
+
+    private static string Ancho(CampoTabla c) => c.Origen != OrigenCampoTabla.Nativo ? "" : c.Clave switch
+    {
+        "Consecutivo" or "ConsecutivoRta" or ColSugerida => "min-width:170px;", "Descripcion" => "min-width:260px;",
+        "Fecha" or "FechaRta" => "width:96px;", "Estado" or "Plazo" => "width:100px;", ColAdjuntos => "width:70px;", _ => ""
+    };
+
+    private RenderFragment EntradaCampo(CampoTabla c, string? valor, Action<string?> alCambiar, string clase = "") => __builder =>
+    {
+        switch (c.Tipo)
+        {
+            case TipoCampoTabla.Numero:
+                <input type="number" step="any" class="form-control form-control-sm @clase" value="@valor" @onchange="@(e => alCambiar(e.Value?.ToString()))" />
+                break;
+            case TipoCampoTabla.Fecha:
+                <input type="date" class="form-control form-control-sm @clase" value="@valor" @onchange="@(e => alCambiar(e.Value?.ToString()))" />
+                break;
+            case TipoCampoTabla.Lista:
+                <select class="form-select form-select-sm @clase" value="@valor" @onchange="@(e => alCambiar(e.Value?.ToString()))">
+                    <option value=""></option>
+                    @foreach (var o in motor!.OpcionesDe(c)) { <option value="@o">@o</option> }
+                </select>
+                break;
+            case TipoCampoTabla.SiNo:
+                <div class="text-center"><input type="checkbox" class="form-check-input" checked="@(valor == "1")" @onchange="@(e => alCambiar((bool)e.Value! ? "1" : "0"))" /></div>
+                break;
+            default:
+                if (clase.Contains("cc-input"))
+                {
+                    <textarea class="form-control form-control-sm @clase cc-ajusta" rows="1" @onchange="@(e => alCambiar(e.Value?.ToString()))">@valor</textarea>
+                }
+                else
+                {
+                    <input class="form-control form-control-sm @clase" value="@valor" @onchange="@(e => alCambiar(e.Value?.ToString()))" />
+                }
+                break;
+        }
+    };
+
+    // Texto con lo buscado resaltado (como el filtro del Excel).
+    private RenderFragment Resaltar(string texto) => __builder =>
+    {
+        var q = filtro.Trim();
+        var i = string.IsNullOrEmpty(q) ? -1 : texto.IndexOf(q, StringComparison.OrdinalIgnoreCase);
+        if (i < 0) { <text>@texto</text> return; }
+        var antes = texto.Substring(0, i);
+        var marca = texto.Substring(i, q.Length);
+        var despues = texto.Substring(i + q.Length);
+        <text>@antes<mark class="com-marca">@marca</mark>@despues</text>
+    };
+
+    // ---------- Filtros, orden e indicadores ----------
+    private string filtro = "", periodo = "", fSentido = "", fEstado = "", fPlazo = "", fResponsable = "", fArea = "";
+    private DateTime? desde, hasta;
+    private bool soloSugeridas, soloRepetidos;
+    private int? cargaFiltro;
+
+    private bool HayFiltros => filtro != "" || periodo != "" || fSentido != "" || fEstado != "" || fPlazo != "" || fResponsable != "" || fArea != ""
+                               || soloSugeridas || soloRepetidos || cargaFiltro is not null;
+
+    private void LimpiarFiltros()
+    {
+        filtro = periodo = fSentido = fEstado = fPlazo = fResponsable = fArea = "";
+        desde = hasta = null; soloSugeridas = soloRepetidos = false; cargaFiltro = null;
+    }
+
+    private void CambiarPeriodo(ChangeEventArgs e)
+    {
+        periodo = e.Value?.ToString() ?? "";
+        var hoy = DateTime.Today;
+        (desde, hasta) = periodo switch
+        {
+            "mes" => (new DateTime(hoy.Year, hoy.Month, 1), (DateTime?)hoy),
+            "30" => (hoy.AddDays(-30), hoy),
+            "90" => (hoy.AddDays(-90), hoy),
+            "anio" => (new DateTime(hoy.Year, 1, 1), hoy),
+            "rango" => (desde, hasta),
+            _ => ((DateTime?)null, (DateTime?)null)
+        };
+    }
+
+    private void AlternarEstado(string e) { fEstado = fEstado == e ? "" : e; }
+    private void AlternarVencidas() { fPlazo = fPlazo == LogicaComunicados.Vencida ? "" : LogicaComunicados.Vencida; }
+    private void QuitarEstadoPlazo() { fEstado = ""; fPlazo = ""; }
+
+    private IEnumerable<Comunicado> Filtrados => comunicados.Where(c =>
+    {
+        var k = Calc(c.Id);
+        if (cargaFiltro is not null && c.CargaComunicadosId != cargaFiltro) return false;
+        if (desde is DateTime d0 && (c.Fecha is null || c.Fecha.Value.Date < d0.Date)) return false;
+        if (hasta is DateTime d1 && (c.Fecha is null || c.Fecha.Value.Date > d1.Date)) return false;
+        if (fSentido != "" && c.Sentido != fSentido) return false;
+        if (fEstado != "" && k.Estado != fEstado) return false;
+        if (fPlazo != "" && k.Plazo != fPlazo) return false;
+        if (fResponsable != "" && k.Responsable != fResponsable) return false;
+        if (fArea != "" && !LogicaComunicados.Areas(c.ResponsableRespuesta).Contains(fArea, StringComparer.OrdinalIgnoreCase)) return false;
+        if (soloSugeridas && k.Sugerida is null) return false;
+        if (soloRepetidos && !k.CodigoDuplicado) return false;
+        if (filtro.Trim() is { Length: > 0 } q)
+        {
+            var t = string.Join(" ", c.Consecutivo, c.Descripcion, c.ConsecutivoRespuesta, c.Remitente, c.Observaciones, c.ResponsableRespuesta, k.Plazo);
+            if (!t.Contains(q, StringComparison.OrdinalIgnoreCase)
+                && !LogicaComunicados.Clave(t).Contains(LogicaComunicados.Clave(q))
+                && !(motor is not null && motor.TextoBusqueda(c.Id).Contains(q, StringComparison.OrdinalIgnoreCase))) return false;
+        }
+        return true;
+    });
+
+    private IEnumerable<Comunicado> Mostrados
+    {
+        get
+        {
+            var q = Filtrados;
+            return motor is not null && colOrden is not null ? motor.Ordenar(q, c => c.Id, colOrden, ordenAsc) : q.OrderByDescending(c => c.Fecha).ThenByDescending(c => c.Id);
+        }
+    }
+
+    private void OrdenarPor(string clave) { if (colOrden == clave) ordenAsc = !ordenAsc; else { colOrden = clave; ordenAsc = true; } }
+    private string Flecha(string clave) => colOrden == clave ? (ordenAsc ? " ▲" : " ▼") : "";
+
+    private sealed record Ind(int Total, int Requieren, int Cerrados, int Pendientes, int Vencidas, double? PctATiempo, double? PromedioDias);
+
+    private Ind Indicadores()
+    {
+        var l = Filtrados.Select(c => (C: c, K: Calc(c.Id))).ToList();
+        var req = l.Where(x => x.C.RequiereRespuesta == true).ToList();
+        var conPlazo = req.Count(x => x.K.Plazo != "");
+        var aTiempo = req.Count(x => x.K.Plazo == LogicaComunicados.ATiempo);
+        var cerr = req.Where(x => x.K.Estado == LogicaComunicados.Cerrado && x.K.Dias is not null).Select(x => (double)x.K.Dias!.Value).ToList();
+        return new Ind(l.Count, req.Count, req.Count(x => x.K.Estado == LogicaComunicados.Cerrado), req.Count(x => x.K.Estado == LogicaComunicados.Pendiente),
+            req.Count(x => x.K.Plazo == LogicaComunicados.Vencida), conPlazo == 0 ? null : 100.0 * aTiempo / conPlazo, cerr.Count == 0 ? null : cerr.Average());
+    }
+
+    // ---------- Gráficos (Chart.js, js/graficoEnsayos.js: sigwebRenderGrafico) ----------
+    private bool verGraficos, agrupacionMes = true;
+    private bool verPanel = true;   // filtros e indicadores (botón del encabezado)
+    private string TituloMes => agrupacionMes ? "Comunicados por mes" : "Comunicados por año";
+
+    // Caja de un gráfico: título y botón "+" (elementos del gráfico: leyenda, etiquetas, ejes, títulos…).
+    private RenderFragment GraficoCaja(string id, string titulo, string clave, bool ancho) => __builder =>
+    {
+        <div class="com-grafico @(ancho ? "com-grafico-ancho" : "")">
+            <div class="com-grafico-cab">
+                <div class="com-grafico-tit">@titulo</div>
+                <button type="button" class="gx-mas" title="Elementos del gráfico" data-grafico="@id" data-clave="@clave" onclick="sigwebElementosGrafico(this)">+</button>
+            </div>
+            <div class="com-grafico-lienzo"><canvas id="@id"></canvas></div>
+        </div>
+    };
+    private string? firmaGraficos;
+
+    private void AlternarGraficos() { verGraficos = !verGraficos; firmaGraficos = null; }
+
+    private async Task DibujarGraficosAsync()
+    {
+        if (!verGraficos) return;
+        var l = Filtrados.Select(c => (C: c, K: Calc(c.Id))).ToList();
+        var firma = $"{l.Count}|{filtro}|{periodo}|{desde}|{hasta}|{fSentido}|{fEstado}|{fPlazo}|{fResponsable}|{fArea}|{soloSugeridas}|{soloRepetidos}|{cargaFiltro}|{comunicados.Count}";
+        if (firma == firmaGraficos) return;
+        firmaGraficos = firma;
+        var es = System.Globalization.CultureInfo.GetCultureInfo("es-CO");
+        const string Azul = "#2f6fdb", Naranja = "#f08a24", Verde = "#2e9e5b", Ambar = "#f2b705", Rojo = "#d64545", Gris = "#adb5bd";
+        object Barra(string nombre, IEnumerable<int> datos, string color) => new { label = nombre, data = datos.ToArray(), backgroundColor = color, borderRadius = 4, maxBarThickness = 38 };
+        object Opciones(bool apilado, bool horizontal = false) => new
+        {
+            responsive = true, maintainAspectRatio = false, indexAxis = horizontal ? "y" : "x",
+            plugins = new { legend = new { position = "bottom", labels = new { boxWidth = 12 } } },
+            scales = new { x = new { stacked = apilado, grid = new { display = horizontal } }, y = new { stacked = apilado, beginAtZero = true, ticks = new { precision = 0 }, grid = new { display = !horizontal } } }
+        };
+        object Dona(string[] etiquetas, int[] datos, string[] colores) => new
+        {
+            type = "doughnut",
+            data = new { labels = etiquetas, datasets = new[] { new { data = datos, backgroundColor = colores, borderWidth = 2, sigwebEtiquetas = true } } },
+            options = new { responsive = true, maintainAspectRatio = false, cutout = "62%", plugins = new { legend = new { position = "bottom", labels = new { boxWidth = 12 } } } }
+        };
+
+        // Por mes (o por año si el periodo es largo), entradas y salidas.
+        var fechas = l.Where(x => x.C.Fecha is not null).Select(x => x.C.Fecha!.Value).ToList();
+        var meses = fechas.Count == 0 ? 0 : ((fechas.Max().Year - fechas.Min().Year) * 12 + fechas.Max().Month - fechas.Min().Month + 1);
+        agrupacionMes = meses <= 36;
+        var claves = new List<DateTime>();
+        if (fechas.Count > 0)
+        {
+            var ini = agrupacionMes ? new DateTime(fechas.Min().Year, fechas.Min().Month, 1) : new DateTime(fechas.Min().Year, 1, 1);
+            var fin = fechas.Max();
+            for (var p = ini; p <= fin; p = agrupacionMes ? p.AddMonths(1) : p.AddYears(1)) claves.Add(p);
+        }
+        DateTime Grupo(DateTime f) => agrupacionMes ? new DateTime(f.Year, f.Month, 1) : new DateTime(f.Year, 1, 1);
+        int Cuenta(DateTime g, string sentido) => l.Count(x => x.C.Fecha is DateTime f && Grupo(f) == g && x.C.Sentido == sentido);
+        var etiquetasMes = claves.Select(g => agrupacionMes ? g.ToString("MMM yy", es) : g.Year.ToString()).ToArray();
+        await JS.InvokeVoidAsync("sigwebRenderGrafico", "com-g-mes", new
+        {
+            type = "bar",
+            data = new { labels = etiquetasMes, datasets = new[] { Barra(LogicaComunicados.Entrada, claves.Select(g => Cuenta(g, LogicaComunicados.Entrada)), Azul), Barra(LogicaComunicados.Salida, claves.Select(g => Cuenta(g, LogicaComunicados.Salida)), Naranja) } },
+            options = Opciones(true)
+        });
+
+        await JS.InvokeVoidAsync("sigwebRenderGrafico", "com-g-estado", Dona(
+            new[] { LogicaComunicados.Cerrado, LogicaComunicados.Pendiente, LogicaComunicados.NA },
+            new[] { l.Count(x => x.K.Estado == LogicaComunicados.Cerrado), l.Count(x => x.K.Estado == LogicaComunicados.Pendiente), l.Count(x => x.K.Estado == LogicaComunicados.NA) },
+            new[] { Verde, Ambar, Gris }));
+
+        await JS.InvokeVoidAsync("sigwebRenderGrafico", "com-g-plazo", Dona(
+            new[] { LogicaComunicados.ATiempo, LogicaComunicados.Vencida },
+            new[] { l.Count(x => x.K.Plazo == LogicaComunicados.ATiempo), l.Count(x => x.K.Plazo == LogicaComunicados.Vencida) },
+            new[] { Verde, Rojo }));
+
+        var resp = l.Select(x => x.K.Responsable).Where(r => r != "").Distinct().OrderBy(r => r).ToArray();
+        await JS.InvokeVoidAsync("sigwebRenderGrafico", "com-g-resp", new
+        {
+            type = "bar",
+            data = new
+            {
+                labels = resp,
+                datasets = new[]
+                {
+                    Barra(LogicaComunicados.Cerrado, resp.Select(r => l.Count(x => x.K.Responsable == r && x.K.Estado == LogicaComunicados.Cerrado)), Verde),
+                    Barra(LogicaComunicados.Pendiente, resp.Select(r => l.Count(x => x.K.Responsable == r && x.K.Estado == LogicaComunicados.Pendiente)), Ambar),
+                    Barra(LogicaComunicados.Vencida, resp.Select(r => l.Count(x => x.K.Responsable == r && x.K.Plazo == LogicaComunicados.Vencida)), Rojo),
+                }
+            },
+            options = Opciones(false)
+        });
+
+        // Tiempo promedio de respuesta: días de los comunicados ya respondidos (Cerrados), por mes de la
+        // fecha del comunicado y por responsable; la línea punteada es el plazo configurado.
+        var respondidos = l.Where(x => x.K.Estado == LogicaComunicados.Cerrado && x.K.Dias is not null && x.C.Fecha is not null).ToList();
+        var respTiempo = respondidos.Select(x => x.K.Responsable).Where(r => r != "").Distinct().OrderBy(r => r).ToList();
+        if (respTiempo.Count == 0 && respondidos.Count > 0) respTiempo.Add("");
+        string[] coloresResp = { Azul, Naranja, "#7a5cc7", "#16a3b8", Verde, Rojo };
+        object? Promedio(IEnumerable<int> dias) { var d = dias.ToList(); return d.Count == 0 ? null : Math.Round(d.Average(), 1); }
+        var seriesTiempo = respTiempo.Select((r, i) => (object)new
+        {
+            type = "line", label = r == "" ? "Promedio" : r, borderColor = coloresResp[i % coloresResp.Length], backgroundColor = coloresResp[i % coloresResp.Length],
+            data = claves.Select(g => Promedio(respondidos.Where(x => Grupo(x.C.Fecha!.Value) == g && (r == "" || x.K.Responsable == r)).Select(x => x.K.Dias!.Value))).ToArray(),
+            spanGaps = true, tension = 0.3, pointRadius = 3, borderWidth = 2
+        }).Append(new
+        {
+            type = "line", label = $"Plazo ({ajustes.PlazoDias} días)", borderColor = Rojo, backgroundColor = Rojo,
+            data = claves.Select(_ => (object?)ajustes.PlazoDias).ToArray(), spanGaps = true, tension = 0.0, pointRadius = 0, borderWidth = 1.5,
+            borderDash = new[] { 6, 4 }
+        }).ToArray();
+        await JS.InvokeVoidAsync("sigwebRenderGrafico", "com-g-tiempo", new
+        {
+            type = "line",
+            data = new { labels = etiquetasMes, datasets = seriesTiempo },
+            options = new
+            {
+                responsive = true, maintainAspectRatio = false,
+                plugins = new { legend = new { position = "bottom", labels = new { boxWidth = 12 } } },
+                scales = new { x = new { grid = new { display = false } }, y = new { beginAtZero = true, title = new { display = true, text = "días" } } }
+            }
+        });
+
+        // Por responsable: promedio de días de los respondidos y "edad" promedio de los pendientes.
+        var respProm = l.Select(x => x.K.Responsable).Where(r => r != "").Distinct().OrderBy(r => r).ToArray();
+        await JS.InvokeVoidAsync("sigwebRenderGrafico", "com-g-tresp", new
+        {
+            type = "bar",
+            data = new
+            {
+                labels = respProm,
+                datasets = new object[]
+                {
+                    new { label = "Respondidos (días a la respuesta)", data = respProm.Select(r => Promedio(l.Where(x => x.K.Responsable == r && x.K.Estado == LogicaComunicados.Cerrado && x.K.Dias is not null).Select(x => x.K.Dias!.Value))).ToArray(), backgroundColor = Verde, borderRadius = 4, maxBarThickness = 38, sigwebEtiquetas = true },
+                    new { label = "Pendientes (días sin respuesta)", data = respProm.Select(r => Promedio(l.Where(x => x.K.Responsable == r && x.K.Estado == LogicaComunicados.Pendiente && x.K.Dias is not null).Select(x => x.K.Dias!.Value))).ToArray(), backgroundColor = Ambar, borderRadius = 4, maxBarThickness = 38, sigwebEtiquetas = true },
+                }
+            },
+            options = Opciones(false)
+        });
+
+        var areas = l.SelectMany(x => LogicaComunicados.Areas(x.C.ResponsableRespuesta)).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(a => a).ToArray();
+        bool De(string area, (Comunicado C, LogicaComunicados.Calculo K) x) => LogicaComunicados.Areas(x.C.ResponsableRespuesta).Contains(area, StringComparer.OrdinalIgnoreCase);
+        await JS.InvokeVoidAsync("sigwebRenderGrafico", "com-g-area", new
+        {
+            type = "bar",
+            data = new
+            {
+                labels = areas,
+                datasets = new[]
+                {
+                    Barra(LogicaComunicados.Cerrado, areas.Select(a => l.Count(x => De(a, x) && x.K.Estado == LogicaComunicados.Cerrado)), Verde),
+                    Barra(LogicaComunicados.Pendiente, areas.Select(a => l.Count(x => De(a, x) && x.K.Estado == LogicaComunicados.Pendiente)), Ambar),
+                }
+            },
+            options = Opciones(true, horizontal: true)
+        });
+    }
+
+    // ---------- Respuesta sugerida (columna AUTO del Excel) ----------
+    private RenderFragment CeldaSugerida(Comunicado c) => __builder =>
+    {
+        var s = Calc(c.Id).Sugerida;
+        if (s is null) return;
+        <span class="com-sug" title="@($"{s.Consecutivo} · {s.Fecha:dd/MM/yyyy} · {s.Descripcion}")">
+            <Ico Nombre="sugerencia" /> <span class="com-sug-cod">@s.Consecutivo</span>
+            <button type="button" class="com-sug-btn com-ok" title="Aceptar: queda como su respuesta" @onclick:stopPropagation="true" @onclick="() => AceptarSugerencia(c.Id)"><Ico Nombre="aceptar" /></button>
+            <button type="button" class="com-sug-btn" title="Descartar esta sugerencia" @onclick:stopPropagation="true" @onclick="() => DescartarSugerencia(c.Id)">✕</button>
+        </span>
+    };
+
+    private async Task AceptarSugerencia(int id) => await AplicarSugerencias(new[] { id }, aceptar: true);
+    private async Task DescartarSugerencia(int id) => await AplicarSugerencias(new[] { id }, aceptar: false);
+    private async Task AceptarTodas() => await AplicarSugerencias(conSugerencia.Select(c => c.Id).ToList(), aceptar: true);
+
+    private async Task AplicarSugerencias(IReadOnlyCollection<int> ids, bool aceptar)
+    {
+        guardando = true;
+        try
+        {
+            var sug = ids.Where(i => Calc(i).Sugerida is not null).ToDictionary(i => i, i => Calc(i).Sugerida!.Consecutivo);
+            var ents = await Db.Comunicados.Where(c => sug.Keys.Contains(c.Id)).ToListAsync();
+            foreach (var e in ents)
+            {
+                if (aceptar) e.ConsecutivoRespuesta = sug[e.Id];
+                else e.SugerenciaDescartada = sug[e.Id];
+            }
+            await Db.SaveChangesAsync();
+            mensaje = aceptar ? $"{ents.Count} respuesta(s) aceptada(s)." : "Sugerencia descartada."; error = false;
+            Cargar();
+        }
+        catch (Exception ex) { mensaje = "No se pudo guardar: " + ex.Message; error = true; }
+        finally { guardando = false; }
+    }
+
+    // ---------- Códigos con espacios (scripts del Excel: detectar y corregir) ----------
+    private bool verRevision;
+    private string pestanaRevision = "sugerencias";
+
+    private async Task CorregirCodigos()
+    {
+        guardando = true;
+        try
+        {
+            var ids = conEspacios.Select(c => c.Id).ToList();
+            int n = 0;
+            foreach (var e in await Db.Comunicados.Where(c => ids.Contains(c.Id)).ToListAsync())
+            {
+                var antes = (e.Consecutivo, e.ConsecutivoRespuesta, e.Descripcion);
+                e.Consecutivo = LogicaComunicados.CorregirCodigos(e.Consecutivo);
+                if (e.ConsecutivoRespuesta is not null) e.ConsecutivoRespuesta = LogicaComunicados.CorregirCodigos(e.ConsecutivoRespuesta);
+                if (e.Descripcion is not null) e.Descripcion = LogicaComunicados.CorregirCodigos(e.Descripcion);
+                if (antes != (e.Consecutivo, e.ConsecutivoRespuesta, e.Descripcion)) n++;
+            }
+            await Db.SaveChangesAsync();
+            mensaje = $"Códigos corregidos en {n} comunicado(s)."; error = false;
+            Cargar();
+        }
+        catch (Exception ex) { mensaje = "No se pudo corregir: " + ex.Message; error = true; }
+        finally { guardando = false; }
+    }
+
+    // ---------- Ajustes ----------
+    private bool verAjustes;
+    private int ajPlazo = 8;
+    private string ajSalida = "", ajEntrada = "";
+
+    private void AbrirAjustes()
+    {
+        verAjustes = !verAjustes; verRevision = false;
+        ajPlazo = ajustes.PlazoDias; ajSalida = ajustes.RespondeSalida; ajEntrada = ajustes.RespondeEntrada;
+    }
+
+    private async Task GuardarAjustes()
+    {
+        try
+        {
+            var cfg = await Db.Configuracion.FirstOrDefaultAsync(c => c.Id == 1);
+            if (cfg is null) { cfg = new ConfiguracionEmpresa { Id = 1 }; Db.Configuracion.Add(cfg); }
+            cfg.ComunicadosPlazoDias = Math.Max(0, ajPlazo);
+            cfg.ComunicadosRespondeSalida = ajSalida.Trim();
+            cfg.ComunicadosRespondeEntrada = ajEntrada.Trim();
+            await Db.SaveChangesAsync();
+            verAjustes = false; mensaje = "Ajustes guardados."; error = false;
+            Cargar();
+        }
+        catch (Exception ex) { mensaje = "No se pudo guardar: " + ex.Message; error = true; }
+    }
+
+    // ---------- Adjuntos: archivos y enlaces a la nube ----------
+    private int? menuAdj, verTodosAdj;
+    private double menuX, menuY;
+    private string mensajeAdj = "";
+    private (int? Id, string Nombre, string Url)? formNube;   // Id null = enlace nuevo
+    private int? reemplazarAdj;
+    private AdjuntoComunicado? confirmarAdj;
+
+    private RenderFragment CeldaAdjuntos(int id) => __builder =>
+    {
+        var l = AdjuntosDe(id);
+        var nNube = l.Count(a => a.Clase == AdjuntoComunicado.Nube);
+        <button type="button" class="ens-mini @(l.Count > 0 ? "" : "opacity-50")" title="@(l.Count > 0 ? $"Adjuntos: {l.Count - nNube} archivo(s), {nNube} enlace(s)" : "Sin adjuntos")" disabled="@modoEdicion"
+                @onclick:stopPropagation="true" @onclick="@(e => AbrirMenuAdj(id, e))">
+            <Ico Nombre="@(l.Count > 0 && nNube == l.Count ? "nube" : "documento")" />@(l.Count > 0 ? $" {l.Count}" : "")
+        </button>
+    };
+
+    private void AbrirMenuAdj(int id, MouseEventArgs e)
+    {
+        if (menuAdj == id) { menuAdj = null; return; }
+        menuAdj = id; menuX = e.ClientX; menuY = e.ClientY; mensajeAdj = ""; formNube = null; reemplazarAdj = null; confirmarAdj = null;
+    }
+
+    private RenderFragment MenuAdjuntos() => __builder =>
+    {
+        if (menuAdj is not int id) return;
+        var l = AdjuntosDe(id);
+        var x = menuX.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        var y = (menuY + 8).ToString(System.Globalization.CultureInfo.InvariantCulture);
+        <div class="doc-menu-fondo" @onclick="() => menuAdj = null"></div>
+        <div class="doc-menu doc-menu-fijo" style="left:min(@(x)px, calc(100vw - 350px)); top:min(@(y)px, calc(100vh - 440px)); width:340px; max-height:430px; overflow:auto;">
+            <button type="button" class="doc-menu-op" @onclick="() => { menuAdj = null; verTodosAdj = id; }">
+                <Ico Nombre="listado" /> <span>Ver todos</span> <span class="text-muted ms-auto">@l.Count</span>
+            </button>
+            <div class="doc-menu-sep"></div>
+            <text>@SeccionAdj(id, AdjuntoComunicado.Archivo, l.Where(a => a.Clase == AdjuntoComunicado.Archivo).ToList())</text>
+            <text>@SeccionAdj(id, AdjuntoComunicado.Nube, l.Where(a => a.Clase == AdjuntoComunicado.Nube).ToList())</text>
+            @if (!string.IsNullOrEmpty(mensajeAdj)) { <div class="small text-danger px-2">@mensajeAdj</div> }
+        </div>
+    };
+
+    private RenderFragment SeccionAdj(int comId, string clase, List<AdjuntoComunicado> lista) => __builder =>
+    {
+        var esNube = clase == AdjuntoComunicado.Nube;
+        <div class="doc-menu-sec d-flex align-items-center gap-1">
+            <Ico Nombre="@(esNube ? "nube" : "documento")" />
+            <span>@(esNube ? "Nube" : "Archivos")@(lista.Count > MaxMenu ? $" ({MaxMenu} de {lista.Count})" : lista.Count > 0 ? $" ({lista.Count})" : "")</span>
+            @if (esNube)
+            {
+                <button type="button" class="ens-mini ms-auto" title="Agregar enlace (Drive, OneDrive, SharePoint…)" @onclick="() => formNube = (null, string.Empty, string.Empty)"><Ico Nombre="agregar" /></button>
+            }
+            else
+            {
+                <label class="ens-mini ms-auto mb-0" title="Cargar archivos"><Ico Nombre="agregar" /><InputFile class="d-none" multiple OnChange="@(e => CargarArchivos(comId, e))" /></label>
+            }
+        </div>
+        if (esNube && formNube is { Id: null }) { <text>@FormNube(comId)</text> }
+        if (lista.Count == 0 && !(esNube && formNube is { Id: null })) { <span class="doc-menu-op doc-menu-off"><Ico Nombre="@(esNube ? "enlace" : "documento")" /> <span>—</span></span> }
+        foreach (var a in lista.Take(MaxMenu))
+        {
+            var adj = a;
+            if (esNube && formNube is { Id: int fid } && fid == adj.Id) { <text>@FormNube(comId)</text> continue; }
+            <div class="doc-menu-fila">
+                <a class="doc-menu-op" href="@adj.Ruta" target="_blank" rel="noopener" title="@(esNube ? adj.Ruta : adj.Nombre)" @onclick="() => menuAdj = null">
+                    <Ico Nombre="@(esNube ? "enlace" : "documento")" /> <span class="text-truncate">@adj.Nombre</span>
+                </a>
+                @if (!esNube && reemplazarAdj == adj.Id)
+                {
+                    <label class="ens-mini mb-0 activo" title="Elegir el archivo nuevo"><Ico Nombre="adjuntar" /><InputFile class="d-none" OnChange="@(e => ReemplazarArchivo(adj, e))" /></label>
+                    <button type="button" class="ens-mini" title="Cancelar" @onclick="() => reemplazarAdj = null"><Ico Nombre="cancelar" /></button>
+                }
+                else
+                {
+                    <button type="button" class="ens-mini" title="@(esNube ? "Editar enlace" : "Editar (reemplazar archivo)")"
+                            @onclick="() => { if (esNube) formNube = (adj.Id, adj.Nombre, adj.Ruta); else reemplazarAdj = adj.Id; }"><Ico Nombre="editar" /></button>
+                    <button type="button" class="ens-mini" title="Eliminar" @onclick="() => confirmarAdj = adj"><Ico Nombre="eliminar" /></button>
+                }
+            </div>
+            if (confirmarAdj?.Id == adj.Id)
+            {
+                <div class="doc-menu-confirma">
+                    <div class="small mb-1"><Ico Nombre="eliminar" /> <strong>@adj.Nombre</strong></div>
+                    <div class="d-flex gap-1 justify-content-end">
+                        <button type="button" class="btn btn-secondary btn-sm" title="Cancelar" @onclick="() => confirmarAdj = null"><Ico Nombre="cancelar" /></button>
+                        <button type="button" class="btn btn-danger btn-sm" title="Eliminar (va a la Papelera)" @onclick="() => EliminarAdjunto(adj)"><Ico Nombre="eliminar" /></button>
+                    </div>
+                </div>
+            }
+        }
+    };
+
+    private RenderFragment FormNube(int comId) => __builder =>
+    {
+        if (formNube is not { } f) return;
+        <div class="com-nube-form">
+            <input class="form-control form-control-sm mb-1" placeholder="Nombre (p. ej. Carpeta en Drive)" value="@f.Nombre" @oninput="@(e => formNube = (f.Id, e.Value?.ToString() ?? "", formNube?.Url ?? ""))" />
+            <input class="form-control form-control-sm mb-1" placeholder="https://…" value="@f.Url" @oninput="@(e => formNube = (f.Id, formNube?.Nombre ?? "", e.Value?.ToString() ?? ""))" />
+            <div class="d-flex gap-1 justify-content-end">
+                <button type="button" class="btn btn-secondary btn-sm" title="Cancelar" @onclick="() => formNube = null"><Ico Nombre="cancelar" /></button>
+                <button type="button" class="btn btn-primary btn-sm" title="Guardar enlace" disabled="@string.IsNullOrWhiteSpace(f.Url)" @onclick="() => GuardarNube(comId)"><Ico Nombre="guardar" /></button>
+            </div>
+        </div>
+    };
+
+    // Dirección válida: http(s); sin esquema se le pone https://.
+    private static string? Url(string texto)
+    {
+        var t = texto.Trim();
+        if (t.Length == 0) return null;
+        if (!t.Contains("://")) t = "https://" + t;
+        return Uri.TryCreate(t, UriKind.Absolute, out var u) && (u.Scheme == Uri.UriSchemeHttps || u.Scheme == Uri.UriSchemeHttp) ? u.ToString() : null;
+    }
+
+    private static string NombreDeUrl(string url)
+    {
+        var host = Uri.TryCreate(url, UriKind.Absolute, out var u) ? u.Host.ToLowerInvariant() : "";
+        return host.Contains("drive.google") || host.Contains("docs.google") ? "Google Drive"
+            : host.Contains("sharepoint") ? "SharePoint" : host.Contains("onedrive") || host.Contains("1drv") ? "OneDrive"
+            : host.Contains("dropbox") ? "Dropbox" : host.Length > 0 ? host : "Enlace";
+    }
+
+    private async Task GuardarNube(int comId)
+    {
+        if (formNube is not { } f) return;
+        var url = Url(f.Url);
+        if (url is null) { mensajeAdj = "La dirección no es válida (debe empezar por https://)."; return; }
+        try
+        {
+            var nombre = string.IsNullOrWhiteSpace(f.Nombre) ? NombreDeUrl(url) : f.Nombre.Trim();
+            if (f.Id is int idEdit)
+            {
+                if (await Db.AdjuntosComunicado.FirstOrDefaultAsync(a => a.Id == idEdit) is { } ent) { ent.Nombre = nombre; ent.Ruta = url; }
+            }
+            else Db.AdjuntosComunicado.Add(new AdjuntoComunicado { ComunicadoId = comId, Clase = AdjuntoComunicado.Nube, Nombre = nombre, Ruta = url });
+            await Db.SaveChangesAsync();
+            formNube = null; mensajeAdj = "";
+            RecargarAdjuntos();
+        }
+        catch (Exception ex) { Db.ChangeTracker.Clear(); mensajeAdj = "No se pudo guardar: " + ex.Message; }
+    }
+
+    private async Task<string> GuardarArchivo(IBrowserFile archivo)
+    {
+        var carpeta = Path.Combine(Env.WebRootPath, "uploads", "comunicados");
+        Directory.CreateDirectory(carpeta);
+        var nombre = $"{Guid.NewGuid():N}{Path.GetExtension(archivo.Name)}";
+        await using (var s = archivo.OpenReadStream(MaxArchivo))
+        await using (var destino = File.Create(Path.Combine(carpeta, nombre)))
+            await s.CopyToAsync(destino);
+        return $"/uploads/comunicados/{nombre}";
+    }
+
+    private async Task CargarArchivos(int comId, InputFileChangeEventArgs e)
+    {
+        mensajeAdj = "";
+        var fallos = new List<string>();
+        foreach (var f in e.GetMultipleFiles(50))
+        {
+            if (f.Size > MaxArchivo) { fallos.Add($"{f.Name} (supera 50 MB)"); continue; }
+            try
+            {
+                Db.AdjuntosComunicado.Add(new AdjuntoComunicado { ComunicadoId = comId, Clase = AdjuntoComunicado.Archivo, Nombre = f.Name, Ruta = await GuardarArchivo(f) });
+                await Db.SaveChangesAsync();
+            }
+            catch (Exception ex) { Db.ChangeTracker.Clear(); fallos.Add($"{f.Name} ({ex.Message})"); }
+        }
+        if (fallos.Count > 0) mensajeAdj = "No se cargaron: " + string.Join("; ", fallos);
+        RecargarAdjuntos();
+    }
+
+    private async Task ReemplazarArchivo(AdjuntoComunicado a, InputFileChangeEventArgs e)
+    {
+        if (e.File.Size > MaxArchivo) { mensajeAdj = "El archivo supera 50 MB."; return; }
+        try
+        {
+            var ent = await Db.AdjuntosComunicado.FirstAsync(x => x.Id == a.Id);
+            var anterior = ent.Ruta;
+            ent.Ruta = await GuardarArchivo(e.File);
+            ent.Nombre = e.File.Name;
+            ent.FechaCarga = DateTime.Now;
+            await Db.SaveChangesAsync();
+            SigWeb.Data.Papelera.ProveedorPapeleraAdjuntosMaterial.BorrarFisico(Env, anterior);
+            reemplazarAdj = null;
+            RecargarAdjuntos();
+        }
+        catch (Exception ex) { Db.ChangeTracker.Clear(); mensajeAdj = "No se pudo reemplazar: " + ex.Message; }
+    }
+
+    private async Task EliminarAdjunto(AdjuntoComunicado a)
+    {
+        var ent = await Db.AdjuntosComunicado.FirstOrDefaultAsync(x => x.Id == a.Id);
+        if (ent is not null) { ent.Eliminado = true; ent.FechaEliminacion = DateTime.Now; await Db.SaveChangesAsync(); }
+        confirmarAdj = null;
+        mensaje = $"{a.Nombre} enviado a la Papelera."; error = false;
+        RecargarAdjuntos();
+    }
+
+    private void RecargarAdjuntos()
+    {
+        Db.ChangeTracker.Clear();
+        var ids = comunicados.Select(c => c.Id).ToList();
+        adjuntos = Db.AdjuntosComunicado.AsNoTracking().Where(a => ids.Contains(a.ComunicadoId)).ToList()
+            .GroupBy(a => a.ComunicadoId).ToDictionary(g => g.Key, g => g.OrderBy(a => a.Clase).ThenByDescending(a => a.FechaCarga).ToList());
+    }
+
+    // ---------- Edición de la tabla (solo con Editar; nada se guarda hasta Guardar) ----------
+    private bool modoEdicion;
+    private Dictionary<(int Fila, string Clave), string?> cambios = new();
+    private static readonly HashSet<string> NativasEditables = new() { "Tipo", "Remitente", "Sentido", "Consecutivo", "Fecha", "Descripcion", "Requiere", "ConsecutivoRta", "FechaRta", "ResponsableRta", "Observaciones" };
+
+    private static bool EsEditable(CampoTabla c) => c.Origen == OrigenCampoTabla.Nativo ? NativasEditables.Contains(c.Clave) : !c.Calculado;
+    private static string ClaveCambio(CampoTabla c) => c.Origen == OrigenCampoTabla.Nativo ? c.Clave : "c:" + c.Id;
+
+    private string? ValorActual(Comunicado c, CampoTabla campo) => campo.Origen != OrigenCampoTabla.Nativo ? motor?.Registro(c.Id, campo)?.Valor : campo.Clave switch
+    {
+        "Tipo" => c.Tipo, "Remitente" => c.Remitente, "Sentido" => c.Sentido, "Consecutivo" => c.Consecutivo,
+        "Fecha" => c.Fecha?.ToString("yyyy-MM-dd"), "Descripcion" => c.Descripcion,
+        "Requiere" => c.RequiereRespuesta switch { true => "SI", false => "NO", _ => null },
+        "ConsecutivoRta" => c.ConsecutivoRespuesta, "FechaRta" => c.FechaRespuesta?.ToString("yyyy-MM-dd"),
+        "ResponsableRta" => c.ResponsableRespuesta, "Observaciones" => c.Observaciones, _ => null
+    };
+
+    private string? ValorEdicion(Comunicado c, CampoTabla campo) => cambios.TryGetValue((c.Id, ClaveCambio(campo)), out var v) ? v : ValorActual(c, campo);
+
+    private void Cambiar(Comunicado c, CampoTabla campo, string? valor)
+    {
+        valor = string.IsNullOrWhiteSpace(valor) ? null : valor.Trim();
+        var k = (c.Id, ClaveCambio(campo));
+        if ((valor ?? "") == (ValorActual(c, campo) ?? "")) cambios.Remove(k); else cambios[k] = valor;
+    }
+
+    private RenderFragment EntradaEdicion(Comunicado c, CampoTabla campo) => __builder =>
+    {
+        var v = ValorEdicion(c, campo);
+        string? lista = campo.Clave switch { "Tipo" => "dl-com-tipo", "Remitente" => "dl-com-rem", "ResponsableRta" => "dl-com-area", _ => null };
+        if (campo.Origen != OrigenCampoTabla.Nativo) { <text>@EntradaCampo(campo, v, val => Cambiar(c, campo, val), "cc-input")</text> return; }
+        switch (campo.Clave)
+        {
+            case "Fecha":
+            case "FechaRta":
+                <input type="date" class="form-control form-control-sm cc-input" value="@v" @onchange="@(e => Cambiar(c, campo, e.Value?.ToString()))" />
+                break;
+            case "Sentido":
+                <select class="form-select form-select-sm cc-input" value="@v" @onchange="@(e => Cambiar(c, campo, e.Value?.ToString()))">
+                    <option value=""></option><option>@LogicaComunicados.Entrada</option><option>@LogicaComunicados.Salida</option>
+                </select>
+                break;
+            case "Requiere":
+                <select class="form-select form-select-sm cc-input" value="@v" @onchange="@(e => Cambiar(c, campo, e.Value?.ToString()))">
+                    <option value=""></option><option value="SI">Sí</option><option value="NO">No</option>
+                </select>
+                break;
+            case "ResponsableRta":
+                <SelectorEtiquetas Valor="@v" Opciones="areasTodas" Placeholder="" OnCambio="@(val => Cambiar(c, campo, val))" />
+                break;
+            case "Descripcion":
+            case "Observaciones":
+            case "Consecutivo":
+            case "ConsecutivoRta":
+                @* El texto se ajusta al ancho de la celda (crece hacia abajo). *@
+                <textarea class="form-control form-control-sm cc-input cc-ajusta" rows="1" @onchange="@(e => Cambiar(c, campo, e.Value?.ToString()))">@v</textarea>
+                break;
+            default:
+                <input class="form-control form-control-sm cc-input cc-ancho" value="@v" list="@lista" title="@v"
+                       @onchange="@(e => Cambiar(c, campo, e.Value?.ToString()))" />
+                break;
+        }
+    };
+
+    private void EntrarEdicion()
+    {
+        modoEdicion = true; cambios.Clear(); menuAdj = null;
+        mostrarImportar = false; verCargas = false; form = null; elimId = null; verCampos = false; verRevision = false; verAjustes = false; mensaje = "";
+    }
+
+    private void SalirEdicion() { modoEdicion = false; cambios.Clear(); }
+
+    private async Task GuardarEdicion()
+    {
+        if (motor is null || cambios.Count == 0) return;
+        if (cambios.Any(k => k.Key.Clave == "Consecutivo" && string.IsNullOrWhiteSpace(k.Value)))
+        { mensaje = "El consecutivo no puede quedar vacío."; error = true; return; }
+        guardando = true;
+        try
+        {
+            var filas = cambios.Keys.Select(k => k.Fila).Distinct().ToList();
+            var ents = await Db.Comunicados.Where(c => filas.Contains(c.Id)).ToDictionaryAsync(c => c.Id);
+            foreach (var ((fila, clave), valor) in cambios.Where(k => !k.Key.Clave.StartsWith("c:")))
+            {
+                if (!ents.TryGetValue(fila, out var e)) continue;
+                switch (clave)
+                {
+                    case "Tipo": e.Tipo = valor; break;
+                    case "Remitente": e.Remitente = valor; break;
+                    case "Sentido": e.Sentido = LogicaComunicados.Sentido(valor); break;
+                    case "Consecutivo": e.Consecutivo = valor ?? e.Consecutivo; break;
+                    case "Fecha": e.Fecha = FechaTexto.Parsear(valor); break;
+                    case "Descripcion": e.Descripcion = valor; break;
+                    case "Requiere": e.RequiereRespuesta = LogicaComunicados.SiNo(valor); break;
+                    case "ConsecutivoRta": e.ConsecutivoRespuesta = valor; break;
+                    case "FechaRta": e.FechaRespuesta = FechaTexto.Parsear(valor); break;
+                    case "ResponsableRta": e.ResponsableRespuesta = valor; break;
+                    case "Observaciones": e.Observaciones = valor; break;
+                }
+            }
+            await Db.SaveChangesAsync();
+            Db.ChangeTracker.Clear();
+            var porIdCampo = motor.Campos.ToDictionary(c => c.Id);
+            foreach (var ((fila, clave), valor) in cambios.Where(k => k.Key.Clave.StartsWith("c:")).ToList())
+                if (porIdCampo.TryGetValue(int.Parse(clave[2..]), out var campo)) await motor.GuardarValorAsync(Db, fila, campo, valor);
+            mensaje = $"{cambios.Count} cambio(s) guardado(s) en {filas.Count} comunicado(s)."; error = false;
+            modoEdicion = false; cambios.Clear();
+            Cargar();
+        }
+        catch (Exception ex) { Db.ChangeTracker.Clear(); mensaje = "No se pudo guardar: " + ex.Message; error = true; }
+        finally { guardando = false; }
+    }
+
+    // ---------- Nuevo comunicado ----------
+    private sealed class FormComunicado
+    {
+        public string? Consecutivo { get; set; }
+        public DateTime? Fecha { get; set; } = DateTime.Today;
+        public string? Sentido { get; set; }
+        public string? Tipo { get; set; }
+        public string? Remitente { get; set; }
+        public string? Descripcion { get; set; }
+        public string? Requiere { get; set; }
+        public string? ResponsableRta { get; set; }
+        public string? ConsecutivoRta { get; set; }
+        public DateTime? FechaRta { get; set; }
+        public string? Observaciones { get; set; }
+        public Dictionary<int, string?> Campos { get; } = new();
+    }
+
+    private FormComunicado? form;
+
+    private void Nuevo()
+    {
+        if (form is not null) { form = null; return; }
+        mostrarImportar = false; verCargas = false; elimId = null; mensaje = "";
+        form = new FormComunicado();
+    }
+
+    private async Task GuardarNuevo()
+    {
+        if (form is null || motor is null || string.IsNullOrWhiteSpace(form.Consecutivo)) return;
+        guardando = true;
+        try
+        {
+            var e = new Comunicado
+            {
+                Consecutivo = form.Consecutivo.Trim(), Fecha = form.Fecha, Sentido = LogicaComunicados.Sentido(form.Sentido),
+                Tipo = Limpio(form.Tipo), Remitente = Limpio(form.Remitente), Descripcion = Limpio(form.Descripcion),
+                RequiereRespuesta = LogicaComunicados.SiNo(form.Requiere), ResponsableRespuesta = Limpio(form.ResponsableRta),
+                ConsecutivoRespuesta = Limpio(form.ConsecutivoRta), FechaRespuesta = form.FechaRta, Observaciones = Limpio(form.Observaciones)
+            };
+            Db.Comunicados.Add(e);
+            await Db.SaveChangesAsync();
+            foreach (var c in CamposEditables.ToList())
+                if (form.Campos.TryGetValue(c.Id, out var v) && !string.IsNullOrWhiteSpace(v)) await motor.GuardarValorAsync(Db, e.Id, c, v);
+            selId = e.Id;
+            mensaje = $"Comunicado {e.Consecutivo} agregado."; error = false;
+            form = null;
+            Cargar();
+        }
+        catch (Exception ex) { Db.ChangeTracker.Clear(); mensaje = "No se pudo guardar: " + ex.Message; error = true; }
+        finally { guardando = false; }
+    }
+
+    private static string? Limpio(string? t) => string.IsNullOrWhiteSpace(t) ? null : t.Trim();
+
+    // ---------- Eliminar (Papelera, con sus adjuntos) ----------
+    private int? elimId;
+    private SigWeb.Data.Impacto.InformeImpacto? impacto;
+    private bool impactoOk;
+
+    private void PedirEliminar()
+    {
+        if (selId is not int id) return;
+        form = null; mostrarImportar = false; elimId = id; impacto = null; impactoOk = false;
+        _ = CalcularImpacto(id);
+    }
+
+    private async Task CalcularImpacto(int id)
+    {
+        try
+        {
+            using var scope = Scopes.CreateScope();
+            impacto = await scope.ServiceProvider.GetRequiredService<SigWeb.Data.Impacto.AnalizadorImpacto>().Comunicados(new[] { id });
+        }
+        catch { impacto = new SigWeb.Data.Impacto.InformeImpacto { Elemento = "No se pudo calcular el impacto" }; }
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task ConfirmarEliminar()
+    {
+        if (elimId is not int id) return;
+        var ahora = DateTime.Now; ahora = new DateTime(ahora.Year, ahora.Month, ahora.Day, ahora.Hour, ahora.Minute, ahora.Second);
+        var c = await Db.Comunicados.FirstOrDefaultAsync(x => x.Id == id);
+        if (c is not null)
+        {
+            c.Eliminado = true; c.FechaEliminacion = ahora;
+            foreach (var a in await Db.AdjuntosComunicado.Where(a => a.ComunicadoId == id).ToListAsync()) { a.Eliminado = true; a.FechaEliminacion = ahora; }
+            await Db.SaveChangesAsync();
+        }
+        mensaje = $"{c?.Consecutivo} enviado a la Papelera."; error = false;
+        elimId = null; selId = null;
+        Cargar();
+    }
+
+    // ---------- Cargas (bases de datos Excel) ----------
+    private bool verCargas, mostrarImportar, importando;
+    private List<CargaComunicados> cargas = new();
+    private HashSet<int> cargasSel = new();
+    private List<int>? elimCargas;
+    private SigWeb.Data.Impacto.InformeImpacto? impactoCargas;
+    private bool impactoCargasOk;
+
+    private void AlternarCargas() { verCargas = !verCargas; mostrarImportar = false; elimCargas = null; }
+    private void AlternarImportar() { mostrarImportar = !mostrarImportar; verCargas = false; form = null; mensaje = ""; }
+
+    private void PedirEliminarCargas()
+    {
+        if (cargasSel.Count == 0) return;
+        elimCargas = cargasSel.ToList(); impactoCargas = null; impactoCargasOk = false;
+        _ = CalcularImpactoCargas(elimCargas);
+    }
+
+    private async Task CalcularImpactoCargas(List<int> ids)
+    {
+        try
+        {
+            using var scope = Scopes.CreateScope();
+            impactoCargas = await scope.ServiceProvider.GetRequiredService<SigWeb.Data.Impacto.AnalizadorImpacto>().CargasComunicados(ids);
+        }
+        catch { impactoCargas = new SigWeb.Data.Impacto.InformeImpacto { Elemento = "No se pudo calcular el impacto" }; }
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task ConfirmarEliminarCargas()
+    {
+        if (elimCargas is null) return;
+        var ids = elimCargas;
+        // Misma marca de tiempo para la carga, sus comunicados y sus adjuntos: la Papelera los restaura juntos.
+        var ahora = DateTime.Now; ahora = new DateTime(ahora.Year, ahora.Month, ahora.Day, ahora.Hour, ahora.Minute, ahora.Second);
+        foreach (var c in await Db.CargasComunicados.Where(c => ids.Contains(c.Id)).ToListAsync()) { c.Eliminado = true; c.FechaEliminacion = ahora; }
+        var coms = await Db.Comunicados.Where(m => m.CargaComunicadosId != null && ids.Contains(m.CargaComunicadosId.Value)).ToListAsync();
+        var idsCom = coms.Select(c => c.Id).ToList();
+        foreach (var m in coms) { m.Eliminado = true; m.FechaEliminacion = ahora; }
+        foreach (var a in await Db.AdjuntosComunicado.Where(a => idsCom.Contains(a.ComunicadoId)).ToListAsync()) { a.Eliminado = true; a.FechaEliminacion = ahora; }
+        await Db.SaveChangesAsync();
+        mensaje = $"{ids.Count} carga(s) y {coms.Count} comunicado(s) enviados a la Papelera."; error = false;
+        elimCargas = null; cargasSel.Clear();
+        Cargar();
+    }
+
+    // ---------- Importar (Excel): cada columna a una propia, a un Campo, a uno nuevo o se omite ----------
+    private IReadOnlyList<DestinoColumna> DestinosImportacion =>
+        ImportadorComunicados.DestinosPropios
+            .Concat(CamposEditables.Select(c => new DestinoColumna($"c:{c.Id}", c.Nombre))).ToList();
+
+    private async Task ImportarExcel(ImportacionExcel imp)
+    {
+        mensaje = "";
+        if (imp.Filas.Count == 0) { mensaje = "No hay filas con datos para importar."; error = true; return; }
+        importando = true;
+        try
+        {
+            var nombres = (motor?.Campos ?? new()).ToDictionary(c => c.Id, c => c.Nombre);
+            var r = await ImportadorComunicados.ImportarAsync(Db, imp, nombres);
+            mensaje = $"{r.Creados} comunicado(s) nuevo(s), {r.Actualizados} actualizado(s)." + (r.Avisos.Count > 0 ? " " + string.Join(" ", r.Avisos) : "");
+            error = r.Avisos.Count > 0;
+            mostrarImportar = false;
+            Cargar();
+        }
+        catch (Exception ex) { Db.ChangeTracker.Clear(); mensaje = "No se pudo importar: " + ex.Message; error = true; }
+        finally { importando = false; }
+    }
+}

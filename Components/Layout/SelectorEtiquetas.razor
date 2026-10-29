@@ -1,0 +1,90 @@
+@* Varios valores libres en un solo texto separado por comas (p. ej. "SST, Técnica, Calidad"):
+   fichas con ✕ y una caja que sugiere los ya usados (datalist) y acepta valores nuevos con Enter,
+   al salir de la caja o al elegir una sugerencia (si se escriben varios separados por coma, se agregan todos). Devuelve el texto unido con ", " (null si queda vacío). *@
+<div class="sel-etq @Clase">
+    @foreach (var v in valores.ToList())
+    {
+        var val = v;
+        <span class="sel-etq-chip">@val<button type="button" class="sel-etq-x" title="Quitar" @onclick="() => Quitar(val)">✕</button></span>
+    }
+    <input class="sel-etq-in" list="@idLista" placeholder="@(valores.Count == 0 ? Placeholder : "")" value="@texto"
+           @oninput="AlEscribir" @onkeydown="AlTeclear" @onchange="AlCambiar" @onblur="AlSalir" />
+    <datalist id="@idLista">
+        @foreach (var o in Opciones.Where(o => !valores.Contains(o, StringComparer.OrdinalIgnoreCase)))
+        {
+            <option value="@o"></option>
+        }
+    </datalist>
+</div>
+
+@code {
+    [Parameter] public string? Valor { get; set; }
+    [Parameter] public IEnumerable<string> Opciones { get; set; } = Array.Empty<string>();
+    [Parameter] public EventCallback<string?> OnCambio { get; set; }
+    [Parameter] public string? Placeholder { get; set; } = "Agregar…";
+    [Parameter] public string? Clase { get; set; }
+
+    private readonly string idLista = "etq-" + Guid.NewGuid().ToString("N")[..8];
+    private List<string> valores = new();
+    private string texto = "";
+    private string? ultimoValor;
+
+    // Separadores aceptados al leer lo guardado (los mismos del Excel: coma, punto y coma, barra, salto de línea).
+    public static List<string> Leer(string? t) =>
+        (t ?? "").Split(new[] { ',', ';', '/', '\n' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(x => x.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+
+    protected override void OnParametersSet()
+    {
+        if (Valor == ultimoValor) return;
+        ultimoValor = Valor;
+        valores = Leer(Valor);
+    }
+
+    // Elegir una sugerencia del datalist llega como "input" con el valor completo de la sugerencia.
+    private async Task AlEscribir(ChangeEventArgs e)
+    {
+        texto = e.Value?.ToString() ?? "";
+        if (Opciones.Any(o => string.Equals(o, texto.Trim(), StringComparison.OrdinalIgnoreCase))) await Agregar(texto);
+    }
+
+    private async Task AlTeclear(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter") await Agregar(texto);
+        else if (e.Key == "Backspace" && texto.Length == 0 && valores.Count > 0) await Quitar(valores[^1]);
+    }
+
+    private async Task AlCambiar(ChangeEventArgs e)
+    {
+        var v = e.Value?.ToString() ?? "";
+        if (Opciones.Contains(v.Trim(), StringComparer.OrdinalIgnoreCase)) await Agregar(v);
+    }
+
+    private async Task AlSalir() { if (texto.Trim().Length > 0) await Agregar(texto); }
+
+    private async Task Agregar(string? t)
+    {
+        var nuevos = Leer(t);
+        texto = "";
+        if (nuevos.Count == 0) return;
+        foreach (var n in nuevos)
+        {
+            // Si ya existe con otra escritura (mayúsculas/tildes iguales), se usa la de las sugerencias.
+            var canon = Opciones.FirstOrDefault(o => string.Equals(o, n, StringComparison.OrdinalIgnoreCase)) ?? n;
+            if (!valores.Contains(canon, StringComparer.OrdinalIgnoreCase)) valores.Add(canon);
+        }
+        await Avisar();
+    }
+
+    private async Task Quitar(string v)
+    {
+        valores.RemoveAll(x => string.Equals(x, v, StringComparison.OrdinalIgnoreCase));
+        await Avisar();
+    }
+
+    private async Task Avisar()
+    {
+        ultimoValor = valores.Count == 0 ? null : string.Join(", ", valores);
+        await OnCambio.InvokeAsync(ultimoValor);
+    }
+}

@@ -1,0 +1,423 @@
+/* =====================================================================
+   Menú lateral en dos modos (js/menu.js pone html[data-menu]):
+   · Barra (html[data-menu="contraido"], el normal): 64 px, solo íconos; al pasar
+     el mouse por un grupo se abre un panel flotante con sus módulos.
+   · Expandido: 248 px, íconos + texto y grupos desplegables.
+   Colores: app.css (institucional) y css/temas.css (los demás temas).
+   ===================================================================== */
+
+/* ---------- Marca (logo) ---------- */
+.nav-marca {
+    min-height: 64px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0.6rem 1rem !important;
+}
+
+.navbar-brand {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    min-width: 0;
+    margin: 0;
+    padding: 0;
+    font-size: 1.1rem;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+}
+
+.logo-compacto {
+    display: none;
+    width: 34px;
+    height: 34px;
+    object-fit: contain;
+    border-radius: 8px;
+}
+
+    .logo-compacto.logo-recorte {
+        width: 40px;
+        height: 40px;
+        object-fit: cover;
+        object-position: left center;
+        border-radius: 0;
+    }
+
+/* ---------- Buscar (Ctrl + K) ---------- */
+.nav-buscar-caja {
+    padding: 0.75rem 0.75rem 0.25rem;
+}
+
+.nav-buscar {
+    appearance: none;
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    width: 100%;
+    height: 2.5rem;
+    padding: 0 0.7rem;
+    border-radius: 10px;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    background: rgba(255, 255, 255, 0.06);
+    color: rgba(255, 255, 255, 0.72);
+    font-size: 0.86rem;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+    .nav-buscar:hover {
+        background: rgba(255, 255, 255, 0.12);
+        border-color: rgba(255, 255, 255, 0.26);
+        color: #fff;
+    }
+
+    .nav-buscar .nav-ico {
+        margin: 0;
+    }
+
+.nav-kbd {
+    margin-left: auto;
+    padding: 1px 6px;
+    border-radius: 5px;
+    border: 1px solid rgba(255, 255, 255, 0.22);
+    background: transparent;
+    color: inherit;
+    font-family: inherit;
+    font-size: 0.7rem;
+    opacity: 0.8;
+    box-shadow: none;
+}
+
+/* ---------- Íconos, enlaces y grupos ---------- */
+.nav-ico {
+    width: 1.25rem;
+    height: 1.25rem;
+    margin-right: 0.75rem;
+    flex: none;
+}
+
+.nav-scrollable {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 0.35rem 0 0.75rem;
+    scrollbar-width: thin;
+}
+
+.nav-item {
+    font-size: 0.9rem;
+    padding: 0 0.75rem 0.15rem !important;
+}
+
+    .nav-item ::deep .nav-link {
+        color: #d7d7d7;
+        background: none;
+        border: none;
+        border-radius: 10px;
+        height: 2.6rem;
+        display: flex;
+        align-items: center;
+        width: 100%;
+        padding: 0 0.75rem;
+        transition: background 0.15s, color 0.15s;
+    }
+
+        .nav-item ::deep .nav-link:hover {
+            background-color: rgba(255, 255, 255, 0.08);
+            color: white;
+        }
+
+    .nav-item ::deep a.active {
+        background-color: rgba(255, 255, 255, 0.14);
+        color: white;
+    }
+
+.nav-grupo {
+    padding: 0 0.75rem 0.15rem;
+}
+
+.nav-grupo-tit {
+    appearance: none;
+    border: none;
+    border-left: 3px solid transparent;
+    background: none;
+    width: 100%;
+    height: 2.6rem;
+    display: flex;
+    align-items: center;
+    padding: 0 0.6rem 0 0.75rem;
+    border-radius: 10px;
+    color: #d7d7d7;
+    font-size: 0.9rem;
+    text-align: left;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+}
+
+    .nav-grupo-tit:hover {
+        background-color: rgba(255, 255, 255, 0.08);
+        color: white;
+    }
+
+.nav-grupo.con-activo > .nav-grupo-tit {
+    color: white;
+    border-left-color: var(--sig-rojo, #EC1C24);
+}
+
+.nav-chev {
+    width: 0.85rem;
+    height: 0.85rem;
+    margin-left: auto;
+    flex: none;
+    opacity: 0.6;
+    transition: transform 0.15s ease-in-out;
+}
+
+.nav-grupo.abierto .nav-chev {
+    transform: rotate(90deg);
+}
+
+.nav-hijos {
+    display: none;
+    margin: 0.15rem 0 0.3rem 1.1rem;
+    padding-left: 0.4rem;
+    border-left: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.nav-grupo.abierto .nav-hijos {
+    display: block;
+}
+
+    .nav-hijos .nav-item {
+        padding: 0 0 0.1rem 0 !important;
+    }
+
+        .nav-hijos .nav-item ::deep .nav-link {
+            height: 2.25rem;
+            font-size: 0.86rem;
+        }
+
+.nav-fly-tit {
+    display: none;
+}
+
+/* ---------- Pie: expandir / contraer ---------- */
+.nav-pie {
+    flex: none;
+    padding: 0.5rem 0.75rem 0.75rem;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.btn-hamburguesa {
+    appearance: none;
+    display: flex;
+    align-items: center;
+    width: 100%;
+    height: 2.5rem;
+    padding: 0 0.75rem;
+    border: none;
+    border-radius: 10px;
+    background: none;
+    color: rgba(255, 255, 255, 0.62);
+    font-size: 0.84rem;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+}
+
+    .btn-hamburguesa:hover {
+        background: rgba(255, 255, 255, 0.08);
+        color: #fff;
+    }
+
+/* Expandido: la flecha del ícono apunta hacia adentro (contraer). */
+.nav-pie-flecha {
+    transform-origin: 14px 12px;
+    transform: rotate(180deg);
+}
+
+/* Etiqueta flotante (modo barra) */
+.nav-tip {
+    position: fixed;
+    z-index: 1090;
+    left: 72px;
+    top: 0;
+    padding: 5px 10px;
+    border-radius: 8px;
+    background: #14181f;
+    color: #fff;
+    font-size: 0.8rem;
+    font-weight: 500;
+    white-space: nowrap;
+    pointer-events: none;
+    opacity: 0;
+    transform: translateX(-4px);
+    transition: opacity 0.12s, transform 0.12s;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25);
+}
+
+    .nav-tip.visible {
+        opacity: 1;
+        transform: none;
+    }
+
+@media (min-width: 641px) {
+/* =====================================================================
+   Modo barra (html[data-menu="contraido"])
+   ===================================================================== */
+html[data-menu="contraido"] .navbar-brand > :not(.logo-compacto),
+html[data-menu="contraido"] .nav-texto,
+html[data-menu="contraido"] .nav-chev {
+    display: none !important;
+}
+
+html[data-menu="contraido"] .logo-compacto {
+    display: block;
+}
+
+html[data-menu="contraido"] .nav-marca {
+    padding: 0.6rem 0 !important;
+}
+
+html[data-menu="contraido"] .nav-buscar-caja,
+html[data-menu="contraido"] .nav-pie {
+    padding-left: 0.6rem;
+    padding-right: 0.6rem;
+}
+
+html[data-menu="contraido"] .nav-buscar,
+html[data-menu="contraido"] .btn-hamburguesa {
+    justify-content: center;
+    padding: 0;
+    height: 2.75rem;
+}
+
+html[data-menu="contraido"] .nav-pie-flecha {
+    transform: none;
+}
+
+html[data-menu="contraido"] .nav-item,
+html[data-menu="contraido"] .nav-grupo {
+    padding: 0 0.6rem 0.2rem !important;
+}
+
+html[data-menu="contraido"] .nav-grupo-tit,
+html[data-menu="contraido"] .nav-item ::deep .nav-link {
+    justify-content: center;
+    padding: 0;
+    height: 2.75rem;
+    border-left: 0;
+    position: relative;
+}
+
+html[data-menu="contraido"] .nav-ico {
+    margin-right: 0;
+    width: 1.35rem;
+    height: 1.35rem;
+}
+
+/* Grupo de la página actual: pastilla + marca a la izquierda. */
+html[data-menu="contraido"] .nav-grupo.con-activo > .nav-grupo-tit {
+    background-color: rgba(255, 255, 255, 0.12);
+}
+
+    html[data-menu="contraido"] .nav-grupo.con-activo > .nav-grupo-tit::before,
+    html[data-menu="contraido"] .nav-item ::deep a.active::before {
+        content: "";
+        position: absolute;
+        left: -0.6rem;
+        top: 25%;
+        height: 50%;
+        width: 3px;
+        border-radius: 0 3px 3px 0;
+        background: var(--t-lateral-marca, var(--sig-rojo, #EC1C24));
+    }
+
+/* Grupo abierto en el panel flotante */
+html[data-menu="contraido"] .nav-grupo.flotando > .nav-grupo-tit {
+    background-color: rgba(255, 255, 255, 0.14);
+    color: #fff;
+}
+
+/* Panel flotante del grupo (js/menu.js le pone top) */
+html[data-menu="contraido"] .nav-hijos {
+    position: fixed;
+    z-index: 1085;
+    left: 64px;
+    top: var(--fly-top, 80px);
+    width: 240px;
+    max-height: calc(100vh - 24px);
+    overflow-y: auto;
+    margin: 0;
+    padding: 6px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 12px;
+    background: #2d2d2d;
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.32), 0 2px 6px rgba(0, 0, 0, 0.2);
+    display: block;
+    visibility: hidden;
+    opacity: 0;
+    transform: translateX(-6px);
+    transition: opacity 0.14s ease, transform 0.14s ease, visibility 0s linear 0.14s;
+}
+
+    /* Puente invisible entre el ícono y el panel: el mouse no lo cierra al cruzar. */
+    html[data-menu="contraido"] .nav-hijos::before {
+        content: "";
+        position: absolute;
+        left: -14px;
+        top: 0;
+        width: 14px;
+        height: 100%;
+    }
+
+html[data-menu="contraido"] .nav-grupo.flotando > .nav-hijos {
+    visibility: visible;
+    opacity: 1;
+    transform: none;
+    transition: opacity 0.14s ease, transform 0.14s ease, visibility 0s;
+}
+
+html[data-menu="contraido"] .nav-fly-tit {
+    display: block;
+    padding: 6px 10px 6px;
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: rgba(255, 255, 255, 0.5);
+}
+
+html[data-menu="contraido"] .nav-hijos .nav-texto {
+    display: inline !important;
+}
+
+html[data-menu="contraido"] .nav-hijos .nav-item {
+    padding: 0 !important;
+}
+
+    html[data-menu="contraido"] .nav-hijos .nav-item ::deep .nav-link {
+        justify-content: flex-start;
+        height: 2.3rem;
+        padding: 0 0.6rem;
+    }
+
+        html[data-menu="contraido"] .nav-hijos .nav-item ::deep .nav-link::before {
+            display: none;
+        }
+
+html[data-menu="contraido"] .nav-hijos .nav-ico {
+    width: 1.15rem;
+    height: 1.15rem;
+    margin-right: 0.7rem;
+}
+
+}
+
+/* Móvil: el menú va arriba, completo. */
+@media (max-width: 640.98px) {
+    .nav-scrollable {
+        overflow: visible;
+    }
+}

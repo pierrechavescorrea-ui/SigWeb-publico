@@ -1,0 +1,45 @@
+@* Selección de varios valores de un catálogo: los elegidos como fichas
+   (✕ para quitar) y una lista para agregar más. *@
+<div class="rg-multisel">
+    @foreach (var v in Valores.ToList())
+    {
+        <span class="rg-chip">@v <button type="button" class="rg-chip-x" title="Quitar" @onclick="() => Quitar(v)">✕</button></span>
+    }
+    <select @key="vuelta" class="form-select form-select-sm" title="Agregar" @onchange="Agregar">
+        <option value="">＋</option>
+        @foreach (var o in Opciones.Where(o => !Valores.Contains(o, StringComparer.OrdinalIgnoreCase)))
+        {
+            <option value="@o">@o</option>
+        }
+    </select>
+</div>
+
+@code {
+    [Parameter] public List<string> Valores { get; set; } = new();
+    [Parameter] public IEnumerable<string> Opciones { get; set; } = Array.Empty<string>();
+    [Parameter] public EventCallback OnCambio { get; set; }
+
+    // Se cambia la clave del <select> tras cada elección para que vuelva a "＋".
+    private int vuelta;
+
+    private async Task Agregar(ChangeEventArgs e)
+    {
+        var v = e.Value?.ToString();
+        if (!string.IsNullOrEmpty(v) && !Valores.Contains(v, StringComparer.OrdinalIgnoreCase)) Valores.Add(v);
+        vuelta++;
+        await OnCambio.InvokeAsync();
+    }
+
+    private async Task Quitar(string v)
+    {
+        Valores.Remove(v);
+        await OnCambio.InvokeAsync();
+    }
+
+    // Texto guardado (uno por línea) ⇄ lista.
+    public static List<string> Leer(string? texto) =>
+        (texto ?? "").Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+
+    public static string Unir(IEnumerable<string> valores) => string.Join("\n", valores);
+}

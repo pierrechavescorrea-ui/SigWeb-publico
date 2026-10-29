@@ -1,0 +1,111 @@
+@* Botón «Exportar» de cualquier lista o tabla: despliega Excel / PDF.
+   Por defecto exporta la tabla visible de la pantalla tal como se ve (columnas, filtro y orden);
+   con Motor + Filas exporta desde los datos (tablas virtualizadas); con OnExportar la página decide. *@
+@using System.Globalization
+@using System.Text.Json
+@using ClosedXML.Excel
+@using SigWeb.Data.Tablas
+@inject IJSRuntime JS
+
+<span class="pg-menu-wrap">
+    <button type="button" class="pg-btn @(abierto ? "activo" : "")" title="Exportar" disabled="@Deshabilitado" @onclick="() => abierto = !abierto"><Ico Nombre="exportar" /></button>
+    @if (abierto)
+    {
+        <span class="pg-menu">
+            <button type="button" class="pg-menu-item" title="Excel" @onclick='() => Exportar("excel")'><Ico Nombre="excel" /></button>
+            <button type="button" class="pg-menu-item" title="PDF" @onclick='() => Exportar("pdf")'><Ico Nombre="pdf" /></button>
+        </span>
+    }
+</span>
+
+@code {
+    [Parameter] public string Titulo { get; set; } = "Lista";
+    [Parameter] public string? Selector { get; set; }
+    [Parameter] public MotorTabla? Motor { get; set; }
+    [Parameter] public Func<IEnumerable<int>>? Filas { get; set; }
+    [Parameter] public EventCallback<string> OnExportar { get; set; }
+    [Parameter] public bool Deshabilitado { get; set; }
+
+    private bool abierto;
+
+    public sealed class DatosTabla
+    {
+        public List<string> Encabezados { get; set; } = new();
+        public List<List<string>> Filas { get; set; } = new();
+    }
+
+    private async Task Exportar(string formato)
+    {
+        abierto = false;
+        if (OnExportar.HasDelegate) { await OnExportar.InvokeAsync(formato); return; }
+
+        DatosTabla? datos;
+        if (Motor is not null && Filas is not null)
+        {
+            var cols = Motor.Visibles.ToList();
+            datos = new DatosTabla
+            {
+                Encabezados = cols.Select(c => c.Nombre).ToList(),
+                Filas = Filas().Select(id => cols.Select(c => Motor.Texto(id, c, out _)).ToList()).ToList()
+            };
+        }
+        else
+        {
+            try { datos = await JS.InvokeAsync<DatosTabla?>("leerTablaExportar", Selector); }
+            catch (JSException) { datos = null; }
+        }
+        if (datos is null || datos.Encabezados.Count == 0) return;
+
+        if (formato == "pdf")
+        {
+            await JS.InvokeVoidAsync("imprimirTablaExportar", Titulo, new { encabezados = datos.Encabezados, filas = datos.Filas });
+            return;
+        }
+
+        using var wb = new XLWorkbook();
+        var hoja = new string(Titulo.Where(ch => !"[]:*?/\\".Contains(ch)).ToArray()).Trim();
+        var ws = wb.Worksheets.Add(string.IsNullOrEmpty(hoja) ? "Lista" : hoja.Length > 31 ? hoja[..31] : hoja);
+        for (var c = 0; c < datos.Encabezados.Count; c++) ws.Cell(1, c + 1).Value = datos.Encabezados[c];
+        var cab = ws.Range(1, 1, 1, datos.Encabezados.Count);
+        cab.Style.Font.Bold = true;
+        cab.Style.Fill.BackgroundColor = XLColor.FromHtml("#1F2A3A");
+        cab.Style.Font.FontColor = XLColor.White;
+        for (var r = 0; r < datos.Filas.Count; r++)
+            for (var c = 0; c < datos.Filas[r].Count; c++)
+                Escribir(ws.Cell(r + 2, c + 1), datos.Filas[r][c]);
+        ws.SheetView.FreezeRows(1);
+        ws.Range(1, 1, Math.Max(1, datos.Filas.Count + 1), datos.Encabezados.Count).SetAutoFilter();
+        ws.Columns().AdjustToContents(1, Math.Min(datos.Filas.Count + 1, 500));
+        foreach (var col in ws.ColumnsUsed()) if (col.Width > 60) col.Width = 60;
+
+        using var ms = new MemoryStream();
+        wb.SaveAs(ms);
+        var nombre = new string(Titulo.Select(ch => Path.GetInvalidFileNameChars().Contains(ch) ? '_' : ch).ToArray());
+        await JS.InvokeVoidAsync("descargarArchivo", $"{nombre}_{DateTime.Now:yyyyMMdd_HHmm}.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", Convert.ToBase64String(ms.ToArray()));
+    }
+
+    private static readonly CultureInfo Ci = CultureInfo.InvariantCulture;
+    private static readonly string[] FormatosFecha = { "dd/MM/yyyy", "d/M/yyyy", "yyyy-MM-dd", "dd/MM/yyyy HH:mm" };
+
+    // Números y fechas como tales; lo demás, texto.
+    private static void Escribir(IXLCell celda, string? v)
+    {
+        v = (v ?? "").Trim();
+        if (v.Length == 0) return;
+        if (System.Text.RegularExpressions.Regex.IsMatch(v, @"^-?\d+([.,]\d+)?$")
+            && double.TryParse(v.Replace(',', '.'), NumberStyles.Float, Ci, out var n)
+            && !(v.Length > 1 && v[0] == '0' && char.IsDigit(v[1])))   // códigos con ceros a la izquierda quedan como texto
+        {
+            celda.Value = n;
+            return;
+        }
+        if (DateTime.TryParseExact(v, FormatosFecha, Ci, DateTimeStyles.None, out var f))
+        {
+            celda.Value = f;
+            celda.Style.DateFormat.Format = v.Contains(':') ? "dd/mm/yyyy hh:mm" : "dd/mm/yyyy";
+            return;
+        }
+        celda.Value = v;
+    }
+}

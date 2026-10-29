@@ -1,0 +1,10 @@
+@* Estado de una acción de un plan (o del plan): el formato sale del catálogo
+   "Plan de acción — estado de la acción"; si no tiene, los colores de siempre. *@
+@using SigWeb.Models
+<ValorCatalogo Tipo="@SigWeb.Data.Riesgos.SembradorCatalogosRiesgo.EstadoAccion" Valor="@EscalaAccion.Nombre(Estado)"
+               FondoDef="@EscalaAccion.Color(Estado)" TextoDef="@EscalaAccion.ColorTexto(Estado)" Clase="@Clase" />
+
+@code {
+    [Parameter] public EstadoAccionPlan Estado { get; set; }
+    [Parameter] public string? Clase { get; set; }
+}

@@ -1,0 +1,340 @@
+@* Paso 1 antes de poder dibujar cunetas/trinchos en Trazado a partir de un
+   DWG/DXF: este diálogo solo "abre" el plano con ACadSharp y muestra qué
+   capas, bloques y textos trae, y el rango de coordenadas que usa — para
+   identificar, con el plano real, cómo se llaman esos elementos y si el
+   plano tiene coordenadas reales (MAGNA-SIRGAS u otro) o un origen local.
+   No guarda ni dibuja nada todavía. *@
+@using ACadSharp
+@using ACadSharp.Entities
+@using ACadSharp.IO
+@using CSMath
+@using Microsoft.AspNetCore.Components.Forms
+
+<div class="modal-backdrop-custom">
+    <div class="modal-box-custom" style="max-width: 1200px;">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+            <h5 class="mb-0">Inspeccionar DWG/DXF</h5>
+            <button type="button" class="btn-close" aria-label="Cerrar" @onclick="Cerrar"></button>
+        </div>
+
+        <p class="text-muted small mb-2">
+            Sube un plano (.dwg o .dxf) para ver qué capas, bloques y textos trae, y el rango de
+            coordenadas que usa. Sirve para identificar, con el plano real, cómo están dibujados la
+            cuneta y el trincho antes de armar la carga automática en Trazado — todavía no guarda ni
+            dibuja nada.
+        </p>
+
+        <InputFile class="form-control form-control-sm mb-2" OnChange="CargarArchivo" accept=".dwg,.dxf" />
+
+        @if (procesando)
+        {
+            <div class="text-muted small mb-2">Leyendo el archivo...</div>
+        }
+
+        @if (!string.IsNullOrEmpty(errorMensaje))
+        {
+            <div class="alert alert-warning py-2 small mb-2">@errorMensaje</div>
+        }
+
+        @if (resultado is not null)
+        {
+            <div class="alert alert-light border py-2 small mb-2">
+                <strong>Rango de coordenadas:</strong>
+                X: @resultado.XMin.ToString("F2") a @resultado.XMax.ToString("F2")
+                (ancho @((resultado.XMax - resultado.XMin).ToString("F2")))
+                &nbsp;·&nbsp;
+                Y: @resultado.YMin.ToString("F2") a @resultado.YMax.ToString("F2")
+                (alto @((resultado.YMax - resultado.YMin).ToString("F2")))
+                <div class="text-muted mt-1">
+                    Si estos números están entre 5'000.000 y 9'000.000 (Y) y entre 300.000 y 6'000.000
+                    (X), suelen ser coordenadas reales tipo MAGNA-SIRGAS/UTM. Si son números chicos
+                    (decenas, cientos) el plano probablemente usa un origen local del detalle.
+                </div>
+            </div>
+
+            <div class="row g-3 modal-area-flexible" style="display:flex;">
+                <div class="col-md-4" style="display:flex; flex-direction:column; min-height:0;">
+                    <h6 class="small text-uppercase text-muted">Capas (@resultado.Capas.Count)</h6>
+                    <div class="modal-area-flexible">
+                        <table class="table table-sm table-bordered mb-0">
+                            <thead><tr><th>Capa</th><th>Entidades</th></tr></thead>
+                            <tbody>
+                                @foreach (var c in resultado.Capas)
+                                {
+                                    <tr>
+                                        <td>@c.Nombre</td>
+                                        <td class="text-muted small">@c.Resumen</td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="col-md-4" style="display:flex; flex-direction:column; min-height:0;">
+                    <h6 class="small text-uppercase text-muted">Bloques insertados (@resultado.Bloques.Count)</h6>
+                    <div class="modal-area-flexible">
+                        <table class="table table-sm table-bordered mb-0">
+                            <thead><tr><th>Bloque</th><th>Veces</th><th>Punto (1ra vez)</th><th>Atributos</th></tr></thead>
+                            <tbody>
+                                @foreach (var b in resultado.Bloques)
+                                {
+                                    <tr>
+                                        <td>@b.Nombre</td>
+                                        <td>@b.Veces</td>
+                                        <td class="text-muted small">@b.Punto</td>
+                                        <td class="text-muted small">@string.Join(", ", b.AtributosTag)</td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="col-md-4" style="display:flex; flex-direction:column; min-height:0;">
+                    <h6 class="small text-uppercase text-muted">
+                        Textos y anotaciones (@resultado.Textos.Count@(resultado.TextosTruncados ? "+" : ""))
+                    </h6>
+                    <p class="text-muted small mb-1">
+                        Incluye TEXT, MTEXT y las etiquetas de MultiLeader (líneas con flecha que señalan un
+                        elemento) — ahí suele decir qué es cada cosa cuando no está en una capa con ese nombre.
+                    </p>
+                    <div class="modal-area-flexible">
+                        <ul class="small mb-0 ps-3">
+                            @foreach (var t in resultado.Textos)
+                            {
+                                <li>@t</li>
+                            }
+                        </ul>
+                    </div>
+                </div>
+            </div>
+
+            @if (resultado.Tablas.Count > 0)
+            {
+                <div class="row g-3 mt-1">
+                    <div class="col-12">
+                        <h6 class="small text-uppercase text-muted">Tablas de cantidades encontradas (@resultado.Tablas.Count)</h6>
+                        <div class="d-flex flex-wrap gap-3">
+                            @foreach (var t in resultado.Tablas)
+                            {
+                                <table class="table table-sm table-bordered" style="width:auto;">
+                                    <caption class="small text-muted">Capa: @t.Capa</caption>
+                                    <tbody>
+                                        @foreach (var fila in t.Filas)
+                                        {
+                                            <tr>
+                                                @foreach (var celda in fila.Split(" | "))
+                                                {
+                                                    <td class="small">@celda</td>
+                                                }
+                                            </tr>
+                                        }
+                                    </tbody>
+                                </table>
+                            }
+                        </div>
+                    </div>
+                </div>
+            }
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter] public EventCallback OnCerrar { get; set; }
+
+    private bool procesando = false;
+    private string? errorMensaje;
+    private ResultadoInspeccionCad? resultado;
+
+    private async Task CargarArchivo(InputFileChangeEventArgs e)
+    {
+        errorMensaje = null;
+        resultado = null;
+        procesando = true;
+        StateHasChanged();
+        await Task.Yield();
+
+        try
+        {
+            var archivo = e.File;
+            var extension = Path.GetExtension(archivo.Name).ToLowerInvariant();
+            if (extension != ".dwg" && extension != ".dxf")
+            {
+                errorMensaje = "Solo se admiten archivos .dwg o .dxf.";
+            }
+            else
+            {
+                await using var origen = archivo.OpenReadStream(120 * 1024 * 1024);
+                using var memoria = new MemoryStream();
+                await origen.CopyToAsync(memoria);
+                memoria.Position = 0;
+
+                CadDocument doc = extension == ".dwg" ? DwgReader.Read(memoria) : DxfReader.Read(memoria);
+                resultado = Inspeccionar(doc);
+            }
+        }
+        catch (Exception ex)
+        {
+            errorMensaje = $"No se pudo leer el archivo: {ex.Message}";
+        }
+
+        procesando = false;
+        StateHasChanged();
+    }
+
+    private static ResultadoInspeccionCad Inspeccionar(CadDocument doc)
+    {
+        var capas = new Dictionary<string, Dictionary<string, int>>(StringComparer.OrdinalIgnoreCase);
+        var bloques = new Dictionary<string, (int Veces, HashSet<string> Atributos, XYZ Punto)>(StringComparer.OrdinalIgnoreCase);
+        var textos = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var tablasEncontradas = new List<TablaResumen>();
+        var textosTruncados = false;
+
+        var xMin = double.MaxValue;
+        var xMax = double.MinValue;
+        var yMin = double.MaxValue;
+        var yMax = double.MinValue;
+
+        void ConsiderarPunto(double x, double y)
+        {
+            if (x < xMin) xMin = x;
+            if (x > xMax) xMax = x;
+            if (y < yMin) yMin = y;
+            if (y > yMax) yMax = y;
+        }
+
+        void AgregarTexto(string? valor)
+        {
+            if (string.IsNullOrWhiteSpace(valor)) return;
+            var limpio = valor.Trim();
+            if (textos.Count >= 150) { textosTruncados = true; return; }
+            textos.Add(limpio);
+        }
+
+        foreach (var ent in doc.Entities)
+        {
+            var nombreCapa = ent.Layer?.Name ?? "(sin capa)";
+            var tipo = ent.GetType().Name;
+            if (!capas.TryGetValue(nombreCapa, out var tiposEnCapa))
+            {
+                tiposEnCapa = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                capas[nombreCapa] = tiposEnCapa;
+            }
+            tiposEnCapa[tipo] = tiposEnCapa.TryGetValue(tipo, out var cantidadTipo) ? cantidadTipo + 1 : 1;
+
+            try
+            {
+                var caja = ent.GetBoundingBox();
+                ConsiderarPunto(caja.Min.X, caja.Min.Y);
+                ConsiderarPunto(caja.Max.X, caja.Max.Y);
+            }
+            catch
+            {
+                // Algunas entidades (splines, geometría proxy...) no exponen
+                // bounding box en esta versión de ACadSharp; se ignoran para
+                // el rango de coordenadas, no afecta el resto del inventario.
+            }
+
+            if (ent is TableEntity tabla)
+            {
+                // Una TableEntity también es un Insert (hereda de él), así que se
+                // revisa primero: sus filas/celdas son más útiles como tabla de
+                // cantidades que contadas como "un bloque más".
+                var filas = tabla.Rows
+                    .Select(f => string.Join(" | ", f.Cells.Select(c => c.Content?.CadValue?.FormattedValue?.Trim() ?? "")))
+                    .Where(f => !string.IsNullOrWhiteSpace(f.Replace("|", "").Trim()))
+                    .ToList();
+                if (filas.Count > 0)
+                {
+                    tablasEncontradas.Add(new TablaResumen { Capa = nombreCapa, Filas = filas });
+                }
+            }
+            else if (ent is Insert insercion)
+            {
+                var nombreBloque = insercion.Block?.Name ?? "(sin nombre)";
+                var previo = bloques.TryGetValue(nombreBloque, out var actual)
+                    ? actual
+                    : (0, new HashSet<string>(StringComparer.OrdinalIgnoreCase), insercion.InsertPoint);
+                previo.Item2.UnionWith(insercion.Attributes.Select(a => a.Tag).Where(t => !string.IsNullOrWhiteSpace(t)));
+                bloques[nombreBloque] = (previo.Item1 + 1, previo.Item2, previo.Item3);
+            }
+            else if (ent is TextEntity texto)
+            {
+                AgregarTexto(texto.Value);
+            }
+            else if (ent is MText mtexto)
+            {
+                AgregarTexto(mtexto.PlainText);
+            }
+            else if (ent is MultiLeader lider)
+            {
+                // Las anotaciones con línea de referencia (MultiLeader) son las que,
+                // en la práctica, dicen qué es cada elemento dibujado ("Drenaje",
+                // "Cuneta", "Trincho"...) cuando no está en una capa con ese nombre.
+                AgregarTexto(lider.ContextData?.TextLabel);
+            }
+        }
+
+        return new ResultadoInspeccionCad
+        {
+            XMin = xMin == double.MaxValue ? 0 : xMin,
+            XMax = xMax == double.MinValue ? 0 : xMax,
+            YMin = yMin == double.MaxValue ? 0 : yMin,
+            YMax = yMax == double.MinValue ? 0 : yMax,
+            Capas = capas
+                .Select(kv => new CapaResumen { Nombre = kv.Key, Resumen = string.Join(", ", kv.Value.Select(t => $"{t.Key}: {t.Value}")) })
+                .OrderBy(c => c.Nombre, StringComparer.OrdinalIgnoreCase)
+                .ToList(),
+            Bloques = bloques
+                .Select(kv => new BloqueResumen
+                {
+                    Nombre = kv.Key,
+                    Veces = kv.Value.Item1,
+                    AtributosTag = kv.Value.Item2.OrderBy(a => a, StringComparer.OrdinalIgnoreCase).ToList(),
+                    Punto = $"{kv.Value.Item3.X:F2}, {kv.Value.Item3.Y:F2}",
+                })
+                .OrderByDescending(b => b.Veces)
+                .ToList(),
+            Textos = textos.OrderBy(t => t, StringComparer.OrdinalIgnoreCase).ToList(),
+            TextosTruncados = textosTruncados,
+            Tablas = tablasEncontradas,
+        };
+    }
+
+    private async Task Cerrar() => await OnCerrar.InvokeAsync();
+
+    private class ResultadoInspeccionCad
+    {
+        public double XMin { get; set; }
+        public double XMax { get; set; }
+        public double YMin { get; set; }
+        public double YMax { get; set; }
+        public List<CapaResumen> Capas { get; set; } = new();
+        public List<BloqueResumen> Bloques { get; set; } = new();
+        public List<string> Textos { get; set; } = new();
+        public bool TextosTruncados { get; set; }
+        public List<TablaResumen> Tablas { get; set; } = new();
+    }
+
+    private class CapaResumen
+    {
+        public string Nombre { get; set; } = "";
+        public string Resumen { get; set; } = "";
+    }
+
+    private class BloqueResumen
+    {
+        public string Nombre { get; set; } = "";
+        public int Veces { get; set; }
+        public List<string> AtributosTag { get; set; } = new();
+        public string Punto { get; set; } = "";
+    }
+
+    private class TablaResumen
+    {
+        public string Capa { get; set; } = "";
+        public List<string> Filas { get; set; } = new();
+    }
+}

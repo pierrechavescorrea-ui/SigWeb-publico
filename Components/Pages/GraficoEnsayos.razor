@@ -1,0 +1,723 @@
+@* Panel de gráficos dinámicos para un Tipo de Ensayo: el usuario elige el
+   eje X, agrega una o varias series (cada una con su propio campo,
+   agregación y tipo de gráfico — barras, línea, dispersión o torta, y
+   puede combinarlas, como un gráfico dinámico de Excel) y filtra por
+   cualquier campo (fechas con rango, el resto como "slicers" de botones).
+   Recibe los mismos datos ya armados que se usan para exportar a Excel
+   (Columnas/Filas), así que no vuelve a consultar la base de datos. *@
+@using System.Globalization
+@using SigWeb.Models
+@inject IJSRuntime JS
+@implements IDisposable
+
+<div class="grafico-ensayos">
+    @* Fila 1: filtros. El selector de campos se abre en línea (no flotante): así ningún menú ni
+       contenedor con scroll lo tapa. *@
+    <div class="grafico-panel-filtros gf-panel mb-2">
+        <div class="gf-fila">
+            <span class="gf-etq"><Ico Nombre="filtro" /> Filtros</span>
+            @if (filtros.Count == 0 && !mostrarSelectorFiltro)
+            {
+                <span class="text-muted small">Sin filtros</span>
+            }
+            @foreach (var f in filtros)
+            {
+                <div class="grafico-filtro-card gf-card">
+                    <div class="gf-card-cab">
+                        <span class="gf-card-tit">@f.Etiqueta</span>
+                        @if (!f.EsFecha && f.ValoresSeleccionados.Count > 0)
+                        {
+                            <span class="gf-cuenta">@f.ValoresSeleccionados.Count</span>
+                        }
+                        <button type="button" class="gf-x" title="Quitar filtro" @onclick="() => QuitarFiltro(f)">✕</button>
+                    </div>
+                    @if (f.EsFecha)
+                    {
+                        <div class="d-flex gap-1 align-items-center">
+                            <input type="date" class="form-control form-control-sm" value="@f.FechaDesde"
+                                   @onchange="@(e => { f.FechaDesde = e.Value?.ToString(); _ = Recalcular(); })" />
+                            <span class="small text-muted">a</span>
+                            <input type="date" class="form-control form-control-sm" value="@f.FechaHasta"
+                                   @onchange="@(e => { f.FechaHasta = e.Value?.ToString(); _ = Recalcular(); })" />
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="gf-valores">
+                            @foreach (var v in f.ValoresDisponibles)
+                            {
+                                <button type="button" class="gf-pill @(f.ValoresSeleccionados.Contains(v) ? "activo" : "")"
+                                        @onclick="@(() => ToggleValorFiltro(f, v))">@v</button>
+                            }
+                            @if (f.ValoresDisponibles.Count == 0)
+                            {
+                                <span class="text-muted small">(sin valores)</span>
+                            }
+                        </div>
+                    }
+                </div>
+            }
+            <button type="button" class="gf-agregar @(mostrarSelectorFiltro ? "activo" : "")" title="@(mostrarSelectorFiltro ? "Cerrar" : "Agregar filtro")" @onclick="AlternarSelectorFiltro">
+                @if (mostrarSelectorFiltro) { <span>✕</span> } else { <Ico Nombre="agregar" /> }
+            </button>
+        </div>
+        @if (mostrarSelectorFiltro)
+        {
+            <div class="gf-selector">
+                <input class="form-control form-control-sm gf-buscar" placeholder="Buscar campo…" value="@buscarFiltro" @oninput="@(e => buscarFiltro = e.Value?.ToString() ?? "")" />
+                <div class="gf-opciones">
+                    @foreach (var col in ColumnasParaFiltro())
+                    {
+                        var clave = col["field"].ToString()!;
+                        var titulo = col["title"].ToString()!;
+                        <button type="button" class="gf-opcion" @onclick="@(() => AgregarFiltro(clave, titulo))">@titulo</button>
+                    }
+                </div>
+            </div>
+        }
+    </div>
+
+    <div class="grafico-panel-config mb-2">
+        @* Fila 2: ejes y estilo *@
+        <div class="d-flex flex-wrap gap-2 align-items-center mb-2">
+            <div class="input-group input-group-sm" style="width:auto;">
+                <span class="input-group-text">Eje X</span>
+                <select class="form-select form-select-sm" value="@campoEjeX"
+                        @onchange="@(e => { campoEjeX = e.Value?.ToString() ?? campoEjeX; _ = Recalcular(); })">
+                    @foreach (var col in Columnas)
+                    {
+                        <option value="@col["field"]">@col["title"]</option>
+                    }
+                </select>
+            </div>
+            <div class="input-group input-group-sm" style="width:auto;">
+                <span class="input-group-text">Agrupar por</span>
+                <select class="form-select form-select-sm"
+                        @onchange="@(e => { campoAgrupacion2 = string.IsNullOrEmpty(e.Value?.ToString()) ? null : e.Value!.ToString(); _ = Recalcular(); })">
+                    <option value="">(ninguno)</option>
+                    @foreach (var col in Columnas.Where(c => c["field"].ToString() != campoEjeX))
+                    {
+                        <option value="@col["field"]" selected="@(campoAgrupacion2 == col["field"].ToString())">@col["title"]</option>
+                    }
+                </select>
+            </div>
+            <div class="input-group input-group-sm" style="width:auto;">
+                <span class="input-group-text">Colores</span>
+                <select class="form-select form-select-sm" @onchange="@(e => { paletaNombre = e.Value?.ToString() ?? "clasica"; foreach (var x in series) x.Color = null; _ = Recalcular(); })">
+                    @if (ColoresValores is not null)
+                    {
+                        <option value="estados" selected="@(paletaNombre == "estados")">Del estado</option>
+                    }
+                    <option value="clasica" selected="@(paletaNombre == "clasica")">Clásica</option>
+                    <option value="institucional" selected="@(paletaNombre == "institucional")">Institucional</option>
+                    <option value="vivida" selected="@(paletaNombre == "vivida")">Vívida</option>
+                    <option value="azules" selected="@(paletaNombre == "azules")">Azules</option>
+                    <option value="grises" selected="@(paletaNombre == "grises")">Grises</option>
+                </select>
+            </div>
+            <label class="form-check form-check-inline mb-0 small" title="Barras horizontales">
+                <input class="form-check-input" type="checkbox" checked="@horizontal" @onchange="@(e => { horizontal = e.Value is true; _ = Recalcular(); })" /> Horizontal
+            </label>
+            <label class="form-check form-check-inline mb-0 small" title="Apila las barras de las series">
+                <input class="form-check-input" type="checkbox" checked="@apilado" @onchange="@(e => { apilado = e.Value is true; _ = Recalcular(); })" /> Apilado
+            </label>
+            <label class="form-check form-check-inline mb-0 small" title="Suaviza las líneas">
+                <input class="form-check-input" type="checkbox" checked="@suavizado" @onchange="@(e => { suavizado = e.Value is true; _ = Recalcular(); })" /> Suavizar
+            </label>
+        </div>
+
+        @* Fila 3: series, una tarjeta por serie (color, tipo, dato y cálculo) *@
+        <div class="gs-grid">
+            @for (var i = 0; i < series.Count; i++)
+            {
+                var idx = i;
+                var s = series[i];
+                var color = ColorSerie(i);
+                <div class="gs-card" style="--gs-color:@color;">
+                    <div class="gs-cab">
+                        <label class="gs-color" title="Color de la serie" style="background:@color;">
+                            <input type="color" value="@color" @onchange="@(e => { s.Color = e.Value?.ToString(); _ = Recalcular(); })" />
+                        </label>
+                        <div class="gs-nombres">
+                            <span class="gs-nombre">Serie @(idx + 1)</span>
+                            <span class="gs-sub" title="@EtiquetaSerie(s)">@EtiquetaSerie(s)</span>
+                        </div>
+                        @if (series.Count > 1)
+                        {
+                            <button type="button" class="gs-quitar" title="Quitar serie" @onclick="() => QuitarSerie(idx)"><Ico Nombre="eliminar" /></button>
+                        }
+                    </div>
+                    <div class="gs-tipos" role="group" aria-label="Tipo de gráfico">
+                        @foreach (var t in TiposSerie)
+                        {
+                            var tipo = t;
+                            <button type="button" class="gs-tipo @(s.TipoGrafico == tipo.Clave ? "activo" : "")" title="@tipo.Nombre"
+                                    @onclick="@(() => { s.TipoGrafico = tipo.Clave; _ = Recalcular(); })">
+                                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">@((MarkupString)tipo.Svg)</svg>
+                                <span>@tipo.Nombre</span>
+                            </button>
+                        }
+                    </div>
+                    <div class="gs-campos">
+                        <label class="gs-campo">
+                            <span>Dato</span>
+                            <select class="form-select form-select-sm"
+                                    @onchange="@(e => { s.CampoY = e.Value?.ToString() ?? s.CampoY; _ = Recalcular(); })">
+                                <option value="__conteo" selected="@(s.CampoY == "__conteo")">Conteo de registros</option>
+                                @foreach (var col in ColumnasNumericas)
+                                {
+                                    <option value="@col["field"]" selected="@(s.CampoY == col["field"].ToString())">@col["title"]</option>
+                                }
+                            </select>
+                        </label>
+                        <label class="gs-campo gs-campo-corto">
+                            <span>Cálculo</span>
+                            <select class="form-select form-select-sm" disabled="@(s.CampoY == "__conteo")"
+                                    @onchange="@(e => { s.Agregacion = e.Value?.ToString() ?? s.Agregacion; _ = Recalcular(); })">
+                                <option value="valor" selected="@(s.Agregacion == "valor")">Valor</option>
+                                <option value="promedio" selected="@(s.Agregacion == "promedio")">Promedio</option>
+                                <option value="suma" selected="@(s.Agregacion == "suma")">Suma</option>
+                                <option value="conteo" selected="@(s.Agregacion == "conteo")">Conteo</option>
+                                <option value="minimo" selected="@(s.Agregacion == "minimo")">Mínimo</option>
+                                <option value="maximo" selected="@(s.Agregacion == "maximo")">Máximo</option>
+                            </select>
+                        </label>
+                    </div>
+                </div>
+            }
+            @if (series.Count < 5)
+            {
+                <button type="button" class="gs-card gs-nueva" title="Agregar otra serie" @onclick="AgregarSerie"><Ico Nombre="agregar" /></button>
+            }
+        </div>
+
+        @* Fila 4: escala del eje de valores *@
+        <div class="d-flex flex-wrap gap-2 align-items-center mt-2">
+            <span class="small text-muted">Eje de valores:</span>
+            <label class="form-check form-check-inline mb-0 small">
+                <input class="form-check-input" type="checkbox" checked="@iniciarEnCero" @onchange="@(e => { iniciarEnCero = e.Value is true; _ = Recalcular(); })" /> Iniciar en 0
+            </label>
+            <div class="input-group input-group-sm" style="width:130px;">
+                <span class="input-group-text">Mín</span>
+                <input type="number" step="any" class="form-control" value="@ejeMin" @onchange="@(e => { ejeMin = Numero(e.Value); _ = Recalcular(); })" />
+            </div>
+            <div class="input-group input-group-sm" style="width:130px;">
+                <span class="input-group-text">Máx</span>
+                <input type="number" step="any" class="form-control" value="@ejeMax" @onchange="@(e => { ejeMax = Numero(e.Value); _ = Recalcular(); })" />
+            </div>
+            <div class="input-group input-group-sm" style="width:auto;">
+                <span class="input-group-text">Escala</span>
+                <select class="form-select form-select-sm" @onchange="@(e => { escalaLog = e.Value?.ToString() == "log"; _ = Recalcular(); })">
+                    <option value="lineal" selected="@(!escalaLog)">Lineal</option>
+                    <option value="log" selected="@(escalaLog)">Logarítmica</option>
+                </select>
+            </div>
+        </div>
+    </div>
+
+    @if (EsTorta && series.Count > 1)
+    {
+        <p class="text-muted small mb-1">🥧 Gráfico de torta: se muestra solo la primera serie (@EtiquetaSerie(series[0])); quita las demás o cámbiales el tipo si no las necesitas.</p>
+    }
+    else if (series.Any(s => s.TipoGrafico == "torta") && !EsTorta)
+    {
+        <p class="text-muted small mb-1">La serie de torta se ignora mientras combines barras/línea/dispersión — déjala sola para verla.</p>
+    }
+
+    <div class="gx-ventana @(maximizado ? "gx-max" : "")">
+        <div class="gx-barra">
+            <span class="gx-titulo">📈 @Titulo</span>
+            <label class="gx-campo" title="Ancho del gráfico (px)">↔
+                <input type="number" min="240" max="6000" step="10" value="@anchoPx" @onchange="@(e => CambiarTamano(Numero(e.Value), null))" />
+            </label>
+            <label class="gx-campo" title="Alto del gráfico (px)">↕
+                <input type="number" min="160" max="4000" step="10" value="@altoPx" @onchange="@(e => CambiarTamano(null, Numero(e.Value)))" />
+            </label>
+            <label class="gx-campo" title="Ancho de las columnas">▮
+                <input type="range" min="5" max="100" step="5" value="@pctBarra" @oninput="@(e => { pctBarra = (int)(Numero(e.Value) ?? 80); _ = Recalcular(); })" />
+                <span class="gx-valor">@pctBarra%</span>
+            </label>
+            <label class="gx-campo" title="Espacio ocupado por cada categoría (menos = más separación entre columnas)">▥
+                <input type="range" min="10" max="100" step="5" value="@pctCategoria" @oninput="@(e => { pctCategoria = (int)(Numero(e.Value) ?? 80); _ = Recalcular(); })" />
+                <span class="gx-valor">@pctCategoria%</span>
+            </label>
+            <span class="gx-espacio"></span>
+            @* Título, leyenda, etiquetas de datos, ejes, títulos de ejes y cuadrícula (js/graficoEnsayos.js). *@
+            <button type="button" class="gx-btn gx-mas" title="Elementos del gráfico" data-grafico="@canvasId" data-clave="@($"ensayos:{Titulo}")" onclick="sigwebElementosGrafico(this)">+</button>
+            <button type="button" class="gx-btn" title="Restablecer tamaño y columnas" @onclick="Restablecer">⟲</button>
+            <button type="button" class="gx-btn" title="@(maximizado ? "Restaurar" : "Maximizar")" @onclick="AlternarMaximizar">@(maximizado ? "🗗" : "🗖")</button>
+        </div>
+        <div class="gx-cuerpo">
+            <div class="gx-marco" id="@marcoId" style="@(maximizado ? "" : $"width:{anchoPx}px;height:{altoPx}px;")">
+                <div class="gx-lienzo"><canvas id="@canvasId"></canvas></div>
+                @if (!maximizado)
+                {
+                    <div class="gx-h gx-h-e" data-modo="e" title="Arrastra para cambiar el ancho"></div>
+                    <div class="gx-h gx-h-s" data-modo="s" title="Arrastra para cambiar el alto"></div>
+                    <div class="gx-h gx-h-se" data-modo="se" title="Arrastra para cambiar ancho y alto"></div>
+                }
+            </div>
+        </div>
+        <div class="gx-pie">@(maximizado ? "Pantalla completa" : $"{anchoPx} × {altoPx} px")</div>
+    </div>
+    @if (gruposVacios)
+    {
+        <p class="text-muted small text-center mt-2">Sin datos para los filtros / campos elegidos.</p>
+    }
+</div>
+
+@code {
+    [Parameter] public string Titulo { get; set; } = "";
+    [Parameter] public List<Dictionary<string, object>> Columnas { get; set; } = new();
+    [Parameter] public List<Dictionary<string, object>> Filas { get; set; } = new();
+    [Parameter] public Dictionary<string, TipoDatoCampoEnsayo?> Tipos { get; set; } = new();
+
+    // Opcionales (los usa la Matriz PIE): campo inicial del eje X, y un color
+    // fijo por valor de un campo (ej. el color de cada Estado) para pintar
+    // cada barra cuando ese campo es el eje X.
+    [Parameter] public string? CampoEjeXInicial { get; set; }
+    [Parameter] public string? CampoColores { get; set; }
+    [Parameter] public Dictionary<string, string>? ColoresValores { get; set; }
+
+    private readonly string canvasId = $"grafico-ensayos-{Guid.NewGuid():N}";
+    private string marcoId => canvasId + "-marco";
+
+    // ---------- Ventana del gráfico (tamaño y ancho de columnas, como en Excel) ----------
+    private int anchoPx = 900, altoPx = 420, pctBarra = 80, pctCategoria = 80;
+    private bool maximizado;
+    private DotNetObjectReference<GraficoEnsayos>? yo;
+
+    private void CambiarTamano(double? ancho, double? alto)
+    {
+        if (ancho is double a) anchoPx = (int)Math.Clamp(a, 240, 6000);
+        if (alto is double h) altoPx = (int)Math.Clamp(h, 160, 4000);
+        _ = JS.InvokeVoidAsync("sigwebRedimensionarGrafico", canvasId, marcoId, anchoPx, altoPx).AsTask();
+    }
+
+    // Lo llama el JS al soltar un tirador: sincroniza las cajas de ancho/alto.
+    [JSInvokable]
+    public void AlSoltarMarco(int ancho, int alto)
+    {
+        anchoPx = Math.Clamp(ancho, 240, 6000); altoPx = Math.Clamp(alto, 160, 4000);
+        StateHasChanged();
+    }
+
+    private async Task Restablecer()
+    {
+        anchoPx = 900; altoPx = 420; pctBarra = 80; pctCategoria = 80; maximizado = false;
+        StateHasChanged();
+        await Task.Yield();
+        await RenderizarAsync();
+    }
+
+    private async Task AlternarMaximizar()
+    {
+        maximizado = !maximizado;
+        StateHasChanged();
+        await Task.Yield();
+        await JS.InvokeVoidAsync("sigwebRedimensionarGrafico", canvasId, marcoId, null, null);
+    }
+
+    private class FiltroGrafico
+    {
+        public string Clave = "";
+        public string Etiqueta = "";
+        public bool EsFecha;
+        public List<string> ValoresDisponibles = new();
+        public HashSet<string> ValoresSeleccionados = new();
+        public string? FechaDesde;
+        public string? FechaHasta;
+    }
+
+    private class SerieGrafico
+    {
+        public string CampoY = "__conteo";
+        public string Agregacion = "valor";
+        public string TipoGrafico = "barra";
+        public bool Etiquetas;
+        public string? Color;   // null = el de la paleta elegida
+    }
+
+    private sealed record TipoSerie(string Clave, string Nombre, string Svg);
+    private static readonly TipoSerie[] TiposSerie =
+    {
+        new("barra", "Barras", "<path d=\"M5 20V11M12 20V5M19 20v-6\"/>"),
+        new("linea", "Línea", "<path d=\"M3 17l5-6 4 3 8-9\"/>"),
+        new("dispersion", "Dispersión", "<circle cx=\"6\" cy=\"15\" r=\"1.6\"/><circle cx=\"11\" cy=\"9\" r=\"1.6\"/><circle cx=\"16\" cy=\"13\" r=\"1.6\"/><circle cx=\"19\" cy=\"6\" r=\"1.6\"/>"),
+        new("torta", "Torta", "<path d=\"M12 3a9 9 0 1 0 9 9h-9z\"/><path d=\"M15 3.5A9 9 0 0 1 20.5 9H15z\"/>"),
+    };
+
+    private string ColorSerie(int i) => series[i].Color ?? PaletaColores(Math.Max(series.Count, 1))[i % Math.Max(series.Count, 1)];
+
+    private string buscarFiltro = "";
+    private void AlternarSelectorFiltro() { mostrarSelectorFiltro = !mostrarSelectorFiltro; buscarFiltro = ""; }
+    private IEnumerable<Dictionary<string, object>> ColumnasParaFiltro() =>
+        Columnas.Where(c => !filtros.Any(f => f.Clave == c["field"].ToString())
+            && (buscarFiltro.Trim() == "" || (c["title"]?.ToString() ?? "").Contains(buscarFiltro.Trim(), StringComparison.OrdinalIgnoreCase)));
+
+    private List<FiltroGrafico> filtros = new();
+    private bool mostrarSelectorFiltro = false;
+    private string campoEjeX = "Torre";
+    private string? campoAgrupacion2;
+    private List<SerieGrafico> series = new();
+    private bool gruposVacios = false;
+
+    // Opciones de presentación (valen para todos los ensayos: este componente es compartido)
+    private string leyenda = "top";
+    private string paletaNombre = "clasica";
+    private bool horizontal, apilado, suavizado = true, iniciarEnCero, cuadricula = true, escalaLog;
+    private double? ejeMin, ejeMax;
+    private static double? Numero(object? v) =>
+        double.TryParse(v?.ToString(), NumberStyles.Any, CultureInfo.InvariantCulture, out var n) ? n : null;
+
+    private List<Dictionary<string, object>> ColumnasNumericas =>
+        Columnas.Where(c =>
+        {
+            var clave = c["field"].ToString() ?? "";
+            return Tipos.TryGetValue(clave, out var t) && (t == TipoDatoCampoEnsayo.Numero || t == TipoDatoCampoEnsayo.Formula);
+        }).ToList();
+
+    private bool EsTorta => series.Count > 0 && series[0].TipoGrafico == "torta";
+
+    protected override void OnInitialized()
+    {
+        if (!string.IsNullOrEmpty(CampoEjeXInicial) && Columnas.Any(c => c["field"].ToString() == CampoEjeXInicial)) campoEjeX = CampoEjeXInicial;
+        else if (Columnas.Any(c => c["field"].ToString() == "Torre")) campoEjeX = "Torre";
+        else if (Columnas.Count > 0) campoEjeX = Columnas[0]["field"].ToString()!;
+
+        series.Add(new SerieGrafico { CampoY = PrimerCampoNumerico() });
+        if (ColoresValores is not null) paletaNombre = "estados";
+    }
+
+    private string PrimerCampoNumerico()
+    {
+        var primera = ColumnasNumericas.FirstOrDefault();
+        return primera is not null ? primera["field"].ToString()! : "__conteo";
+    }
+
+    private string EtiquetaCampo(string clave) =>
+        Columnas.FirstOrDefault(c => c["field"].ToString() == clave)?["title"]?.ToString() ?? clave;
+
+    private void AgregarFiltro(string clave, string etiqueta)
+    {
+        mostrarSelectorFiltro = false;
+        var f = new FiltroGrafico
+        {
+            Clave = clave,
+            Etiqueta = etiqueta,
+            EsFecha = Tipos.TryGetValue(clave, out var t) && t == TipoDatoCampoEnsayo.Fecha
+        };
+        ActualizarValoresDisponibles(f);
+        filtros.Add(f);
+        _ = Recalcular();
+    }
+
+    private void ActualizarValoresDisponibles(FiltroGrafico f)
+    {
+        f.ValoresDisponibles = Filas
+            .Select(fila => fila.TryGetValue(f.Clave, out var v) ? (v?.ToString() ?? "") : "")
+            .Where(v => !string.IsNullOrWhiteSpace(v))
+            .Distinct()
+            .OrderBy(v => v, Comparer<string>.Create(CompararNatural))
+            .ToList();
+    }
+
+    private static int CompararNatural(string? a, string? b)
+    {
+        a ??= ""; b ??= "";
+        var ad = double.TryParse(a, NumberStyles.Any, CultureInfo.InvariantCulture, out var an);
+        var bd = double.TryParse(b, NumberStyles.Any, CultureInfo.InvariantCulture, out var bn);
+        if (ad && bd) return an.CompareTo(bn);
+        return string.Compare(a, b, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void QuitarFiltro(FiltroGrafico f)
+    {
+        filtros.Remove(f);
+        _ = Recalcular();
+    }
+
+    private void ToggleValorFiltro(FiltroGrafico f, string valor)
+    {
+        if (!f.ValoresSeleccionados.Remove(valor)) f.ValoresSeleccionados.Add(valor);
+        _ = Recalcular();
+    }
+
+    private void AgregarSerie()
+    {
+        series.Add(new SerieGrafico { CampoY = PrimerCampoNumerico() });
+        _ = Recalcular();
+    }
+
+    private void QuitarSerie(int indice)
+    {
+        if (series.Count <= 1) return;
+        series.RemoveAt(indice);
+        _ = Recalcular();
+    }
+
+    private IEnumerable<Dictionary<string, object>> FilasFiltradas()
+    {
+        IEnumerable<Dictionary<string, object>> query = Filas;
+        foreach (var f in filtros)
+        {
+            if (f.EsFecha)
+            {
+                if (!string.IsNullOrEmpty(f.FechaDesde) && DateTime.TryParse(f.FechaDesde, CultureInfo.InvariantCulture, DateTimeStyles.None, out var desde))
+                {
+                    query = query.Where(fila => DateTime.TryParse(fila.TryGetValue(f.Clave, out var v) ? v?.ToString() : null,
+                        CultureInfo.InvariantCulture, DateTimeStyles.None, out var fecha) && fecha.Date >= desde.Date);
+                }
+                if (!string.IsNullOrEmpty(f.FechaHasta) && DateTime.TryParse(f.FechaHasta, CultureInfo.InvariantCulture, DateTimeStyles.None, out var hasta))
+                {
+                    query = query.Where(fila => DateTime.TryParse(fila.TryGetValue(f.Clave, out var v) ? v?.ToString() : null,
+                        CultureInfo.InvariantCulture, DateTimeStyles.None, out var fecha) && fecha.Date <= hasta.Date);
+                }
+            }
+            else if (f.ValoresSeleccionados.Count > 0)
+            {
+                query = query.Where(fila => f.ValoresSeleccionados.Contains(fila.TryGetValue(f.Clave, out var v) ? (v?.ToString() ?? "") : ""));
+            }
+        }
+        return query;
+    }
+
+    private async Task Recalcular() => await RenderizarAsync();
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            yo = DotNetObjectReference.Create(this);
+            try { await JS.InvokeVoidAsync("sigwebIniciarMarcoGrafico", marcoId, canvasId, yo); } catch (JSDisconnectedException) { }
+            await RenderizarAsync();
+        }
+    }
+
+    protected override void OnParametersSet()
+    {
+        // Si los datos de fondo cambiaron (se agregó/editó un resultado), los
+        // filtros ya puestos pueden tener nuevos valores disponibles.
+        foreach (var f in filtros) ActualizarValoresDisponibles(f);
+    }
+
+    private string EtiquetaSerie(SerieGrafico s)
+    {
+        if (s.CampoY == "__conteo") return "Conteo de registros";
+        var etiquetaCampo = EtiquetaCampo(s.CampoY);
+        var ag = s.Agregacion switch
+        {
+            "valor" => "",
+            "suma" => "Suma de",
+            "conteo" => "Conteo de",
+            "minimo" => "Mínimo de",
+            "maximo" => "Máximo de",
+            _ => "Promedio de"
+        };
+        return string.IsNullOrEmpty(ag) ? etiquetaCampo : $"{ag} {etiquetaCampo}";
+    }
+
+    private double CalcularAgregado(List<Dictionary<string, object>> grupo, SerieGrafico s)
+    {
+        if (s.CampoY == "__conteo") return grupo.Count;
+
+        var valores = grupo
+            .Select(fila => fila.TryGetValue(s.CampoY, out var v) ? v?.ToString() : null)
+            .Select(txt => double.TryParse(txt, NumberStyles.Any, CultureInfo.InvariantCulture, out var n) ? (double?)n : null)
+            .Where(n => n.HasValue)
+            .Select(n => n!.Value)
+            .ToList();
+
+        if (valores.Count == 0) return 0;
+
+        return s.Agregacion switch
+        {
+            "valor" => valores[0],
+            "suma" => valores.Sum(),
+            "conteo" => valores.Count,
+            "minimo" => valores.Min(),
+            "maximo" => valores.Max(),
+            _ => valores.Average()
+        };
+    }
+
+    private List<string> PaletaColores(int cantidad)
+    {
+        var baseColores = paletaNombre switch
+        {
+            "institucional" => new[] { "#EC1C24", "#4a4a4a", "#8c8c8c", "#b3141a", "#1f2a3a", "#d9d9d9", "#f26b70", "#333333", "#7a7a7a", "#c9141b" },
+            "vivida" => new[] { "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b", "#e377c2", "#17becf", "#bcbd22", "#7f7f7f" },
+            "azules" => new[] { "#08306b", "#2171b5", "#6baed6", "#c6dbef", "#084594", "#4292c6", "#9ecae1", "#deebf7", "#08519c", "#3182bd" },
+            "grises" => new[] { "#252525", "#636363", "#969696", "#cccccc", "#404040", "#7f7f7f", "#b3b3b3", "#e0e0e0", "#1a1a1a", "#595959" },
+            _ => new[] { "#4e79a7", "#f28e2b", "#e15759", "#76b7b2", "#59a14f", "#edc948", "#b07aa1", "#ff9da7", "#9c755f", "#bab0ac" }
+        };
+        var lista = new List<string>();
+        for (var i = 0; i < Math.Max(cantidad, 1); i++) lista.Add(baseColores[i % baseColores.Length]);
+        return lista;
+    }
+
+    private async Task RenderizarAsync()
+    {
+        try
+        {
+            var filasFiltradas = FilasFiltradas().ToList();
+
+            string EtiquetaX(Dictionary<string, object> fila)
+            {
+                var principal = fila.TryGetValue(campoEjeX, out var v1) ? (v1?.ToString() ?? "") : "";
+                if (string.IsNullOrEmpty(principal)) principal = "(vacío)";
+                if (string.IsNullOrEmpty(campoAgrupacion2)) return principal;
+                var secundario = fila.TryGetValue(campoAgrupacion2, out var v2) ? (v2?.ToString() ?? "") : "";
+                return string.IsNullOrEmpty(secundario) ? principal : $"{principal} / {secundario}";
+            }
+
+            var grupos = filasFiltradas
+                .GroupBy(EtiquetaX)
+                .OrderBy(g => g.Key, Comparer<string>.Create(CompararNatural))
+                .ToList();
+
+            gruposVacios = grupos.Count == 0;
+            var etiquetas = grupos.Select(g => g.Key).ToList();
+
+            if (EsTorta)
+            {
+                var s = series[0];
+                var datos = grupos.Select(g => (object)CalcularAgregado(g.ToList(), s)).ToList();
+                var config = new Dictionary<string, object>
+                {
+                    ["type"] = "pie",
+                    ["data"] = new Dictionary<string, object>
+                    {
+                        ["labels"] = etiquetas,
+                        ["datasets"] = new object[]
+                        {
+                            new Dictionary<string, object>
+                            {
+                                ["label"] = EtiquetaSerie(s),
+                                ["data"] = datos,
+                                ["sigwebEtiquetas"] = s.Etiquetas,
+                                ["backgroundColor"] = paletaNombre == "estados" && ColoresValores is not null && campoEjeX == CampoColores
+                                    ? etiquetas.Select((et, i) => ColoresValores.TryGetValue(et, out var cv) ? cv : PaletaColores(etiquetas.Count)[i]).ToList()
+                                    : PaletaColores(etiquetas.Count)
+                            }
+                        }
+                    },
+                    ["options"] = new Dictionary<string, object>
+                    {
+                        ["responsive"] = true,
+                        ["maintainAspectRatio"] = false,
+                        ["plugins"] = new Dictionary<string, object>
+                        {
+                            ["title"] = new Dictionary<string, object> { ["display"] = true, ["text"] = Titulo },
+                            ["legend"] = new Dictionary<string, object> { ["display"] = leyenda != "none", ["position"] = leyenda == "none" ? "top" : leyenda }
+                        }
+                    }
+                };
+                await JS.InvokeVoidAsync("sigwebRenderGrafico", canvasId, config);
+                return;
+            }
+
+            var datasets = new List<object>();
+            var paleta = PaletaColores(Math.Max(series.Count, 1));
+            for (var i = 0; i < series.Count; i++)
+            {
+                var s = series[i];
+                if (s.TipoGrafico == "torta") continue; // solo tiene sentido como única serie
+                var datos = grupos.Select(g => (object)CalcularAgregado(g.ToList(), s)).ToList();
+                var color = s.Color ?? paleta[i % paleta.Count];
+
+                var ds = new Dictionary<string, object>
+                {
+                    ["label"] = EtiquetaSerie(s),
+                    ["data"] = datos,
+                    ["sigwebEtiquetas"] = s.Etiquetas,
+                };
+
+                if (s.TipoGrafico == "linea")
+                {
+                    ds["type"] = "line";
+                    ds["borderColor"] = color;
+                    ds["backgroundColor"] = color;
+                    ds["tension"] = suavizado ? 0.35 : 0;
+                    ds["pointRadius"] = 2;
+                }
+                else if (s.TipoGrafico == "dispersion")
+                {
+                    ds["type"] = "line";
+                    ds["showLine"] = false;
+                    ds["borderColor"] = color;
+                    ds["backgroundColor"] = color;
+                    ds["pointRadius"] = 5;
+                    ds["pointHoverRadius"] = 7;
+                }
+                else // barra
+                {
+                    ds["type"] = "bar";
+                    ds["barPercentage"] = pctBarra / 100.0;
+                    ds["categoryPercentage"] = pctCategoria / 100.0;
+                    var porCategoria = ColoresValores is not null && campoEjeX == CampoColores && string.IsNullOrEmpty(campoAgrupacion2) && series.Count == 1;
+                    if (porCategoria && paletaNombre == "estados")
+                        ds["backgroundColor"] = etiquetas.Select(et => ColoresValores!.TryGetValue(et, out var cv) ? cv : color).ToList();
+                    else if (porCategoria)
+                        ds["backgroundColor"] = PaletaColores(etiquetas.Count);   // una barra por estado: cada una con un color de la paleta elegida
+                    else
+                        ds["backgroundColor"] = color;
+                }
+                datasets.Add(ds);
+            }
+
+            var ejeValores = horizontal ? "x" : "y";
+            var ejeCategorias = horizontal ? "y" : "x";
+            var escalaValores = new Dictionary<string, object>
+            {
+                ["type"] = escalaLog ? "logarithmic" : "linear",
+                ["beginAtZero"] = iniciarEnCero && !escalaLog,
+                ["grid"] = new Dictionary<string, object> { ["display"] = cuadricula }
+            };
+            if (ejeMin is double mn) escalaValores["min"] = mn;
+            if (ejeMax is double mx) escalaValores["max"] = mx;
+            var escalaCategorias = new Dictionary<string, object>
+            {
+                ["ticks"] = new Dictionary<string, object> { ["autoSkip"] = false, ["maxRotation"] = horizontal ? 0 : 60, ["minRotation"] = 0 },
+                ["grid"] = new Dictionary<string, object> { ["display"] = cuadricula }
+            };
+            if (apilado) { escalaValores["stacked"] = true; escalaCategorias["stacked"] = true; }
+
+            var configCombo = new Dictionary<string, object>
+            {
+                ["type"] = "bar",
+                ["data"] = new Dictionary<string, object> { ["labels"] = etiquetas, ["datasets"] = datasets },
+                ["options"] = new Dictionary<string, object>
+                {
+                    ["responsive"] = true,
+                    ["maintainAspectRatio"] = false,
+                    ["indexAxis"] = horizontal ? "y" : "x",
+                    ["interaction"] = new Dictionary<string, object> { ["mode"] = "index", ["intersect"] = false },
+                    ["plugins"] = new Dictionary<string, object>
+                    {
+                        ["title"] = new Dictionary<string, object> { ["display"] = true, ["text"] = Titulo },
+                        ["legend"] = new Dictionary<string, object> { ["display"] = leyenda != "none", ["position"] = leyenda == "none" ? "top" : leyenda }
+                    },
+                    ["scales"] = new Dictionary<string, object>
+                    {
+                        [ejeCategorias] = escalaCategorias,
+                        [ejeValores] = escalaValores
+                    }
+                }
+            };
+
+            await JS.InvokeVoidAsync("sigwebRenderGrafico", canvasId, configCombo);
+        }
+        catch (JSDisconnectedException)
+        {
+            // El circuito se cerró — nada que hacer.
+        }
+    }
+
+    public void Dispose()
+    {
+        try { _ = JS.InvokeVoidAsync("sigwebDestruirGrafico", canvasId).AsTask(); }
+        catch (JSDisconnectedException) { }
+        yo?.Dispose();
+    }
+}

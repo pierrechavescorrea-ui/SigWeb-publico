@@ -1,0 +1,263 @@
+@page "/tiros"
+@rendermode InteractiveServer
+@using Microsoft.EntityFrameworkCore
+@using SigWeb.Data
+@using SigWeb.Models
+@using SigWeb.Data.Tablas
+@inject AppDbContext Db
+@inject SigWeb.Data.Iconos.IconosApp IconosApp
+@inject SigWeb.Data.Impacto.AnalizadorImpacto Analizador
+
+<EncabezadoPagina Titulo="Tiros" IconoUrl="@(IconosApp.Ruta("ico:tiro") ?? "images/icono-tiro.svg")" Atras="actividades">
+    <Acciones>
+        <BotonCampos Activo="verCampos" Deshabilitado="motor is null" OnClick="() => verCampos = true" />
+        <BotonExportar Titulo="Tiros" />
+        <span class="pg-sep"></span>
+        <button type="button" class="pg-btn pg-btn-primario @(editando is not null ? "activo" : "")" title="Nuevo tiro" @onclick="Nuevo"><Ico Nombre="agregar" /></button>
+    </Acciones>
+</EncabezadoPagina>
+
+@if (verCampos && motor is not null)
+{
+    <PanelCampos Motor="motor" OnCerrar="() => verCampos = false" OnCambio="StateHasChanged" />
+}
+
+@if (elim is not null)
+{
+    <div class="card panel-formulario mb-3 border-danger">
+        <div class="card-body">
+            <div class="mb-2"><Ico Nombre="eliminar" /> <strong>@elim.Nombre</strong></div>
+            <PanelImpacto Informe="impacto" OnEntendido="@(v => impactoOk = v)" />
+            <div class="d-flex gap-2">
+                <button class="btn btn-secondary btn-sm" type="button" title="Cancelar" @onclick="() => elim = null"><Ico Nombre="cancelar" /></button>
+                <button class="btn btn-danger btn-sm" type="button" title="Eliminar (va a la Papelera)" disabled="@BloqueadoPorImpacto" @onclick="ConfirmarEliminar"><Ico Nombre="eliminar" /></button>
+            </div>
+        </div>
+    </div>
+}
+
+@if (editando is not null)
+{
+    <div class="card panel-formulario mb-3">
+        <div class="card-body">
+            <div class="d-flex gap-2 align-items-center mb-2">
+                <input class="form-control form-control-sm" style="max-width:260px;" placeholder="Nombre del tiro" @bind="editando.Nombre" />
+                <input type="number" class="form-control form-control-sm" style="max-width:90px;" title="Orden" @bind="editando.Orden" />
+                <button class="btn btn-primary btn-sm" type="button" title="Guardar" disabled="@string.IsNullOrWhiteSpace(editando.Nombre)" @onclick="Guardar"><Ico Nombre="guardar" /></button>
+                <button class="btn btn-secondary btn-sm" type="button" title="Cancelar" @onclick="() => editando = null"><Ico Nombre="cancelar" /></button>
+                <span class="text-muted small ms-auto">@seleccion.Count torres</span>
+            </div>
+            <div class="d-flex gap-2 align-items-center mb-2">
+                <input class="form-control form-control-sm" style="max-width:240px;" placeholder="Buscar torre..." @bind="busqueda" @bind:event="oninput" />
+                <select class="form-select form-select-sm" style="max-width:110px;" title="Desde" @bind="desde">
+                    <option value="">Desde</option>
+                    @foreach (var t in torres) { <option value="@t.Id">@t.Nombre</option> }
+                </select>
+                <select class="form-select form-select-sm" style="max-width:110px;" title="Hasta" @bind="hasta">
+                    <option value="">Hasta</option>
+                    @foreach (var t in torres) { <option value="@t.Id">@t.Nombre</option> }
+                </select>
+                <button class="btn btn-outline-secondary btn-sm" type="button" title="Marcar el rango" disabled="@(string.IsNullOrEmpty(desde) || string.IsNullOrEmpty(hasta))" @onclick="MarcarRango">⇥</button>
+                <button class="btn btn-outline-secondary btn-sm" type="button" title="Quitar selección" @onclick="() => seleccion.Clear()">✕</button>
+            </div>
+            <div class="tiros-torres">
+                @foreach (var t in torres.Where(x => string.IsNullOrWhiteSpace(busqueda) || x.Nombre.Contains(busqueda, StringComparison.OrdinalIgnoreCase)))
+                {
+                    var otro = t.TiroId is int tid && tid != editando.Id && nombresTiro.TryGetValue(tid, out var nt) ? nt : null;
+                    <label class="mpie-op" title="@(otro is null ? t.Nombre : $"Hoy en {otro}: pasará a este tiro")">
+                        <input type="checkbox" checked="@seleccion.Contains(t.Id)" @onchange="@(e => { if ((bool)e.Value!) seleccion.Add(t.Id); else seleccion.Remove(t.Id); })" />
+                        @t.Nombre @if (otro is not null) { <span class="text-muted small">(@otro)</span> }
+                    </label>
+                }
+            </div>
+        </div>
+    </div>
+}
+
+<input class="form-control form-control-sm mb-2" style="max-width:240px;" placeholder="Buscar tiro..." @bind="filtro" @bind:event="oninput" />
+
+<div class="tabla-scroll tabla-llena"><table class="table table-sm table-bordered table-hover tabla-compacta align-middle mb-0 tabla-pin">
+    <thead>
+        <tr>
+            @foreach (var c in Columnas)
+            {
+                <th class="th-ordenable" @onclick="() => OrdenarPor(c.Clave)">@c.Nombre@(Flecha(c.Clave))</th>
+            }
+            <th></th>
+        </tr>
+    </thead>
+    <tbody>
+        @foreach (var t in TirosMostrados)
+        {
+            <tr>
+                @foreach (var c in Columnas)
+                {
+                    <CeldaCampo Motor="Motor" Campo="c" Fila="t.Id" Clase="@(c.Clave == "Nombre" ? "fw-bold" : null)" OnCambio="StateHasChanged" />
+                }
+                <td class="text-nowrap">
+                    <button class="btn btn-sm btn-outline-primary" title="Editar" @onclick="() => Editar(t)"><Ico Nombre="editar" /></button>
+                    <button class="btn btn-sm btn-outline-danger" title="Eliminar" @onclick="() => PedirEliminar(t)"><Ico Nombre="eliminar" /></button>
+                </td>
+            </tr>
+        }
+    </tbody>
+</table></div>
+
+@code {
+    private record TorreOp(int Id, string Nombre, int? TiroId);
+
+    private List<Tiro> tiros = new();
+    private List<TorreOp> torres = new();
+    private Dictionary<int, string> nombresTiro = new();
+    private string filtro = "";
+
+    private Tiro? editando;
+    private HashSet<int> seleccion = new();
+    private string busqueda = "";
+    private string? desde, hasta;
+
+    private Tiro? elim;
+    private SigWeb.Data.Impacto.InformeImpacto? impacto;
+    private bool impactoOk;
+    private bool BloqueadoPorImpacto => impacto is null || (impacto.RequiereEntender && !impactoOk);
+
+    protected override void OnInitialized() => Cargar();
+
+    // ---------- Campos (columnas visibles, campos creados, fórmulas y formatos) ----------
+    private MotorTabla? motor;
+    private MotorTabla Motor => motor!;
+    private bool verCampos, motorPendiente = true;
+    private string? colOrden;
+    private bool ordenAsc = true;
+
+    private IEnumerable<CampoTabla> Columnas => motor?.Visibles ?? Enumerable.Empty<CampoTabla>();
+
+    private IEnumerable<Tiro> TirosMostrados
+    {
+        get
+        {
+            var q = tiros.Where(x => string.IsNullOrWhiteSpace(filtro) || x.Nombre.Contains(filtro, StringComparison.OrdinalIgnoreCase)
+                                     || (motor is not null && motor.TextoBusqueda(x.Id).Contains(filtro, StringComparison.OrdinalIgnoreCase)));
+            return motor is not null && colOrden is not null ? motor.Ordenar(q, t => t.Id, colOrden, ordenAsc) : q;
+        }
+    }
+
+    private void OrdenarPor(string clave) { if (colOrden == clave) ordenAsc = !ordenAsc; else { colOrden = clave; ordenAsc = true; } }
+    private string Flecha(string clave) => colOrden == clave ? (ordenAsc ? " ▲" : " ▼") : "";
+
+    private IEnumerable<ColumnaNativa> ColumnasNativas()
+    {
+        Tiro? T(int id) => tiros.FirstOrDefault(t => t.Id == id);
+        return new[]
+        {
+            new ColumnaNativa("Nombre", "Tiro", TipoCampoTabla.Texto, id => T(id)?.Nombre),
+            new ColumnaNativa("Orden", "Orden", TipoCampoTabla.Numero, id => T(id)?.Orden),
+            new ColumnaNativa("Torres", "Torres", TipoCampoTabla.Texto, id => string.Join(", ", TorresDe(id).Select(x => x.Nombre))),
+            new ColumnaNativa("NumTorres", "N.º", TipoCampoTabla.Numero, id => TorresDe(id).Count),
+        };
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!motorPendiente) return;
+        motorPendiente = false;
+        try { motor = await MotorTabla.CargarAsync(Db, "tiros", ColumnasNativas(), tiros.Select(t => (t.Id, t.Nombre))); }
+        catch { motor = null; }
+        StateHasChanged();
+    }
+
+    private void Cargar()
+    {
+        motorPendiente = true;
+        Db.ChangeTracker.Clear();
+        tiros = Db.Tiros.AsNoTracking().Where(t => !t.Eliminado).ToList()
+            .OrderBy(t => t.Orden).ThenBy(t => OrdenNatural(t.Nombre)).ToList();
+        nombresTiro = tiros.ToDictionary(t => t.Id, t => t.Nombre);
+
+        // Mismo nombre que en la Matriz PIE (catálogo Localización); si la torre no tiene, su código.
+        var nombres = Db.Catalogos.AsNoTracking()
+            .Where(c => c.Tipo == "Localización" && c.Activo && c.ElementoTrazadoId != null).ToList()
+            .GroupBy(c => c.ElementoTrazadoId!.Value).ToDictionary(g => g.Key, g => g.First().Nombre);
+        torres = Db.ElementosTrazado.AsNoTracking().Where(e => !e.Eliminado).ToList()
+            .Select(e => new TorreOp(e.Id, nombres.TryGetValue(e.Id, out var n) ? n : e.Codigo, e.TiroId))
+            .OrderBy(t => OrdenNatural(t.Nombre)).ToList();
+    }
+
+    // "3", "5N", "15A" → por número y luego por sufijo (igual que la Matriz PIE).
+    private static (int, string) OrdenNatural(string n)
+    {
+        var d = new string(n.TakeWhile(char.IsDigit).ToArray());
+        return (int.TryParse(d, out var v) ? v : int.MaxValue, n);
+    }
+
+    private List<TorreOp> TorresDe(int tiroId) => torres.Where(t => t.TiroId == tiroId).ToList();
+
+    private void Nuevo()
+    {
+        if (editando is not null) { editando = null; return; }
+        editando = new Tiro { Orden = tiros.Count == 0 ? 1 : tiros.Max(t => t.Orden) + 1 };
+        seleccion.Clear(); busqueda = ""; desde = hasta = null;
+    }
+
+    private void Editar(Tiro t)
+    {
+        editando = new Tiro { Id = t.Id, Nombre = t.Nombre, Orden = t.Orden };
+        seleccion = TorresDe(t.Id).Select(x => x.Id).ToHashSet();
+        busqueda = ""; desde = hasta = null;
+    }
+
+    private void MarcarRango()
+    {
+        var i = torres.FindIndex(t => t.Id.ToString() == desde);
+        var j = torres.FindIndex(t => t.Id.ToString() == hasta);
+        if (i < 0 || j < 0) return;
+        if (i > j) (i, j) = (j, i);
+        for (var k = i; k <= j; k++) seleccion.Add(torres[k].Id);
+    }
+
+    private async Task Guardar()
+    {
+        if (editando is null || string.IsNullOrWhiteSpace(editando.Nombre)) return;
+        Tiro ent;
+        if (editando.Id == 0)
+        {
+            ent = new Tiro { Nombre = editando.Nombre.Trim(), Orden = editando.Orden };
+            Db.Tiros.Add(ent);
+            await Db.SaveChangesAsync();
+        }
+        else
+        {
+            ent = await Db.Tiros.FirstAsync(t => t.Id == editando.Id);
+            ent.Nombre = editando.Nombre.Trim();
+            ent.Orden = editando.Orden;
+        }
+        // Una torre pertenece a un solo tiro: las marcadas pasan a este, las desmarcadas quedan sin tiro.
+        var elems = await Db.ElementosTrazado.Where(e => e.TiroId == ent.Id || seleccion.Contains(e.Id)).ToListAsync();
+        foreach (var e in elems) e.TiroId = seleccion.Contains(e.Id) ? ent.Id : null;
+        await Db.SaveChangesAsync();
+        editando = null;
+        Cargar();
+    }
+
+    private void PedirEliminar(Tiro t)
+    {
+        elim = t; impacto = null; impactoOk = false;
+        _ = CalcularImpacto(t.Id);
+    }
+
+    private async Task CalcularImpacto(int id)
+    {
+        try { impacto = await Analizador.Tiro(id); }
+        catch { impacto = new SigWeb.Data.Impacto.InformeImpacto { Elemento = "No se pudo calcular el impacto" }; }
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task ConfirmarEliminar()
+    {
+        if (elim is null) return;
+        var ent = await Db.Tiros.FirstOrDefaultAsync(t => t.Id == elim.Id);
+        if (ent is not null) { ent.Eliminado = true; ent.FechaEliminacion = DateTime.Now; await Db.SaveChangesAsync(); }
+        elim = null;
+        Cargar();
+    }
+}

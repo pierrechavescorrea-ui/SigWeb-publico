@@ -1,0 +1,51 @@
+@page "/temas"
+@rendermode InteractiveServer
+@inject IJSRuntime JS
+
+<PageTitle>Temas</PageTitle>
+
+<EncabezadoPagina Titulo="Temas" Icono="temas" />
+
+<div class="tema-grid">
+    @foreach (var t in temas)
+    {
+        <button type="button" class="tema-tarjeta @(actual == t.Clave ? "activo" : "")" title="@t.Nombre" @onclick="() => Aplicar(t.Clave)">
+            @if (actual == t.Clave) { <span class="tema-check">✓</span> }
+            <div class="tema-prev" data-tema="@t.Clave">
+                <div class="tema-prev-lat"><i class="on"></i><i></i><i></i><i></i><i></i></div>
+                <div class="tema-prev-cuerpo">
+                    <div class="tema-prev-cab"><b></b><s></s><u></u></div>
+                    <div class="tema-prev-fila"><div><em></em></div><div><em></em></div><div><em></em></div></div>
+                    <div class="tema-prev-tabla"><p></p><p></p><p></p><p></p></div>
+                </div>
+            </div>
+            <div class="tema-nombre">@t.Nombre</div>
+        </button>
+    }
+</div>
+
+@code {
+    private record Tema(string Clave, string Nombre);
+
+    private static readonly Tema[] temas =
+    {
+        new("institucional", "Institucional"),
+        new("empresarial", "Empresarial"),
+        new("calido", "Cálido"),
+        new("oscuro", "Oscuro"),
+    };
+
+    private string actual = "institucional";
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        try { actual = await JS.InvokeAsync<string>("sigTema.obtener"); StateHasChanged(); } catch { }
+    }
+
+    private async Task Aplicar(string clave)
+    {
+        actual = clave;
+        try { await JS.InvokeVoidAsync("sigTema.aplicar", clave); } catch { }
+    }
+}

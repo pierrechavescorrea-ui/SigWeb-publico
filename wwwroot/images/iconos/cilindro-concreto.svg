@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <!-- Cilindro de concreto (ensayo de resistencia a la compresión) -->
+  <ellipse cx="16" cy="7" rx="8" ry="3" fill="#C7C7C7" stroke="#5b5b5b" stroke-width="1.4"/>
+  <path d="M8 7 L8 25 A8 3 0 0 0 24 25 L24 7" fill="#DCDCDC" stroke="#5b5b5b" stroke-width="1.4"/>
+  <ellipse cx="16" cy="25" rx="8" ry="3" fill="#C7C7C7" stroke="#5b5b5b" stroke-width="1.4"/>
+  <!-- fisura diagonal, típica del ensayo -->
+  <path d="M11 12 L18 18 L14 24" fill="none" stroke="#8a1f1f" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

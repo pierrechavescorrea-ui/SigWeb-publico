@@ -1,0 +1,251 @@
+﻿@page "/"
+@rendermode InteractiveServer
+@using Microsoft.EntityFrameworkCore
+@using SigWeb.Data
+@using SigWeb.Data.Inicio
+@using SigWeb.Models
+@inject AppDbContext Db
+@inject IJSRuntime JS
+
+<PageTitle>Inicio</PageTitle>
+
+@* Tablero de inicio (datos en Data/Inicio/TableroInicio.cs). Sin scroll vertical: js/inicio.js ajusta el alto y
+   deja ver los elementos que caben ("+N" lleva al resto). Indicadores arriba; bandeja de pendientes con una
+   pestaña por apartado con datos; a la derecha, Matriz PIE (torres con pendientes) y mapa de calor de riesgos.
+   Todo clic lleva a gestionar: módulo filtrado o el registro, en la misma pestaña. *@
+
+<EncabezadoPagina Titulo="Inicio" Icono="inicio" Subtitulo="@(DateTime.Today.ToString("dddd, dd 'de' MMMM 'de' yyyy"))">
+    <Acciones>
+        <button type="button" class="pg-btn @(verAjustes ? "activo" : "")" title="@($"Responsable de comunicados: {(datos.Responsable == "" ? "Todos" : datos.Responsable)}")" @onclick="AbrirAjustes"><Ico Nombre="mantenimiento" /></button>
+    </Acciones>
+</EncabezadoPagina>
+
+@if (!string.IsNullOrEmpty(mensaje))
+{
+    <div class="alert alert-warning py-1 px-2 small d-flex align-items-center gap-2">
+        <span class="flex-grow-1">@mensaje</span>
+        <button type="button" class="btn-close btn-sm" @onclick='() => mensaje = ""'></button>
+    </div>
+}
+
+@if (verAjustes)
+{
+    <div class="frm-linea ini-ajustes">
+        <label class="form-label mb-0 small">Responsable de comunicados</label>
+        <select class="form-select form-select-sm" @bind="ajResponsable">
+            @foreach (var r in datos.Responsables) { <option value="@r">@r</option> }
+            <option value="@TableroInicio.Todos">Todos</option>
+        </select>
+        <button type="button" class="btn btn-secondary btn-sm" title="Cancelar" @onclick="() => verAjustes = false"><Ico Nombre="cancelar" /></button>
+        <button type="button" class="btn btn-primary btn-sm" title="Guardar" @onclick="GuardarAjustes"><Ico Nombre="guardar" /></button>
+    </div>
+}
+
+<div class="ini-tablero">
+    @* ---------- Indicadores ---------- *@
+    <div class="ini-kpis">
+        @foreach (var k in datos.Kpis)
+        {
+            <a class="ini-kpi ini-@k.Tono" href="@k.Href" title="@k.Titulo">
+                <span class="ini-kpi-ico">@Trazo(k.Icono, 18)</span>
+                <span class="ini-kpi-txt">
+                    <span class="ini-kpi-t">@k.Titulo</span>
+                    <span class="ini-kpi-n">@k.Valor</span>
+                    <span class="ini-kpi-sub">@(k.Sub ?? " ")</span>
+                </span>
+            </a>
+        }
+    </div>
+
+    <div class="ini-cuerpo @(HayLateral ? "" : "ini-sin-lateral")">
+        @* ---------- Bandeja de pendientes: una pestaña por apartado ---------- *@
+        <section class="ini-panel ini-bandeja">
+            <header class="ini-tabs-cab">
+                <div class="ini-tabs" role="tablist">
+                    @foreach (var s in bandeja)
+                    {
+                        var sec = s;
+                        <button type="button" role="tab" class="ini-tab @(sec.Clave == Sel?.Clave ? "activa" : "")" title="@sec.Titulo" @onclick="() => tab = sec.Clave">
+                            @TrazoPestana(sec, 17)
+                            <span class="ini-tab-n ini-@sec.Tono">@sec.Total</span>
+                        </button>
+                    }
+                </div>
+                @if (Sel is { } sel)
+                {
+                    <a class="ini-ir" href="@sel.Href" title="Gestionar"><Ico Nombre="ubicar" /></a>
+                }
+            </header>
+            @if (Sel is { } actual && actual.Items.Count > 0)
+            {
+                <div class="ini-lista" data-total="@actual.Items.Count">
+                    @foreach (var it in actual.Items.Take(MaxItems))
+                    {
+                        <a class="ini-item ini-fila ini-@it.Tono" href="@it.Href" title="@(it.Detalle is null ? it.Titulo : $"{it.Titulo} · {it.Detalle}")">
+                            <span class="ini-fila-tit">@it.Titulo</span>
+                            <span class="ini-fila-det">@it.Detalle</span>
+                            <span class="ini-chip ini-@it.Tono">@it.Etiqueta</span>
+                        </a>
+                    }
+                </div>
+                <a class="ini-mas" href="@actual.Href" title="Ver todos" style="display:none"></a>
+            }
+            else
+            {
+                <div class="ini-vacio" title="Sin pendientes"><Ico Nombre="aceptar" /></div>
+            }
+        </section>
+
+        @if (HayLateral)
+        {
+            <aside class="ini-lateral">
+                @* ---------- Matriz PIE: cumplimiento y torres con registros pendientes ---------- *@
+                @if (datos.Pie is { } pie && pie.Pct is decimal pct)
+                {
+                    <section class="ini-panel ini-pie ini-@pie.Tono">
+                        <header class="ini-panel-cab">
+                            <span class="ini-panel-ico">@Trazo(pie.Icono, 16)</span>
+                            <h6 class="ini-panel-tit">@pie.Titulo</h6>
+                            <a class="ini-ir" href="@pie.Href" title="Gestionar"><Ico Nombre="ubicar" /></a>
+                        </header>
+                        <a class="ini-pie-resumen" href="@pie.Href" title="Matriz PIE">
+                            <span class="ini-anillo" style="--p:@(Math.Clamp(pct, 0m, 100m).ToString("0.#", System.Globalization.CultureInfo.InvariantCulture))">
+                                <span>@SigWeb.Data.Pie.CumplimientoPie.Formato(pct)</span>
+                            </span>
+                            <span class="ini-pie-datos">
+                                <span><b>@datos.PieTotal.Aplican.ToString("N0")</b> registros</span>
+                                <span><b>@pie.Total</b> torres con pendientes</span>
+                            </span>
+                        </a>
+                        @if (pie.Items.Count > 0)
+                        {
+                            <div class="ini-lista" data-total="@pie.Items.Count">
+                                @foreach (var it in pie.Items.Take(MaxItems))
+                                {
+                                    <a class="ini-item ini-barra" href="@it.Href" title="@($"{it.Titulo} · {it.Detalle}")">
+                                        <span class="ini-barra-tit">@it.Titulo</span>
+                                        <span class="ini-barra-pista"><span class="ini-@it.Tono" style="width:@(Math.Clamp(it.Valor ?? 0, 0m, 100m).ToString("0.#", System.Globalization.CultureInfo.InvariantCulture))%"></span></span>
+                                        <span class="ini-barra-pct">@SigWeb.Data.Pie.CumplimientoPie.Formato(it.Valor)</span>
+                                        <span class="ini-chip ini-@it.Tono" title="Pendientes">@it.Etiqueta</span>
+                                    </a>
+                                }
+                            </div>
+                            <a class="ini-mas" href="@pie.Href" title="Ver todos" style="display:none"></a>
+                        }
+                    </section>
+                }
+
+                @* ---------- Mapa de calor de riesgos activos (matriz vigente) ---------- *@
+                @if (datos.MapaTotal > 0)
+                {
+                    <section class="ini-panel ini-mapa">
+                        <header class="ini-panel-cab">
+                            <span class="ini-panel-ico">@Trazo("riesgos", 16)</span>
+                            <h6 class="ini-panel-tit">Riesgos activos</h6>
+                            <span class="ini-tab-n ini-gris">@datos.MapaTotal</span>
+                            <a class="ini-ir" href="riesgos" title="Gestionar"><Ico Nombre="ubicar" /></a>
+                        </header>
+                        <div class="ini-rejilla">
+                            @foreach (var p in EscalaRiesgo.Probabilidades)
+                            {
+                                <span class="ini-eje" title="@($"Probabilidad {EscalaRiesgo.Nombre(p)}")">@EscalaRiesgo.Sigla(p)</span>
+                                @foreach (var i in EscalaRiesgo.Impactos)
+                                {
+                                    var n = datos.Mapa[(int)p - 1, (int)i - 1];
+                                    var nivel = EscalaRiesgo.Nivel(p, i);
+                                    <a class="ini-celda @(n == 0 ? "vacia" : "")" href="@($"riesgos?p={(int)p}&i={(int)i}")"
+                                       style="--c:@EscalaRiesgo.Color(nivel); --ct:@EscalaRiesgo.ColorTexto(nivel);"
+                                       title="@($"{EscalaRiesgo.Nombre(p)} × {EscalaRiesgo.Nombre(i)} · {EscalaRiesgo.Nombre(nivel)}: {n}")">@(n == 0 ? "" : n.ToString())</a>
+                                }
+                            }
+                            <span></span>
+                            @foreach (var i in EscalaRiesgo.Impactos)
+                            {
+                                <span class="ini-eje" title="@($"Impacto {EscalaRiesgo.Nombre(i)}")">@EscalaRiesgo.Sigla(i)</span>
+                            }
+                        </div>
+                    </section>
+                }
+            </aside>
+        }
+    </div>
+</div>
+
+@code {
+    private const int MaxItems = 30;   // los que caben se ven; el resto, en "+N" (js/inicio.js)
+
+    private TableroInicio.Datos datos = new();
+    private List<TableroInicio.Seccion> bandeja = new();
+    private string? tab;
+    private bool verAjustes;
+    private string mensaje = "", ajResponsable = "";
+
+    private TableroInicio.Seccion? Sel => bandeja.FirstOrDefault(s => s.Clave == tab) ?? bandeja.FirstOrDefault();
+    private bool HayLateral => datos.Pie is not null || datos.MapaTotal > 0;
+
+    private static RenderFragment Trazo(string clave, int tam) => __builder =>
+    {
+        <svg viewBox="0 0 24 24" width="@tam" height="@tam" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">@((MarkupString)EncabezadoPagina.Trazos(clave))</svg>
+    };
+
+    // Pestañas solo con ícono (y su contador): un ícono por apartado, aunque dos sean del mismo módulo.
+    private static readonly Dictionary<string, string> IconosPestana = new()
+    {
+        // Comunicados vencidos: sobre + alerta
+        ["comunicados"] = "<rect x=\"2.5\" y=\"5\" width=\"14\" height=\"11\" rx=\"1.5\"/><path d=\"m3 6 6.5 5L16 6\"/><circle cx=\"18\" cy=\"16.5\" r=\"3.8\"/><path d=\"M18 14.7v2M18 18.3v.1\"/>",
+        // Comunicados por responder: sobre + reloj
+        ["comunicados-plazo"] = "<rect x=\"2.5\" y=\"5\" width=\"14\" height=\"11\" rx=\"1.5\"/><path d=\"m3 6 6.5 5L16 6\"/><circle cx=\"18\" cy=\"16.5\" r=\"3.8\"/><path d=\"M18 14.6v2l1.3.9\"/>",
+        // Acciones vencidas: lista + reloj
+        ["acciones"] = "<rect x=\"3.5\" y=\"3.5\" width=\"12\" height=\"16\" rx=\"2\"/><path d=\"M7.5 2.5h4v2.5h-4z\"/><path d=\"M6.5 10h6M6.5 13.5h3.5\"/><circle cx=\"17.5\" cy=\"17\" r=\"4\"/><path d=\"M17.5 15v2l1.3 1\"/>",
+        // Riesgos sin seguimiento: ojo tachado
+        ["seguimiento"] = "<path d=\"M2.5 12s3.5-6.5 9.5-6.5S21.5 12 21.5 12s-3.5 6.5-9.5 6.5S2.5 12 2.5 12z\"/><circle cx=\"12\" cy=\"12\" r=\"2.8\"/><path d=\"M4 20 20 4\"/>",
+    };
+
+    private static RenderFragment TrazoPestana(TableroInicio.Seccion sec, int tam) => __builder =>
+    {
+        <svg viewBox="0 0 24 24" width="@tam" height="@tam" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">@((MarkupString)(IconosPestana.TryGetValue(sec.Clave, out var t) ? t : EncabezadoPagina.Trazos(sec.Icono)))</svg>
+    };
+
+    protected override void OnInitialized() => Cargar();
+
+    // Ajusta el tablero al alto de la pantalla (y los elementos que caben en cada lista).
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        try { await JS.InvokeVoidAsync("sigInicioAjustar"); } catch (JSDisconnectedException) { }
+    }
+
+    private void Cargar()
+    {
+        Db.ChangeTracker.Clear();
+        try
+        {
+            datos = TableroInicio.Cargar(Db);
+        }
+        catch (Exception ex)
+        {
+            datos = new();
+            mensaje = "No se pudo leer el tablero (¿falta aplicar la migración?): " + ex.Message;
+        }
+        bandeja = datos.Bandeja();
+    }
+
+    private void AbrirAjustes()
+    {
+        verAjustes = !verAjustes;
+        ajResponsable = datos.Responsable == "" ? TableroInicio.Todos : datos.Responsable;
+    }
+
+    private async Task GuardarAjustes()
+    {
+        try
+        {
+            var cfg = await Db.Configuracion.FirstOrDefaultAsync(c => c.Id == 1);
+            if (cfg is null) { cfg = new ConfiguracionEmpresa { Id = 1 }; Db.Configuracion.Add(cfg); }
+            cfg.TableroResponsableComunicados = string.IsNullOrWhiteSpace(ajResponsable) ? null : ajResponsable.Trim();
+            await Db.SaveChangesAsync();
+            verAjustes = false;
+            Cargar();
+        }
+        catch (Exception ex) { mensaje = "No se pudo guardar: " + ex.Message; }
+    }
+}

@@ -1,0 +1,1306 @@
+@page "/matriz-pie"
+@rendermode InteractiveServer
+@using Microsoft.EntityFrameworkCore
+@using SigWeb.Data
+@using SigWeb.Models
+@inject AppDbContext Db
+@inject SigWeb.Data.Iconos.IconosApp IconosApp
+@inject IWebHostEnvironment Env
+@inject SigWeb.Data.Impacto.AnalizadorImpacto Analizador
+
+<EncabezadoPagina Titulo="Matriz PIE" Icono="matriz" OnAtras="AtrasMatriz">
+    <Acciones>
+        <span class="pg-btn" title="Cumplimiento total del PIE" style="cursor:default;">@FormatoPct(TotalGeneral())</span>
+        <a href="tiros" class="pg-btn" title="Tiros"><img src="@RutaIconoAmbito(AmbitoActividad.Tiro)" alt="" width="16" height="16" style="object-fit:contain;" /></a>
+        <button type="button" class="pg-btn @(!verGraficos && vistaPie == "mapa" ? "activo" : "")" title="Mapa de calor (torres × actividades)" disabled="@editando" @onclick='() => VerVista("mapa")'><Ico Nombre="tablero" /></button>
+        <button type="button" class="pg-btn @(!verGraficos && vistaPie == "torre" ? "activo" : "")" title="Torre por torre" disabled="@editando" @onclick='() => VerVista("torre")'><Ico Nombre="indicador" /></button>
+        <button type="button" class="pg-btn @(!verGraficos && vistaPie == "matriz" ? "activo" : "")" title="Matriz (detalle y edición)" @onclick='() => VerVista("matriz")'><Ico Nombre="listado" /></button>
+        <button type="button" class="pg-btn @(verGraficos ? "activo" : "")" title="@(verGraficos ? "Volver a la matriz" : "Gráficos")" disabled="@editando" @onclick="() => verGraficos = !verGraficos">📈</button>
+        <button type="button" class="pg-btn @(mostrarEstados ? "activo" : "")" title="Estados y pesos (%)" @onclick="() => mostrarEstados = !mostrarEstados">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h16"/><circle cx="8" cy="6" r="2" fill="currentColor"/><circle cx="15" cy="12" r="2" fill="currentColor"/><circle cx="10" cy="18" r="2" fill="currentColor"/></svg>
+        </button>
+        <button type="button" class="pg-btn" title="Recargar" @onclick="Cargar">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 1 1-2.6-5.9M20 4v5h-5"/></svg>
+        </button>
+        <span class="pg-sep"></span>
+        @if (!verGraficos)
+        {
+            <BotonExportar Titulo="Matriz PIE" Selector="@(vistaPie == "mapa" && !editando ? "table.pm-mapa" : "table.mpie")" />
+            <span class="pg-sep"></span>
+            <button type="button" class="pg-btn @(editando ? "activo" : "")" title="@(editando ? "Salir de edición" : "Editar")" @onclick="AlternarEdicion"><Ico Nombre="@(editando ? "cancelar" : "editar")" /></button>
+            @if (editando)
+            {
+                <button type="button" class="pg-btn pg-btn-primario" title="Guardar cambios" disabled="@(Pendientes == 0)" @onclick="GuardarTodo"><Ico Nombre="guardar" />@(Pendientes > 0 ? $" {Pendientes}" : "")</button>
+            }
+        }
+    </Acciones>
+</EncabezadoPagina>
+
+@if (!verGraficos && (mostrarEstados || estados.Count == 0))
+{
+    <div class="card panel-formulario mb-3">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <span>Estados y peso (%)</span>
+            <button type="button" class="btn btn-sm btn-primary" title="Agregar estado" @onclick="AgregarEstado"><Ico Nombre="agregar" /></button>
+        </div>
+        <div class="card-body p-2">
+            <table class="table table-sm align-middle mb-0">
+                <thead><tr><th style="width:60px;">Color</th><th>Nombre</th><th style="width:110px;">Peso %</th><th style="width:70px;"></th></tr></thead>
+                <tbody>
+                @foreach (var e in estados)
+                {
+                    <tr>
+                        <td><input type="color" class="form-control form-control-color form-control-sm" value="@e.Color" @onchange="@(ev => CambiarEstado(e, "color", ev.Value?.ToString()))" /></td>
+                        <td><input class="form-control form-control-sm" value="@e.Nombre" @onchange="@(ev => CambiarEstado(e, "nombre", ev.Value?.ToString()))" /></td>
+                        <td><input type="number" min="0" max="100" step="any" class="form-control form-control-sm" value="@e.Porcentaje.ToString(System.Globalization.CultureInfo.InvariantCulture)" @onchange="@(ev => CambiarEstado(e, "pct", ev.Value?.ToString()))" /></td>
+                        <td class="text-end"><button type="button" class="btn btn-sm btn-outline-danger" title="Eliminar estado" @onclick="() => EliminarEstado(e)"><Ico Nombre="eliminar" /></button></td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        </div>
+    </div>
+}
+
+@if (!verGraficos)
+{
+<div class="mpie-barra mb-2">
+    <input class="form-control form-control-sm" style="max-width:240px;" placeholder="Buscar torre..." @bind="filtro" @bind:event="oninput" />
+
+    <div class="mpie-filtro">
+        <button type="button" class="btn btn-sm @(torresSel.Count > 0 ? "btn-dark" : "btn-outline-secondary")" title="Elegir torres" @onclick='() => Abrir("torres")'>
+            Torres@(torresSel.Count > 0 ? $" ({torresSel.Count})" : "") ▾
+        </button>
+        @if (abierto == "torres")
+        {
+            <div class="mpie-back" @onclick="() => abierto = null"></div>
+            <div class="mpie-pop">
+                <div class="d-flex gap-1 mb-1">
+                    <input class="form-control form-control-sm" placeholder="Filtrar lista..." @bind="busquedaTorre" @bind:event="oninput" />
+                    <button type="button" class="btn btn-sm btn-outline-secondary" title="Quitar selección" @onclick="() => torresSel.Clear()">✕</button>
+                </div>
+                <div class="mpie-lista">
+                    @foreach (var t in filas.Where(x => string.IsNullOrWhiteSpace(busquedaTorre) || x.Nombre.Contains(busquedaTorre, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        <label class="mpie-op"><input type="checkbox" checked="@torresSel.Contains(t.Id)" @onchange="@(e => Alternar(torresSel, t.Id, (bool)e.Value!))" /> @t.Nombre</label>
+                    }
+                </div>
+            </div>
+        }
+    </div>
+
+    <div class="mpie-filtro">
+        <button type="button" class="btn btn-sm @(actividadesSel.Count + paramsSel.Count > 0 ? "btn-dark" : "btn-outline-secondary")" title="Elegir actividades y parámetros" @onclick='() => Abrir("actividades")'>
+            Actividades@(actividadesSel.Count > 0 ? $" ({actividadesSel.Count})" : "") ▾
+        </button>
+        @if (abierto == "actividades")
+        {
+            <div class="mpie-back" @onclick="() => abierto = null"></div>
+            <div class="mpie-pop mpie-pop-ancho">
+                <div class="d-flex justify-content-end mb-1">
+                    <button type="button" class="btn btn-sm btn-outline-secondary" title="Quitar selección" @onclick="() => { actividadesSel.Clear(); paramsSel.Clear(); }">✕</button>
+                </div>
+                <div class="mpie-lista">
+                    @foreach (var a in actividades.Where(x => ParametrosDe(x.Id).Count > 0))
+                    {
+                        <label class="mpie-op fw-bold"><input type="checkbox" checked="@actividadesSel.Contains(a.Id)" @onchange="@(e => AlternarActividad(a.Id, (bool)e.Value!))" /> <img src="@RutaIconoActividad(a)" alt="" title="@NombreAmbito(a.Ambito)" width="14" height="14" style="object-fit:contain;" /> @a.Nombre</label>
+                        @foreach (var p in ParametrosDe(a.Id))
+                        {
+                            <label class="mpie-op mpie-sub"><input type="checkbox" checked="@paramsSel.Contains(p.Id)" @onchange="@(e => AlternarParametro(a.Id, p.Id, (bool)e.Value!))" /> @p.Nombre</label>
+                        }
+                    }
+                </div>
+            </div>
+        }
+    </div>
+
+    <div class="mpie-filtro">
+        <button type="button" class="btn btn-sm @(estadosSel.Count > 0 ? "btn-dark" : "btn-outline-secondary")" title="Mostrar solo torres con estos estados" @onclick='() => Abrir("estados")'>
+            Estados@(estadosSel.Count > 0 ? $" ({estadosSel.Count})" : "") ▾
+        </button>
+        @if (abierto == "estados")
+        {
+            <div class="mpie-back" @onclick="() => abierto = null"></div>
+            <div class="mpie-pop">
+                <div class="d-flex justify-content-end mb-1">
+                    <button type="button" class="btn btn-sm btn-outline-secondary" title="Quitar selección" @onclick="() => estadosSel.Clear()">✕</button>
+                </div>
+                <div class="mpie-lista">
+                    <label class="mpie-op"><input type="checkbox" checked="@estadosSel.Contains("na")" @onchange='@(e => Alternar(estadosSel, "na", (bool)e.Value!))' /> N/A</label>
+                    <label class="mpie-op"><input type="checkbox" checked="@estadosSel.Contains("0")" @onchange='@(e => Alternar(estadosSel, "0", (bool)e.Value!))' /> Sin estado</label>
+                    @foreach (var es in estados)
+                    {
+                        <label class="mpie-op"><input type="checkbox" checked="@estadosSel.Contains(es.Id.ToString())" @onchange="@(e => Alternar(estadosSel, es.Id.ToString(), (bool)e.Value!))" /> <span class="mpie-punto" style="background:@es.Color"></span> @es.Nombre</label>
+                    }
+                </div>
+            </div>
+        }
+    </div>
+
+    @if (HayFiltros)
+    {
+        <button type="button" class="btn btn-sm btn-link text-decoration-none" title="Quitar todos los filtros" @onclick="LimpiarFiltros">Limpiar filtros</button>
+    }
+    <span class="text-muted small ms-auto">@FilasMostradas.Select(r => r.Torre.Id).Distinct().Count() torres</span>
+</div>
+}
+
+@if (adjuntoPorQuitar is not null)
+{
+    <div class="modal-backdrop-custom">
+        <div class="modal-box-custom">
+            <h5>¿Quitar este adjunto?</h5>
+            <p><strong>@adjuntoPorQuitar.NombreOriginal</strong> se irá a la Papelera@(editando ? " al guardar" : "").</p>
+            <PanelImpacto Informe="impacto" OnEntendido="@(v => impactoOk = v)" />
+            <div class="d-flex gap-2 justify-content-end">
+                <button class="btn btn-secondary btn-sm" @onclick="() => adjuntoPorQuitar = null" title="Cancelar"><Ico Nombre="cancelar" /></button>
+                <button class="btn btn-danger btn-sm" disabled="@BloqueadoPorImpacto" @onclick="ConfirmarQuitar">Sí, quitar</button>
+            </div>
+        </div>
+    </div>
+}
+
+@if (confirmarDescartar)
+{
+    <div class="modal-backdrop-custom">
+        <div class="modal-box-custom">
+            <h5>¿Descartar los cambios sin guardar?</h5>
+            <div class="d-flex gap-2 justify-content-end">
+                <button class="btn btn-secondary btn-sm" @onclick="() => confirmarDescartar = false">Seguir editando</button>
+                <button class="btn btn-danger btn-sm" @onclick="Descartar">Descartar</button>
+            </div>
+        </div>
+    </div>
+}
+
+@if (verGraficos)
+{
+    <GraficoEnsayos Titulo="Matriz PIE" Columnas="ColumnasGrafico()" Filas="FilasGrafico()" Tipos="TiposGrafico()"
+                    CampoEjeXInicial="Estado" CampoColores="Estado" ColoresValores="ColoresEstados()" />
+}
+else if (vistaPie == "mapa" && !editando)
+{
+    @VistaMapa()
+}
+else if (vistaPie == "torre" && !editando)
+{
+    @VistaTorre()
+}
+else
+{
+    var vis = FilasMostradas;
+    var conTiro = HayTiroVis;
+    var conPata = HayPataVis;
+    var actsVis = actividades.Where(a => ParamsVis(a).Count > 0).ToList();
+<div class="tabla-scroll">
+    <table class="table table-sm mb-0 align-middle mpie">
+        <thead>
+            <tr>
+                @if (conTiro) { <th rowspan="2" class="mpie-fija mpie-th mpie-col-tiro">Tiro</th> }
+                <th rowspan="2" class="mpie-fija mpie-th @(conTiro ? "mpie-fija2" : "")">Torre</th>
+                @if (conPata) { <th rowspan="2" class="mpie-th">Pata</th> }
+                <th rowspan="2" class="mpie-th text-center" title="Cumplimiento de la torre">%</th>
+                @foreach (var a in actsVis)
+                {
+                    <th colspan="@(ParamsVis(a).Count + 1)" class="mpie-th text-center mpie-grupo" title="@NombreAmbito(a.Ambito)"><img src="@RutaIconoActividad(a)" alt="" width="14" height="14" style="object-fit:contain;" /> @a.Nombre</th>
+                }
+            </tr>
+            <tr>
+                @foreach (var a in actsVis)
+                {
+                    foreach (var p in ParamsVis(a))
+                    {
+                        <th class="mpie-th mpie-param" title="@p.Nombre"><div>@p.Nombre</div></th>
+                    }
+                    <th class="mpie-th text-center" title="Cumplimiento de @a.Nombre">%</th>
+                }
+            </tr>
+        </thead>
+        <tbody>
+        @for (var i = 0; i < vis.Count; i++)
+        {
+            var r = vis[i];
+            var spTorre = Span(vis, i, x => x.Torre.Id);
+            var spTiro = conTiro ? Span(vis, i, x => x.Tiro?.Id ?? 0) : 0;
+            <tr>
+                @if (spTiro > 0) { <td rowspan="@spTiro" class="mpie-fija fw-bold mpie-col-tiro">@(r.Tiro?.Nombre ?? "—")</td> }
+                @if (spTorre > 0) { <td rowspan="@spTorre" class="mpie-fija fw-bold @(conTiro ? "mpie-fija2" : "")">@r.Torre.Nombre</td> }
+                @if (conPata) { <td class="small text-nowrap">@(r.Pata?.Nombre ?? "—")</td> }
+                @if (spTorre > 0) { <td rowspan="@spTorre" class="mpie-pct" title="@DetalleTorre(r.Torre)">@FormatoPct(PctTorre(r.Torre))</td> }
+                @foreach (var a in actsVis)
+                {
+                    var span = a.Ambito switch { AmbitoActividad.Tiro => spTiro, AmbitoActividad.Torre => spTorre, _ => 1 };
+                    if (span == 0) { continue; }
+                    var ent = EntDe(r, a);
+                    foreach (var p in ParamsVis(a))
+                    {
+                        if (ent is Ent ce)
+                        {
+                            <td rowspan="@span" class="mpie-c" style="background:@ColorCelda(ce, p.Id);">
+                                <div class="mpie-celda">
+                                <select class="mpie-sel" disabled="@(!editando)" value="@ValorCelda(ce, p.Id)" @onchange="@(ev => CambiarCelda(ce, p, ev.Value?.ToString() ?? "na"))">
+                                    <option value="na">N/A</option>
+                                    <option value="0">Sin estado</option>
+                                    @foreach (var es in estados)
+                                    {
+                                        <option value="@es.Id" title="@FormatoNum(es.Porcentaje)%">@es.Nombre</option>
+                                    }
+                                </select>
+                                @if (ce.T == 'C')
+                                {
+                                    var adjs = AdjuntosDe(ce.Id, p.Id);
+                                    if (!editando)
+                                    {
+                                        if (adjs.Count > 0)
+                                        {
+                                            <BotonArchivos Clase="mpie-adj" Titulo="@($"{r.Torre.Nombre} · {p.Nombre}")"
+                                                           Archivos="@(adjs.Select(ar => new BotonArchivos.Archivo(ar.NombreOriginal, ar.RutaArchivo)).ToList())" />
+                                        }
+                                    }
+                                    else
+                                    {
+                                        foreach (var ar in adjs)
+                                        {
+                                            <a href="@ar.RutaArchivo" target="_blank" rel="noopener" class="mpie-adj text-decoration-none" title="@ar.NombreOriginal"><Ico Nombre="documento" /></a>
+                                            <button type="button" class="mpie-x" title="Quitar adjunto" @onclick="() => PedirQuitar(ar)">✕</button>
+                                        }
+                                        <label class="mpie-mas" title="Cargar adjunto"><Ico Nombre="agregar" /><InputFile multiple accept=".pdf,image/*" OnChange="@(ev => SubirAdjuntos(ev, ce.Id, p))" /></label>
+                                    }
+                                }
+                                </div>
+                            </td>
+                        }
+                        else
+                        {
+                            <td rowspan="@span" class="mpie-c" style="background:#f7f7f7;"><span class="text-muted px-2" title="@MotivoSinCelda(r, a)">—</span></td>
+                        }
+                    }
+                    <td rowspan="@span" class="mpie-pct">@FormatoPct(PctAct(ent, a))</td>
+                }
+            </tr>
+        }
+        </tbody>
+        <tfoot>
+            <tr class="mpie-pie">
+                @if (conTiro) { <td class="mpie-fija fw-bold mpie-col-tiro">PIE</td> }
+                <td class="mpie-fija fw-bold @(conTiro ? "mpie-fija2" : "")">@(conTiro ? "" : "PIE")</td>
+                @if (conPata) { <td></td> }
+                <td class="mpie-pct">@FormatoPct(TotalGeneral())</td>
+                @foreach (var a in actsVis)
+                {
+                    foreach (var p in ParamsVis(a))
+                    {
+                        <td class="mpie-pct">@FormatoPct(PctColumna(a, p.Id))</td>
+                    }
+                    <td class="mpie-pct">@FormatoPct(PctGrupo(a))</td>
+                }
+            </tr>
+        </tfoot>
+    </table>
+</div>
+}
+
+@code {
+    private bool verGraficos = false;
+
+    // Celda de la matriz: 'C' = componente (hoja de vida de torre o pata), 'T' = tiro.
+    private readonly record struct Ent(char T, int Id);
+
+    // Una fila de la matriz: una torre, o una pata de la torre si hay
+    // actividades de ámbito Pata visibles. Las celdas de torre y de tiro se
+    // combinan (rowspan) sobre sus filas.
+    private sealed class FilaPie
+    {
+        public ItemCatalogo Torre = null!;
+        public int? CompTorre;
+        public Componente? Pata;
+        public Tiro? Tiro;
+    }
+
+    private List<Actividad> actividades = new();          // Tiro → Torre → Pata, luego Orden
+    private List<ParametroActividad> parametros = new();
+    private List<ItemCatalogo> filas = new();             // torres (catálogo Localización)
+    private List<EstadoParametro> estados = new();
+    private Dictionary<int, int> ComponentePorElemento = new();           // elementoTrazadoId -> componente hoja de vida
+    private Dictionary<int, List<Componente>> patasPorElemento = new();   // elementoTrazadoId -> patas/elementos
+    private Dictionary<int, HashSet<int>> actsPorComp = new();            // restricción ComponenteActividad
+    private Dictionary<int, Tiro> tirosPorId = new();
+    private Dictionary<int, Tiro> tiroPorElemento = new();
+    private Dictionary<(int Comp, int Param), RegistroParametro> registros = new();
+    private Dictionary<(int Tiro, int Param), RegistroParametroTiro> registrosTiro = new();
+    private Dictionary<int, List<ArchivoRegistroParametro>> adjuntosPorRegistro = new();   // registroId -> archivos vigentes
+    private bool mostrarEstados = false;
+    private string filtro = "";
+
+    // ---------- Filtros (vacío = sin filtrar) ----------
+    private string? abierto;
+    private string busquedaTorre = "";
+    private HashSet<int> torresSel = new();
+    private HashSet<int> actividadesSel = new();
+    private HashSet<int> paramsSel = new();
+    private HashSet<string> estadosSel = new();
+
+    private bool HayFiltros => torresSel.Count + actividadesSel.Count + paramsSel.Count + estadosSel.Count > 0 || !string.IsNullOrWhiteSpace(filtro);
+
+    private void Abrir(string panel) => abierto = abierto == panel ? null : panel;
+
+    private static void Alternar<T>(HashSet<T> conjunto, T valor, bool marcado)
+    {
+        if (marcado) conjunto.Add(valor); else conjunto.Remove(valor);
+    }
+
+    private void AlternarActividad(int actividadId, bool marcado)
+    {
+        Alternar(actividadesSel, actividadId, marcado);
+        if (!marcado) { foreach (var p in ParametrosDe(actividadId)) paramsSel.Remove(p.Id); }
+    }
+
+    private void AlternarParametro(int actividadId, int paramId, bool marcado)
+    {
+        Alternar(paramsSel, paramId, marcado);
+        // Elegir un parámetro implica elegir su actividad.
+        if (marcado) actividadesSel.Add(actividadId);
+    }
+
+    private void LimpiarFiltros()
+    {
+        torresSel.Clear(); actividadesSel.Clear(); paramsSel.Clear(); estadosSel.Clear(); filtro = ""; abierto = null;
+    }
+
+    // Parámetros visibles de una actividad (columnas).
+    private List<ParametroActividad> ParamsVis(Actividad a)
+    {
+        if (actividadesSel.Count > 0 && !actividadesSel.Contains(a.Id)) return new();
+        var todos = ParametrosDe(a.Id);
+        var elegidos = todos.Where(p => paramsSel.Contains(p.Id)).ToList();
+        return elegidos.Count > 0 ? elegidos : todos;
+    }
+
+    private bool HayTiroVis => actividades.Any(a => a.Ambito == AmbitoActividad.Tiro && ParamsVis(a).Count > 0);
+    private bool HayPataVis => actividades.Any(a => a.Ambito == AmbitoActividad.Pata && ParamsVis(a).Count > 0);
+
+    private List<FilaPie> FilasMostradas
+    {
+        get
+        {
+            var q = filas.AsEnumerable();
+            if (!string.IsNullOrWhiteSpace(filtro))
+                q = q.Where(f => f.Nombre.Contains(filtro, StringComparison.OrdinalIgnoreCase)
+                              || (TiroDe(f)?.Nombre.Contains(filtro, StringComparison.OrdinalIgnoreCase) ?? false));
+            if (torresSel.Count > 0) q = q.Where(f => torresSel.Contains(f.Id));
+            if (HayTiroVis)
+            {
+                // Agrupadas por tiro (los sin tiro al final), conservando el orden natural de torres.
+                q = q.OrderBy(f => TiroDe(f) is null ? 1 : 0)
+                     .ThenBy(f => TiroDe(f)?.Orden ?? 0)
+                     .ThenBy(f => TiroDe(f)?.Nombre ?? "")
+                     .ThenBy(f => OrdenNatural(f.Nombre));
+            }
+            var conPata = HayPataVis;
+            var rows = new List<FilaPie>();
+            foreach (var f in q)
+            {
+                var comp = CompDe(f);
+                var t = TiroDe(f);
+                var patas = conPata && f.ElementoTrazadoId is int el && patasPorElemento.TryGetValue(el, out var ps) ? ps : new List<Componente>();
+                if (patas.Count == 0) rows.Add(new FilaPie { Torre = f, CompTorre = comp, Tiro = t });
+                else foreach (var pa in patas) rows.Add(new FilaPie { Torre = f, CompTorre = comp, Tiro = t, Pata = pa });
+            }
+            if (estadosSel.Count > 0)
+            {
+                var acts = actividades.Select(a => (a, ps: ParamsVis(a))).Where(x => x.ps.Count > 0).ToList();
+                rows = rows.Where(r => acts.Any(x => EntDe(r, x.a) is Ent e && x.ps.Any(p => estadosSel.Contains(ValorCelda(e, p.Id))))).ToList();
+            }
+            return rows;
+        }
+    }
+
+    // Cuántas filas seguidas comparten la misma clave (0 si no es la primera del grupo).
+    private static int Span(List<FilaPie> v, int i, Func<FilaPie, int> clave)
+    {
+        if (i > 0 && clave(v[i - 1]) == clave(v[i])) return 0;
+        var n = 1;
+        while (i + n < v.Count && clave(v[i + n]) == clave(v[i])) n++;
+        return n;
+    }
+
+    protected override void OnInitialized() => CargarSync();
+
+    // ?torre={id del ítem de Localización} (tablero de inicio): abre esa torre en la vista torre por torre.
+    [SupplyParameterFromQuery(Name = "torre")] public int? TorreQ { get; set; }
+    private int? torreAplicada;
+    protected override void OnParametersSet()
+    {
+        if (TorreQ == torreAplicada) return;
+        torreAplicada = TorreQ;
+        if (TorreQ is int t && filas.FirstOrDefault(f => f.Id == t) is { } f) EnfocarTorre(f);
+    }
+
+    private Task Cargar() { CargarSync(); return Task.CompletedTask; }
+
+    private static int Rango(AmbitoActividad a) => a switch { AmbitoActividad.Tiro => 0, AmbitoActividad.Torre => 1, _ => 2 };
+
+    private void CargarSync()
+    {
+        Db.ChangeTracker.Clear();
+        actividades = Db.Actividades.AsNoTracking()
+            .Where(a => a.Activo && a.EnMatrizPie).ToList()
+            .OrderBy(a => Rango(a.Ambito)).ThenBy(a => a.Orden).ThenBy(a => a.Id).ToList();
+        var idsAct = actividades.Select(a => a.Id).ToList();
+        parametros = Db.ParametrosActividad.AsNoTracking()
+            .Where(p => p.Activo && idsAct.Contains(p.ActividadId)).OrderBy(p => p.Orden).ThenBy(p => p.Id).ToList();
+        estados = Db.EstadosParametro.AsNoTracking().Where(e => e.Activo).OrderBy(e => e.Orden).ThenBy(e => e.Id).ToList();
+
+        filas = Db.Catalogos.AsNoTracking()
+            .Where(c => c.Tipo == "Localización" && c.Activo).ToList()
+            .OrderBy(c => OrdenNatural(c.Nombre)).ToList();
+
+        var idsElem = filas.Where(f => f.ElementoTrazadoId != null).Select(f => f.ElementoTrazadoId!.Value).ToList();
+        var comps = Db.Componentes.AsNoTracking()
+            .Where(c => !c.Eliminado && idsElem.Contains(c.ElementoTrazadoId)).ToList();
+        ComponentePorElemento = comps.Where(c => c.EsHojaDeVida).GroupBy(c => c.ElementoTrazadoId).ToDictionary(g => g.Key, g => g.First().Id);
+
+        // Patas/elementos: solo los que tienen al menos una actividad de ámbito Pata de la matriz.
+        var otros = comps.Where(c => !c.EsHojaDeVida).ToList();
+        var idsOtros = otros.Select(c => c.Id).ToList();
+        actsPorComp = Db.ComponenteActividades.AsNoTracking().Where(x => idsOtros.Contains(x.ComponenteId)).ToList()
+            .GroupBy(x => x.ComponenteId).ToDictionary(g => g.Key, g => g.Select(x => x.ActividadId).ToHashSet());
+        var actsPata = actividades.Where(a => a.Ambito == AmbitoActividad.Pata).Select(a => a.Id).ToList();
+        patasPorElemento = otros.Where(c => actsPata.Any(a => Aplica(c.Id, a)))
+            .GroupBy(c => c.ElementoTrazadoId)
+            .ToDictionary(g => g.Key, g => g.OrderBy(c => c.Orden).ThenBy(c => c.Nombre).ToList());
+
+        tirosPorId = Db.Tiros.AsNoTracking().Where(t => !t.Eliminado).ToDictionary(t => t.Id);
+        tiroPorElemento = Db.ElementosTrazado.AsNoTracking().Where(e => e.TiroId != null && idsElem.Contains(e.Id)).ToList()
+            .Where(e => tirosPorId.ContainsKey(e.TiroId!.Value)).ToDictionary(e => e.Id, e => tirosPorId[e.TiroId!.Value]);
+
+        var idsComp = ComponentePorElemento.Values.Concat(patasPorElemento.Values.SelectMany(l => l.Select(c => c.Id))).ToList();
+        registros = Db.RegistrosParametro.AsNoTracking()
+            .Where(r => idsComp.Contains(r.ComponenteId)).ToList()
+            .GroupBy(r => (r.ComponenteId, r.ParametroActividadId)).ToDictionary(g => g.Key, g => g.First());
+
+        var idsTiro = tirosPorId.Keys.ToList();
+        registrosTiro = Db.RegistrosParametroTiro.AsNoTracking()
+            .Where(r => idsTiro.Contains(r.TiroId)).ToList()
+            .GroupBy(r => (r.TiroId, r.ParametroActividadId)).ToDictionary(g => g.Key, g => g.First());
+
+        var idsReg = registros.Values.Select(r => r.Id).ToList();
+        adjuntosPorRegistro = Db.ArchivosRegistroParametro.AsNoTracking()
+            .Where(a => idsReg.Contains(a.RegistroParametroId) && !a.Eliminado).ToList()
+            .GroupBy(a => a.RegistroParametroId).ToDictionary(g => g.Key, g => g.OrderBy(a => a.Id).ToList());
+    }
+
+    // Sin filas en ComponenteActividad = todas las actividades aplican (misma regla que Trazado).
+    private bool Aplica(int compId, int actividadId) =>
+        !actsPorComp.TryGetValue(compId, out var s) || s.Count == 0 || s.Contains(actividadId);
+
+    private Tiro? TiroDe(ItemCatalogo f) =>
+        f.ElementoTrazadoId is int el && tiroPorElemento.TryGetValue(el, out var t) ? t : null;
+
+    private Ent? EntDe(FilaPie r, Actividad a) => a.Ambito switch
+    {
+        AmbitoActividad.Torre => r.CompTorre is int c ? (Ent?)new Ent('C', c) : null,
+        AmbitoActividad.Pata => r.Pata is { } pa && Aplica(pa.Id, a.Id) ? (Ent?)new Ent('C', pa.Id) : null,
+        _ => r.Tiro is { } t ? (Ent?)new Ent('T', t.Id) : null
+    };
+
+    private static string MotivoSinCelda(FilaPie r, Actividad a) => a.Ambito switch
+    {
+        AmbitoActividad.Torre => "Esta localización no tiene hoja de vida de torre",
+        AmbitoActividad.Pata => r.Pata is null ? "Sin patas con esta actividad" : "La actividad no aplica a este elemento",
+        _ => "Torre sin tiro asignado"
+    };
+
+    private List<ArchivoRegistroParametro> AdjuntosDe(int comp, int paramId)
+    {
+        var l = registros.TryGetValue((comp, paramId), out var r) && adjuntosPorRegistro.TryGetValue(r.Id, out var x)
+            ? x.Where(a => !quitarPend.Contains(a.Id)).ToList() : new List<ArchivoRegistroParametro>();
+        l.AddRange(subidasPend.Where(s => s.Comp == comp && s.Param == paramId).Select(s => s.Arch));
+        return l;
+    }
+
+    // "3", "5N", "15A", "100N" → ordena por el número y luego por el sufijo.
+    private static (int, string) OrdenNatural(string n)
+    {
+        var d = new string(n.TakeWhile(char.IsDigit).ToArray());
+        return (int.TryParse(d, out var v) ? v : int.MaxValue, n);
+    }
+
+    private static string NombreAmbito(AmbitoActividad a) => a switch
+    {
+        AmbitoActividad.Torre => "Torre",
+        AmbitoActividad.Pata => "Pata",
+        _ => "Tiro (Tendido)"
+    };
+
+    // Ícono de cada ámbito: el asignado desde Catálogos (Usar en… → Torre/Pata/Tiro) o el de por defecto.
+    private string RutaIconoActividad(Actividad a) => IconosApp.RutaIcono(a.IconoCatalogoId) ?? RutaIconoAmbito(a.Ambito);
+
+    private string RutaIconoAmbito(AmbitoActividad a) => a switch
+    {
+        AmbitoActividad.Torre => IconosApp.Ruta("ico:torre") ?? "images/icono-torre.svg",
+        AmbitoActividad.Pata => IconosApp.Ruta("ico:pata") ?? "images/icono-pata.svg",
+        _ => IconosApp.Ruta("ico:tiro") ?? "images/icono-tiro.svg"
+    };
+
+    private List<ParametroActividad> ParametrosDe(int actividadId) => parametros.Where(p => p.ActividadId == actividadId).ToList();
+
+    // Estado guardado: (aplica, estadoId). No aplica = N/A.
+    private (bool Aplica, int? Estado, DateTime? Fecha) Guardado(Ent e, int paramId)
+    {
+        if (e.T == 'T')
+            return registrosTiro.TryGetValue((e.Id, paramId), out var rt) && rt.Completado ? (true, rt.EstadoParametroId, rt.Fecha) : (false, null, null);
+        return registros.TryGetValue((e.Id, paramId), out var r) && r.Completado ? (true, r.EstadoParametroId, r.Fecha) : (false, null, null);
+    }
+
+    private DateTime? FacturadoDe(Ent e, int paramId) => e.T == 'T'
+        ? (registrosTiro.TryGetValue((e.Id, paramId), out var rt) ? rt.FechaFacturado : null)
+        : (registros.TryGetValue((e.Id, paramId), out var r) ? r.FechaFacturado : null);
+
+    private static string Valor((bool Aplica, int? Estado, DateTime? Fecha) g) => !g.Aplica ? "na" : (g.Estado?.ToString() ?? "0");
+
+    private string ValorCelda(Ent e, int paramId) =>
+        cambios.TryGetValue((e, paramId), out var pend) ? pend : Valor(Guardado(e, paramId));
+
+    // % de una celda; null = N/A (no entra en ningún promedio).
+    private decimal? PctCelda(Ent e, int paramId)
+    {
+        var g = Guardado(e, paramId);
+        if (!g.Aplica) return null;
+        return estados.FirstOrDefault(x => x.Id == g.Estado)?.Porcentaje ?? 0;
+    }
+
+    private string ColorCelda(Ent e, int paramId)
+    {
+        var v = ValorCelda(e, paramId);
+        if (v == "na") return "#eeeeee";
+        var es = estados.FirstOrDefault(x => x.Id.ToString() == v);
+        return es is null ? "#ffffff" : es.Color + "40";
+    }
+
+    private decimal? PromedioDe(IEnumerable<decimal?> valores)
+    {
+        var v = valores.Where(x => x.HasValue).Select(x => x!.Value).ToList();
+        return v.Count == 0 ? null : v.Average();
+    }
+
+    // Todas las celdas (de las actividades de la matriz) que cuelgan de una torre: su tiro, la torre y sus patas.
+    private IEnumerable<decimal?> CeldasTorre(ItemCatalogo f)
+    {
+        var comp = CompDe(f);
+        var tiro = TiroDe(f);
+        var patas = f.ElementoTrazadoId is int el && patasPorElemento.TryGetValue(el, out var ps) ? ps : new List<Componente>();
+        foreach (var a in actividades)
+        {
+            var ents = a.Ambito switch
+            {
+                AmbitoActividad.Torre => comp is int c ? new List<Ent> { new('C', c) } : new(),
+                AmbitoActividad.Pata => patas.Where(pa => Aplica(pa.Id, a.Id)).Select(pa => new Ent('C', pa.Id)).ToList(),
+                _ => tiro is not null ? new List<Ent> { new('T', tiro.Id) } : new()
+            };
+            foreach (var e in ents)
+                foreach (var p in ParametrosDe(a.Id))
+                    yield return PctCelda(e, p.Id);
+        }
+    }
+
+    private decimal? PctTorre(ItemCatalogo f) => PromedioDe(CeldasTorre(f));
+
+    private string DetalleTorre(ItemCatalogo f)
+    {
+        var l = CeldasTorre(f).ToList();
+        return $"{l.Count(x => x != null)} de {l.Count} aplican";
+    }
+
+    private decimal? PctAct(Ent? e, Actividad a) =>
+        e is Ent x ? PromedioDe(ParametrosDe(a.Id).Select(p => PctCelda(x, p.Id))) : null;
+
+    // Entidades (torres, patas o tiros) sobre las que se mide una actividad en el pie de la matriz.
+    private IEnumerable<Ent> EntidadesDe(Actividad a) => a.Ambito switch
+    {
+        AmbitoActividad.Torre => filas.Select(CompDe).Where(c => c != null).Select(c => new Ent('C', c!.Value)),
+        AmbitoActividad.Pata => filas.Where(f => f.ElementoTrazadoId != null)
+            .SelectMany(f => patasPorElemento.TryGetValue(f.ElementoTrazadoId!.Value, out var ps) ? ps : new List<Componente>())
+            .Where(pa => Aplica(pa.Id, a.Id)).Select(pa => new Ent('C', pa.Id)),
+        _ => tirosPorId.Keys.Select(id => new Ent('T', id))
+    };
+
+    private decimal? PctColumna(Actividad a, int paramId) => PromedioDe(EntidadesDe(a).Select(e => PctCelda(e, paramId)));
+
+    private decimal? PctGrupo(Actividad a) =>
+        PromedioDe(EntidadesDe(a).SelectMany(e => ParametrosDe(a.Id).Select(p => PctCelda(e, p.Id))));
+
+    private decimal? TotalGeneral() =>
+        PromedioDe(actividades.SelectMany(a => EntidadesDe(a).SelectMany(e => ParametrosDe(a.Id).Select(p => PctCelda(e, p.Id)))));
+
+    private static string FormatoPct(decimal? v) => v is null ? "—" : $"{v.Value:0.#}%";
+    private static string FormatoNum(decimal v) => v.ToString("0.##");
+
+    // ---------- Datos para los gráficos (misma plantilla que Ensayos) ----------
+    // Un registro por cada celda que APLICA de todas las torres, patas y
+    // tiros. La fecha y el mes solo se llenan cuando el estado está
+    // aprobado (peso 100 %).
+    private static readonly string[] Meses = { "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre" };
+
+    private List<Dictionary<string, object>> ColumnasGrafico() => new()
+    {
+        new() { ["title"] = "Tiro", ["field"] = "Tiro" },
+        new() { ["title"] = "Torre", ["field"] = "Torre" },
+        new() { ["title"] = "Pata", ["field"] = "Pata" },
+        new() { ["title"] = "Actividad", ["field"] = "Actividad" },
+        new() { ["title"] = "Parámetro", ["field"] = "Parametro" },
+        new() { ["title"] = "Estado", ["field"] = "Estado" },
+        new() { ["title"] = "Peso del estado (%)", ["field"] = "Peso" },
+        new() { ["title"] = "Fecha del control (OK)", ["field"] = "Fecha" },
+        new() { ["title"] = "Mes (OK)", ["field"] = "Mes" },
+        new() { ["title"] = "Año (OK)", ["field"] = "Anio" },
+        new() { ["title"] = "Fecha de facturado", ["field"] = "Facturado" },
+        new() { ["title"] = "Mes facturado", ["field"] = "MesFacturado" },
+    };
+
+    private Dictionary<string, TipoDatoCampoEnsayo?> TiposGrafico() => new()
+    {
+        ["Tiro"] = null, ["Torre"] = null, ["Pata"] = null, ["Actividad"] = null, ["Parametro"] = null, ["Estado"] = null, ["Mes"] = null, ["Anio"] = null, ["MesFacturado"] = null, ["Facturado"] = TipoDatoCampoEnsayo.Fecha,
+        ["Peso"] = TipoDatoCampoEnsayo.Numero,
+        ["Fecha"] = TipoDatoCampoEnsayo.Fecha,
+    };
+
+    private Dictionary<string, string> ColoresEstados()
+    {
+        var d = estados.ToDictionary(e => e.Nombre, e => e.Color, StringComparer.Ordinal);
+        d["Sin estado"] = "#bdbdbd";
+        return d;
+    }
+
+    private List<Dictionary<string, object>> FilasGrafico()
+    {
+        // Etiquetas de cada componente (torre y pata) para el gráfico.
+        var etiqueta = new Dictionary<int, (string Tiro, string Torre, string Pata)>();
+        foreach (var f in filas)
+        {
+            var tiro = TiroDe(f)?.Nombre ?? "";
+            if (CompDe(f) is int c) etiqueta[c] = (tiro, f.Nombre, "");
+            if (f.ElementoTrazadoId is int el && patasPorElemento.TryGetValue(el, out var ps))
+                foreach (var pa in ps) etiqueta[pa.Id] = (tiro, f.Nombre, pa.Nombre);
+        }
+
+        var lista = new List<Dictionary<string, object>>();
+        foreach (var a in actividades)
+        {
+            foreach (var e in EntidadesDe(a))
+            {
+                var (tiro, torre, pata) = e.T == 'T'
+                    ? (tirosPorId.TryGetValue(e.Id, out var t) ? t.Nombre : "", "", "")
+                    : (etiqueta.TryGetValue(e.Id, out var et) ? et : ("", "", ""));
+                foreach (var p in ParametrosDe(a.Id))
+                {
+                    var g = Guardado(e, p.Id);
+                    if (!g.Aplica) continue;
+                    var es = estados.FirstOrDefault(x => x.Id == g.Estado);
+                    var fila = new Dictionary<string, object>
+                    {
+                        ["Tiro"] = tiro,
+                        ["Torre"] = torre,
+                        ["Pata"] = pata,
+                        ["Actividad"] = a.Nombre,
+                        ["Parametro"] = p.Nombre,
+                        ["Estado"] = es?.Nombre ?? "Sin estado",
+                        ["Peso"] = (es?.Porcentaje ?? 0).ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    };
+                    if (es is not null && es.Porcentaje >= 100 && g.Fecha is DateTime fecha)
+                    {
+                        fila["Fecha"] = fecha.ToString("yyyy-MM-dd");
+                        fila["Mes"] = $"{fecha.Year}-{fecha.Month:00} {Meses[fecha.Month - 1]}";
+                        fila["Anio"] = fecha.Year.ToString();
+                    }
+                    if (FacturadoDe(e, p.Id) is DateTime fac)
+                    {
+                        fila["Facturado"] = fac.ToString("yyyy-MM-dd");
+                        fila["MesFacturado"] = $"{fac.Year}-{fac.Month:00} {Meses[fac.Month - 1]}";
+                    }
+                    lista.Add(fila);
+                }
+            }
+        }
+        return lista;
+    }
+
+    // ---------- Modo edición: todo queda pendiente hasta guardar ----------
+    private bool editando;
+    private bool confirmarDescartar;
+    private ArchivoRegistroParametro? adjuntoPorQuitar;
+    private readonly Dictionary<(Ent Ent, int Param), string> cambios = new();                          // estado elegido (valor del select)
+    private readonly List<(int Comp, int Param, ArchivoRegistroParametro Arch)> subidasPend = new();   // Id = 0, archivo ya en disco
+    private readonly HashSet<int> quitarPend = new();                                                   // ids de adjuntos a eliminar
+
+    private int Pendientes => cambios.Count + subidasPend.Count + quitarPend.Count;
+
+    // ======================= Vistas "mapa de calor" y "torre por torre" (solo presentación) =======================
+    private string vistaPie = "mapa";   // mapa | torre | matriz
+    private int? torreFoco;
+
+    private void VerVista(string v) { verGraficos = false; vistaPie = v; }
+
+    private void EnfocarTorre(ItemCatalogo f) { torreFoco = f.Id; vistaPie = "torre"; verGraficos = false; actEdit = null; }
+
+    // ---------- Torre por torre: editar los valores de una actividad y su documentación ----------
+    private int? actEdit;
+    private int? torreEdit;
+    private string mensajeAct = "";
+    private bool guardandoAct;
+
+    private sealed class FilaAct
+    {
+        public Ent E;
+        public string Etiqueta = "";
+        public ParametroActividad P = null!;
+        public bool Aplica;
+        public int? Estado;
+        public DateTime? Fecha, Facturado;
+        public string? Obs;
+    }
+    private List<FilaAct> filasAct = new();
+
+    private void EditarActividad(ItemCatalogo f, Actividad a)
+    {
+        if (actEdit == a.Id) { actEdit = null; return; }
+        actEdit = a.Id; torreEdit = f.Id; mensajeAct = "";
+        ArmarFilasAct(f, a);
+    }
+
+    private void ArmarFilasAct(ItemCatalogo f, Actividad a)
+    {
+        filasAct = new();
+        foreach (var (e, etq) in EntidadesTorre(f, a))
+            foreach (var p in ParametrosDe(a.Id))
+            {
+                var fila = new FilaAct { E = e, Etiqueta = etq, P = p };
+                if (e.T == 'T' && registrosTiro.TryGetValue((e.Id, p.Id), out var rt))
+                { fila.Aplica = rt.Completado; fila.Estado = rt.EstadoParametroId; fila.Fecha = rt.Fecha; fila.Facturado = rt.FechaFacturado; fila.Obs = rt.Observaciones; }
+                else if (e.T == 'C' && registros.TryGetValue((e.Id, p.Id), out var r))
+                { fila.Aplica = r.Completado; fila.Estado = r.EstadoParametroId; fila.Fecha = r.Fecha; fila.Facturado = r.FechaFacturado; fila.Obs = r.Observaciones; }
+                filasAct.Add(fila);
+            }
+    }
+
+    private async Task GuardarActividad(Actividad a)
+    {
+        guardandoAct = true; mensajeAct = "";
+        try
+        {
+            foreach (var x in filasAct)
+            {
+                var vacio = !x.Aplica && x.Fecha is null && x.Facturado is null && string.IsNullOrWhiteSpace(x.Obs);
+                var obs = string.IsNullOrWhiteSpace(x.Obs) ? null : x.Obs.Trim();
+                if (x.E.T == 'T')
+                {
+                    var rt = await Db.RegistrosParametroTiro.FirstOrDefaultAsync(r => r.TiroId == x.E.Id && r.ParametroActividadId == x.P.Id);
+                    if (rt is null) { if (vacio) continue; rt = new RegistroParametroTiro { TiroId = x.E.Id, ParametroActividadId = x.P.Id }; Db.RegistrosParametroTiro.Add(rt); }
+                    rt.Completado = x.Aplica; rt.EstadoParametroId = x.Aplica ? x.Estado : null; rt.Fecha = x.Fecha; rt.FechaFacturado = x.Facturado; rt.Observaciones = obs;
+                }
+                else
+                {
+                    var r = await Db.RegistrosParametro.FirstOrDefaultAsync(r => r.ComponenteId == x.E.Id && r.ParametroActividadId == x.P.Id);
+                    if (r is null) { if (vacio) continue; r = new RegistroParametro { ComponenteId = x.E.Id, ParametroActividadId = x.P.Id }; Db.RegistrosParametro.Add(r); }
+                    r.Completado = x.Aplica; r.EstadoParametroId = x.Aplica ? x.Estado : null; r.Fecha = x.Fecha; r.FechaFacturado = x.Facturado; r.Observaciones = obs;
+                }
+            }
+            await Db.SaveChangesAsync();
+            Db.ChangeTracker.Clear();
+            CargarSync();
+            if (filas.FirstOrDefault(t => t.Id == torreEdit) is { } f) ArmarFilasAct(f, a);
+            mensajeAct = "Guardado ✓";
+        }
+        catch (Exception ex) { Db.ChangeTracker.Clear(); mensajeAct = "No se pudo guardar: " + ex.Message; }
+        finally { guardandoAct = false; }
+    }
+
+    // Documentación de un parámetro de torre/pata: se guarda de una vez (crea el registro si no existe).
+    private async Task SubirAdjuntosAct(InputFileChangeEventArgs e, FilaAct x, Actividad a)
+    {
+        const long maxBytes = 10 * 1024 * 1024;
+        var carpeta = Path.Combine(Env.WebRootPath, "uploads", "trazado");
+        Directory.CreateDirectory(carpeta);
+        var fallos = new List<string>();
+        try
+        {
+            var reg = await Db.RegistrosParametro.FirstOrDefaultAsync(r => r.ComponenteId == x.E.Id && r.ParametroActividadId == x.P.Id);
+            if (reg is null)
+            {
+                reg = new RegistroParametro { ComponenteId = x.E.Id, ParametroActividadId = x.P.Id, Completado = x.Aplica, EstadoParametroId = x.Aplica ? x.Estado : null, Fecha = x.Fecha, FechaFacturado = x.Facturado, Observaciones = x.Obs };
+                Db.RegistrosParametro.Add(reg);
+                await Db.SaveChangesAsync();
+            }
+            foreach (var archivo in e.GetMultipleFiles(10))
+            {
+                if (archivo.Size > maxBytes) { fallos.Add($"{archivo.Name} (supera 10 MB)"); continue; }
+                var nombre = $"{Guid.NewGuid()}{Path.GetExtension(archivo.Name)}";
+                await using (var stream = archivo.OpenReadStream(maxBytes))
+                await using (var destino = File.Create(Path.Combine(carpeta, nombre)))
+                    await stream.CopyToAsync(destino);
+                Db.ArchivosRegistroParametro.Add(new ArchivoRegistroParametro { RegistroParametroId = reg.Id, NombreOriginal = archivo.Name, RutaArchivo = $"/uploads/trazado/{nombre}" });
+            }
+            await Db.SaveChangesAsync();
+        }
+        catch (Exception ex) { fallos.Add(ex.Message); }
+        Db.ChangeTracker.Clear();
+        // Conserva lo digitado en la tarjeta (aún sin guardar) al recargar.
+        var digitado = filasAct.ToDictionary(y => (y.E, y.P.Id));
+        CargarSync();
+        if (filas.FirstOrDefault(t => t.Id == torreEdit) is { } f)
+        {
+            ArmarFilasAct(f, a);
+            foreach (var y in filasAct)
+                if (digitado.TryGetValue((y.E, y.P.Id), out var d)) { y.Aplica = d.Aplica; y.Estado = d.Estado; y.Fecha = d.Fecha; y.Facturado = d.Facturado; y.Obs = d.Obs; }
+        }
+        mensajeAct = fallos.Count > 0 ? "No se cargaron: " + string.Join("; ", fallos) : "";
+    }
+
+    private RenderFragment EditorActividad(Actividad a) => __builder =>
+    {
+        var varias = filasAct.Select(x => x.E).Distinct().Count() > 1 || a.Ambito == AmbitoActividad.Pata;
+        <div class="pm-editor" @onclick:stopPropagation="true">
+            <div class="pm-editor-tabla">
+                <div class="pm-editor-fila pm-editor-th @(varias ? "con-elem" : "")">
+                    @if (varias) { <span>Elemento</span> }
+                    <span>Parámetro</span><span>Aplica</span><span>Estado</span><span>Fecha</span><span>Facturado</span><span>Observación</span><span>Documentación</span>
+                </div>
+                @foreach (var fx in filasAct)
+                {
+                    var x = fx;
+                    <div class="pm-editor-fila @(varias ? "con-elem" : "") @(x.Aplica ? "" : "pm-editor-na")">
+                        @if (varias) { <span class="pm-editor-elem">@x.Etiqueta</span> }
+                        <span class="pm-editor-param" title="@x.P.Nombre">@(string.IsNullOrEmpty(x.P.Codigo) ? "" : x.P.Codigo + " — ")@x.P.Nombre</span>
+                        <span><input type="checkbox" class="form-check-input" checked="@x.Aplica" @onchange="@(e => { x.Aplica = e.Value is true; if (!x.Aplica) x.Estado = null; })" /></span>
+                        <span>
+                            <select class="form-select form-select-sm" disabled="@(!x.Aplica)" value="@(x.Estado?.ToString() ?? "")" @onchange="@(e => x.Estado = int.TryParse(e.Value?.ToString(), out var v) ? v : null)">
+                                <option value="">Sin estado</option>
+                                @foreach (var es in estados)
+                                {
+                                    <option value="@es.Id">@es.Nombre</option>
+                                }
+                            </select>
+                        </span>
+                        <span><input type="date" class="form-control form-control-sm" @bind="x.Fecha" /></span>
+                        <span><input type="date" class="form-control form-control-sm" @bind="x.Facturado" /></span>
+                        <span><input class="form-control form-control-sm" @bind="x.Obs" /></span>
+                        <span class="pm-editor-docs">
+                            @if (x.E.T == 'C')
+                            {
+                                @foreach (var ad in AdjuntosDe(x.E.Id, x.P.Id))
+                                {
+                                    var adj = ad;
+                                    <span class="pm-doc">
+                                        <a href="@adj.RutaArchivo" target="_blank" rel="noopener" title="@adj.NombreOriginal">@adj.NombreOriginal</a>
+                                        <button type="button" class="gf-x" title="Quitar (va a la Papelera)" @onclick="() => PedirQuitar(adj)">✕</button>
+                                    </span>
+                                }
+                                <label class="ens-mini mb-0" title="Cargar documentación"><Ico Nombre="adjuntar" /><InputFile class="d-none" multiple accept=".pdf,image/*" OnChange="@(ev => SubirAdjuntosAct(ev, x, a))" /></label>
+                            }
+                            else
+                            {
+                                <span class="text-muted small">—</span>
+                            }
+                        </span>
+                    </div>
+                }
+            </div>
+            <div class="pm-editor-pie">
+                <span class="small @(mensajeAct.StartsWith("No") ? "text-danger" : "text-success")">@mensajeAct</span>
+                <button type="button" class="btn btn-sm btn-secondary" title="Cerrar sin guardar" @onclick="() => actEdit = null"><Ico Nombre="cancelar" /></button>
+                <button type="button" class="btn btn-sm btn-primary" title="Guardar" disabled="@guardandoAct" @onclick="() => GuardarActividad(a)"><Ico Nombre="guardar" /></button>
+            </div>
+        </div>
+    };
+
+    // Torres de los filtros (una vez cada una, en el orden de la matriz).
+    private List<ItemCatalogo> TorresMostradas() => FilasMostradas.Select(r => r.Torre).DistinctBy(t => t.Id).ToList();
+
+    // Entidades (torre, patas o tiro) de una torre para una actividad, con su nombre.
+    private List<(Ent E, string Etiqueta)> EntidadesTorre(ItemCatalogo f, Actividad a)
+    {
+        var r = new List<(Ent, string)>();
+        switch (a.Ambito)
+        {
+            case AmbitoActividad.Torre:
+                if (CompDe(f) is int c) r.Add((new Ent('C', c), f.Nombre));
+                break;
+            case AmbitoActividad.Pata:
+                if (f.ElementoTrazadoId is int el && patasPorElemento.TryGetValue(el, out var ps))
+                    foreach (var pa in ps.Where(pa => Aplica(pa.Id, a.Id))) r.Add((new Ent('C', pa.Id), pa.Nombre));
+                break;
+            default:
+                if (TiroDe(f) is { } t) r.Add((new Ent('T', t.Id), t.Nombre));
+                break;
+        }
+        return r;
+    }
+
+    private decimal? PctTorreAct(ItemCatalogo f, Actividad a) =>
+        PromedioDe(EntidadesTorre(f, a).SelectMany(x => ParamsVis(a).Select(p => PctCelda(x.E, p.Id))));
+
+    // Color del mapa: rojo (0 %) → ámbar → verde (100 %); sin dato = sin color.
+    private static string EstiloPct(decimal? v)
+    {
+        if (v is not decimal x) return "";
+        var h = (int)Math.Round(Math.Clamp(x, 0, 100) * 1.2m);
+        return $"background:hsl({h} 62% 46%);color:#fff;";
+    }
+
+    private static string Pct0(decimal? v) => v is decimal x ? x.ToString("0", System.Globalization.CultureInfo.InvariantCulture) : "";
+
+    private RenderFragment VistaMapa() => __builder =>
+    {
+        var torres = TorresMostradas();
+        var acts = actividades.Where(a => ParamsVis(a).Count > 0).ToList();
+        <div class="pm-mapa-marco">
+            <table class="pm-mapa">
+                <thead>
+                    <tr>
+                        <th class="pm-esq">Torre</th>
+                        <th class="pm-tot-th" title="Cumplimiento de la torre">%</th>
+                        @foreach (var a in acts)
+                        {
+                            <th class="pm-act" title="@($"{a.Nombre} · {NombreAmbito(a.Ambito)}")"><span class="pm-act-txt"><img src="@RutaIconoActividad(a)" alt="" width="13" height="13" />@a.Nombre</span></th>
+                        }
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var t in torres)
+                    {
+                        var f = t;
+                        var pt = PctTorre(f);
+                        <tr>
+                            <th class="pm-torre" @onclick="() => EnfocarTorre(f)" title="Ver torre">
+                                <span class="pm-torre-nom">@f.Nombre</span>
+                                @if (TiroDe(f) is { } ti) { <span class="pm-torre-tiro">@ti.Nombre</span> }
+                            </th>
+                            <td class="pm-tot" title="@DetalleTorre(f)">
+                                <span class="pm-tot-barra"><span style="width:@Pct0(pt ?? 0)%;@EstiloPct(pt)"></span></span>
+                                <span class="pm-tot-num">@FormatoPct(pt)</span>
+                            </td>
+                            @foreach (var ac in acts)
+                            {
+                                var a = ac;
+                                var v = PctTorreAct(f, a);
+                                <td class="pm-cel @(v is null ? "pm-sin" : "")" style="@EstiloPct(v)" title="@($"{f.Nombre} · {a.Nombre}: {FormatoPct(v)}")" @onclick="() => EnfocarTorre(f)">@Pct0(v)</td>
+                            }
+                        </tr>
+                    }
+                    @if (torres.Count == 0)
+                    {
+                        <tr><td colspan="@(acts.Count + 2)" class="text-muted small text-center py-3">Sin torres.</td></tr>
+                    }
+                </tbody>
+                <tfoot>
+                    <tr>
+                        <th class="pm-esq">PIE</th>
+                        <td class="pm-tot"><span class="pm-tot-num fw-bold">@FormatoPct(TotalGeneral())</span></td>
+                        @foreach (var a in acts)
+                        {
+                            var v = PctGrupo(a);
+                            <td class="pm-cel pm-pie @(v is null ? "pm-sin" : "")" style="@EstiloPct(v)" title="@($"{a.Nombre}: {FormatoPct(v)}")">@Pct0(v)</td>
+                        }
+                    </tr>
+                </tfoot>
+            </table>
+        </div>
+        <div class="pm-escala"><span>0 %</span><span class="pm-escala-barra"></span><span>100 %</span><span class="pm-escala-sin"></span><span>No aplica</span></div>
+    };
+
+    private RenderFragment VistaTorre() => __builder =>
+    {
+        var torres = TorresMostradas();
+        var foco = torres.FirstOrDefault(t => t.Id == torreFoco) ?? torres.FirstOrDefault();
+        <div class="ind-foco">
+            <nav class="ind-rail">
+                @foreach (var t in torres)
+                {
+                    var f = t;
+                    var pt = PctTorre(f);
+                    <button type="button" class="ind-rail-item @(foco?.Id == f.Id ? "activo" : "")" @onclick="() => { torreFoco = f.Id; actEdit = null; }">
+                        <span class="pv-rail-cab">
+                            <span class="pv-cod">@f.Nombre</span>
+                            @if (TiroDe(f) is { } ti) { <span class="pv-fecha">@ti.Nombre</span> }
+                            <span class="pm-rail-pct" style="@EstiloPct(pt)">@FormatoPct(pt)</span>
+                        </span>
+                        <span class="pv-avance"><span style="width:@Pct0(pt ?? 0)%;@EstiloPct(pt)"></span></span>
+                    </button>
+                }
+                @if (torres.Count == 0)
+                {
+                    <span class="text-muted small p-2">Sin torres.</span>
+                }
+            </nav>
+            @if (foco is not null)
+            {
+                var f = foco;
+                var pos = torres.FindIndex(x => x.Id == f.Id);
+                var celdas = CeldasTorre(f).ToList();
+                var pt = PctTorre(f);
+                var acts = actividades.Where(a => ParamsVis(a).Count > 0).ToList();
+                var completas = acts.Count(a => PctTorreAct(f, a) is decimal x && x >= 100);
+                <section class="ind-det">
+                    <div class="ind-det-cab">
+                        <button type="button" class="ind-nav" title="Anterior" disabled="@(pos <= 0)" @onclick="() => { torreFoco = torres[pos - 1].Id; actEdit = null; }">‹</button>
+                        <div class="ind-det-tits">
+                            <h2 class="ind-det-nom">Torre @f.Nombre</h2>
+                            <div class="ind-chips">
+                                @if (TiroDe(f) is { } ti) { <span class="ind-chip">Tiro @ti.Nombre</span> }
+                                @if (f.ElementoTrazadoId is int el)
+                                {
+                                    <a class="ind-chip pv-riesgo" href="@($"trazado?torre={el}")" title="Abrir la hoja de vida en Trazado">Hoja de vida ›</a>
+                                }
+                            </div>
+                        </div>
+                        <span class="ind-det-pos">@(pos + 1) / @torres.Count</span>
+                        <button type="button" class="ind-nav" title="Siguiente" disabled="@(pos >= torres.Count - 1)" @onclick="() => { torreFoco = torres[pos + 1].Id; actEdit = null; }">›</button>
+                    </div>
+
+                    <div class="ind-kpis">
+                        <div class="ind-kpi pv-kpi-anillo">
+                            <span class="pv-anillo" style="--pct:@Pct0(pt ?? 0);"><span>@FormatoPct(pt)</span></span>
+                            <span class="pv-anillo-txt"><span class="ind-kpi-tit">Cumplimiento</span><span class="ind-kpi-sub">PIE de la torre</span></span>
+                        </div>
+                        <div class="ind-kpi">
+                            <span class="ind-kpi-tit">Registros que aplican</span>
+                            <span class="ind-kpi-val">@celdas.Count(x => x != null)<small> / @celdas.Count</small></span>
+                            <span class="ind-kpi-sub">@celdas.Count(x => x == null) N/A</span>
+                        </div>
+                        <div class="ind-kpi">
+                            <span class="ind-kpi-tit">Completos (100 %)</span>
+                            <span class="ind-kpi-val">@celdas.Count(x => x >= 100)</span>
+                            <span class="ind-kpi-sub">@celdas.Count(x => x is not null && x < 100) por avanzar</span>
+                        </div>
+                        <div class="ind-kpi">
+                            <span class="ind-kpi-tit">Actividades al 100 %</span>
+                            <span class="ind-kpi-val">@completas<small> / @acts.Count</small></span>
+                            <span class="ind-kpi-sub">de la matriz</span>
+                        </div>
+                    </div>
+
+                    <div class="pm-acts">
+                        @foreach (var ac in acts)
+                        {
+                            var a = ac;
+                            var v = PctTorreAct(f, a);
+                            var ents = EntidadesTorre(f, a);
+                            <div class="pm-act-tarjeta @(actEdit == a.Id ? "pm-act-editando" : "")">
+                                <div class="pm-act-cab" role="button" title="@(actEdit == a.Id ? "Cerrar" : "Editar valores y cargar documentación")" @onclick="() => EditarActividad(f, a)">
+                                    <img src="@RutaIconoActividad(a)" alt="" width="18" height="18" />
+                                    <div class="pm-act-tits"><span class="pm-act-nom">@a.Nombre</span><span class="pm-act-amb">@NombreAmbito(a.Ambito)</span></div>
+                                    <span class="pm-rail-pct" style="@EstiloPct(v)">@FormatoPct(v)</span>
+                                    <span class="pm-act-editar"><Ico Nombre="@(actEdit == a.Id ? "cancelar" : "editar")" /></span>
+                                </div>
+                                <span class="pv-avance"><span style="width:@Pct0(v ?? 0)%;@EstiloPct(v)"></span></span>
+                                @if (actEdit == a.Id)
+                                {
+                                    @EditorActividad(a)
+                                }
+                                else
+                                {
+                                @if (ents.Count == 0)
+                                {
+                                    <span class="small text-muted">@(a.Ambito == AmbitoActividad.Tiro ? "Torre sin tiro asignado" : a.Ambito == AmbitoActividad.Torre ? "Sin hoja de vida" : "Sin patas con esta actividad")</span>
+                                }
+                                @foreach (var (e, etq) in ents)
+                                {
+                                    var ent = e;
+                                    <div class="pm-ent">
+                                        @if (ents.Count > 1 || a.Ambito == AmbitoActividad.Pata) { <span class="pm-ent-nom">@etq</span> }
+                                        <div class="pm-params">
+                                            @foreach (var pr in ParamsVis(a))
+                                            {
+                                                var g = Guardado(ent, pr.Id);
+                                                var es = estados.FirstOrDefault(x => x.Id == g.Estado);
+                                                <span class="pm-param @(g.Aplica ? "" : "pm-param-na")" style="@(g.Aplica ? $"--pm:{es?.Color ?? "#adb5bd"};" : "")"
+                                                      title="@($"{pr.Nombre}: {(g.Aplica ? es?.Nombre ?? "Sin estado" : "N/A")}{(g.Fecha is DateTime fe ? " · " + fe.ToString("dd/MM/yyyy") : "")}")">
+                                                    <span class="pm-param-punto"></span>@(string.IsNullOrEmpty(pr.Codigo) ? pr.Nombre : pr.Codigo)
+                                                </span>
+                                            }
+                                        </div>
+                                    </div>
+                                }
+                                }
+                            </div>
+                        }
+                    </div>
+                </section>
+            }
+        </div>
+    };
+
+    private int? CompDe(ItemCatalogo f) =>
+        f.ElementoTrazadoId is not null && ComponentePorElemento.TryGetValue(f.ElementoTrazadoId.Value, out var c) ? c : null;
+
+    private void AlternarEdicion()
+    {
+        if (!editando) { vistaPie = "matriz"; verGraficos = false; editando = true; return; }
+        if (Pendientes > 0) { confirmarDescartar = true; return; }
+        editando = false;
+    }
+
+    private void Descartar()
+    {
+        foreach (var s in subidasPend) BorrarFisico(s.Arch.RutaArchivo);
+        cambios.Clear(); subidasPend.Clear(); quitarPend.Clear();
+        confirmarDescartar = false; editando = false;
+    }
+
+    private void BorrarFisico(string ruta)
+    {
+        try { var f = Path.Combine(Env.WebRootPath, ruta.TrimStart('/').Replace('/', Path.DirectorySeparatorChar)); if (File.Exists(f)) File.Delete(f); } catch { }
+    }
+
+    private async Task SubirAdjuntos(InputFileChangeEventArgs e, int comp, ParametroActividad p)
+    {
+        const long maxBytes = 10 * 1024 * 1024;
+        var carpeta = Path.Combine(Env.WebRootPath, "uploads", "trazado");
+        Directory.CreateDirectory(carpeta);
+        foreach (var archivo in e.GetMultipleFiles(10))
+        {
+            if (archivo.Size > maxBytes) continue;
+            var nombre = $"{Guid.NewGuid()}{Path.GetExtension(archivo.Name)}";
+            await using (var stream = archivo.OpenReadStream(maxBytes))
+            await using (var destino = File.Create(Path.Combine(carpeta, nombre)))
+                await stream.CopyToAsync(destino);
+            subidasPend.Add((comp, p.Id, new ArchivoRegistroParametro { NombreOriginal = archivo.Name, RutaArchivo = $"/uploads/trazado/{nombre}" }));
+        }
+    }
+
+    private SigWeb.Data.Impacto.InformeImpacto? impacto;
+    private bool impactoOk;
+    private bool BloqueadoPorImpacto => impacto is null || (impacto.RequiereEntender && !impactoOk);
+
+    private async Task CalcularImpacto(Func<Task<SigWeb.Data.Impacto.InformeImpacto>> f)
+    {
+        impacto = null; impactoOk = false;
+        try { impacto = await f(); } catch { impacto = new SigWeb.Data.Impacto.InformeImpacto { Elemento = "No se pudo calcular el impacto" }; }
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private void PedirQuitar(ArchivoRegistroParametro a)
+    {
+        adjuntoPorQuitar = a;
+        if (a.Id == 0) impacto = new SigWeb.Data.Impacto.InformeImpacto { Elemento = $"Adjunto \"{a.NombreOriginal}\" (aún sin guardar)" };
+        else _ = CalcularImpacto(() => Analizador.AdjuntoRegistro(a.Id));
+    }
+
+    private async Task ConfirmarQuitar()
+    {
+        if (adjuntoPorQuitar is null) return;
+        var a = adjuntoPorQuitar;
+        if (a.Id == 0)
+        {
+            var i = subidasPend.FindIndex(x => ReferenceEquals(x.Arch, a));
+            if (i >= 0) { BorrarFisico(a.RutaArchivo); subidasPend.RemoveAt(i); }
+        }
+        else if (editando) quitarPend.Add(a.Id);
+        else
+        {
+            // Fuera del modo edición (tarjeta de actividad en "torre por torre"): a la Papelera de una vez.
+            var ent = await Db.ArchivosRegistroParametro.FindAsync(a.Id);
+            if (ent is not null) { ent.Eliminado = true; ent.FechaEliminacion = DateTime.Now; await Db.SaveChangesAsync(); }
+            Db.ChangeTracker.Clear();
+            CargarSync();
+        }
+        adjuntoPorQuitar = null;
+    }
+
+    private async Task GuardarTodo()
+    {
+        if (Pendientes == 0) return;
+        // Estados
+        foreach (var ((ent, paramId), valor) in cambios)
+        {
+            var aplica = valor != "na";
+            int? estado = !aplica || valor == "0" ? null : int.Parse(valor);
+            if (ent.T == 'T')
+            {
+                var rt = Db.RegistrosParametroTiro.FirstOrDefault(r => r.TiroId == ent.Id && r.ParametroActividadId == paramId);
+                if (rt is null)
+                {
+                    if (!aplica) continue;
+                    rt = new RegistroParametroTiro { TiroId = ent.Id, ParametroActividadId = paramId };
+                    Db.RegistrosParametroTiro.Add(rt);
+                }
+                rt.Completado = aplica; rt.EstadoParametroId = estado;
+            }
+            else
+            {
+                var reg = Db.RegistrosParametro.FirstOrDefault(r => r.ComponenteId == ent.Id && r.ParametroActividadId == paramId);
+                if (reg is null)
+                {
+                    if (!aplica) continue;
+                    reg = new RegistroParametro { ComponenteId = ent.Id, ParametroActividadId = paramId };
+                    Db.RegistrosParametro.Add(reg);
+                }
+                reg.Completado = aplica; reg.EstadoParametroId = estado;
+            }
+        }
+        await Db.SaveChangesAsync();
+
+        // Adjuntos nuevos (el registro se crea si no existía)
+        foreach (var (comp, paramId, arch) in subidasPend)
+        {
+            var reg = Db.RegistrosParametro.FirstOrDefault(r => r.ComponenteId == comp && r.ParametroActividadId == paramId);
+            if (reg is null)
+            {
+                reg = new RegistroParametro { ComponenteId = comp, ParametroActividadId = paramId };
+                Db.RegistrosParametro.Add(reg);
+                await Db.SaveChangesAsync();
+            }
+            Db.ArchivosRegistroParametro.Add(new ArchivoRegistroParametro { RegistroParametroId = reg.Id, NombreOriginal = arch.NombreOriginal, RutaArchivo = arch.RutaArchivo });
+        }
+        // Adjuntos quitados → Papelera
+        foreach (var id in quitarPend)
+        {
+            var ent = await Db.ArchivosRegistroParametro.FindAsync(id);
+            if (ent is not null) { ent.Eliminado = true; ent.FechaEliminacion = DateTime.Now; }
+        }
+        await Db.SaveChangesAsync();
+        cambios.Clear(); subidasPend.Clear(); quitarPend.Clear();
+        editando = false;
+        CargarSync();
+    }
+
+    // Estado elegido en el select: queda pendiente hasta guardar.
+    private void CambiarCelda(Ent e, ParametroActividad p, string valor)
+    {
+        var original = Valor(Guardado(e, p.Id));
+        if (valor == original) cambios.Remove((e, p.Id)); else cambios[(e, p.Id)] = valor;
+    }
+
+    // ---------- Estados ----------
+    private async Task AgregarEstado()
+    {
+        Db.EstadosParametro.Add(new EstadoParametro { Nombre = "Nuevo estado", Orden = estados.Count + 1 });
+        await Db.SaveChangesAsync();
+        Db.ChangeTracker.Clear();
+        CargarSync();
+    }
+
+    private async Task CambiarEstado(EstadoParametro e, string campo, string? valor)
+    {
+        var db = Db.EstadosParametro.First(x => x.Id == e.Id);
+        if (campo == "nombre" && !string.IsNullOrWhiteSpace(valor)) db.Nombre = valor.Trim();
+        if (campo == "color" && !string.IsNullOrWhiteSpace(valor)) db.Color = valor;
+        if (campo == "pct" && decimal.TryParse(valor, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var n))
+            db.Porcentaje = Math.Clamp(n, 0, 100);
+        await Db.SaveChangesAsync();
+        Db.ChangeTracker.Clear();
+        CargarSync();
+    }
+
+    private async Task EliminarEstado(EstadoParametro e)
+    {
+        var db = Db.EstadosParametro.First(x => x.Id == e.Id);
+        Db.EstadosParametro.Remove(db);
+        await Db.SaveChangesAsync();
+        Db.ChangeTracker.Clear();
+        CargarSync();
+    }
+
+    // Desde los gráficos, «volver» regresa a la matriz; en la matriz, a la página anterior.
+    private EventCallback AtrasMatriz => verGraficos ? EventCallback.Factory.Create(this, () => { verGraficos = false; }) : default;
+}

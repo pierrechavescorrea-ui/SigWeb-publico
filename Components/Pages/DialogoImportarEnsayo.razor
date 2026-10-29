@@ -1,0 +1,711 @@
+@* Carga masiva de resultados desde Excel para un Tipo de Ensayo. Lee el
+   archivo (reutilizando el mismo lector genérico que la tabla de
+   torres), deja mapear cada columna a un destino (Torre, Elemento,
+   Informe, Diseño de mezcla o un campo de la plantilla), recuerda ese
+   mapeo para la próxima carga del mismo tipo de ensayo, y antes de
+   guardar muestra advertencias (torres/patas no reconocidas) y
+   discrepancias entre lo que trae el Excel en un campo de fórmula y lo
+   que el sistema recalcula, para que el usuario decida. *@
+@using System.Globalization
+@using Microsoft.AspNetCore.Components.Forms
+@using Microsoft.EntityFrameworkCore
+@using SigWeb.Data
+@using SigWeb.Data.Ensayos
+@using SigWeb.Data.Trazado
+@using SigWeb.Models
+@inject AppDbContext Db
+
+<div class="modal-backdrop-custom">
+    <div class="modal-box-custom" style="max-width: 1100px;">
+        @if (procesando)
+        {
+            <div class="overlay-procesando">
+                <div class="spinner-border text-primary" role="status"></div>
+                <div>@mensajeProcesando</div>
+            </div>
+        }
+
+        <div class="d-flex justify-content-between align-items-center mb-2">
+            <h5 class="mb-0"><Ico Nombre="cargar-excel" /></h5>
+            <button type="button" class="btn-close" aria-label="Cerrar" @onclick="Cerrar"></button>
+        </div>
+
+        @if (paso == "subir")
+        {
+            <p class="text-muted small">
+                Cada tipo de ensayo recuerda su propio mapeo de columnas: la próxima vez que cargues un Excel
+                parecido para "@tipo?.Nombre", se propone automáticamente.
+            </p>
+
+            <div class="row g-2 align-items-end mb-2">
+                <div class="col-md-6">
+                    <label class="form-label mb-1 small">Archivo Excel</label>
+                    <InputFile class="form-control form-control-sm" OnChange="SeleccionarArchivo" accept=".xlsx" />
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label mb-1 small">Filas de encabezado</label>
+                    <input type="number" class="form-control form-control-sm" min="1" max="6" @bind="filasEncabezado" />
+                </div>
+            </div>
+
+            @if (!string.IsNullOrEmpty(errorArchivo))
+            {
+                <div class="alert alert-warning py-1">@errorArchivo</div>
+            }
+
+            <div class="d-flex justify-content-end gap-2">
+                <button class="btn btn-secondary btn-sm" @onclick="Cerrar" title="Cancelar"><Ico Nombre="cancelar" /></button>
+                <button class="btn btn-primary btn-sm" disabled="@(archivoCargado is null)" @onclick="LeerArchivo">Leer archivo</button>
+            </div>
+        }
+        else if (paso == "mapeo")
+        {
+            <p class="text-muted small mb-2">
+                Elige a qué corresponde cada columna. @(usaTorre ? "\"Torre\"" : "\"Localización\"") y "Elemento"
+                son las que permiten cruzar automáticamente estos resultados con el módulo Trazado.
+            </p>
+
+            <div class="modal-area-flexible">
+                <table class="table table-sm tabla-compacta align-middle">
+                    <thead style="position: sticky; top: 0; background: #fff;">
+                        <tr>
+                            <th style="width: 26%;">Columna</th>
+                            <th style="width: 18%;">Ejemplo</th>
+                            <th>Corresponde a</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var m in mapeos)
+                        {
+                            <tr>
+                                <td class="small">@m.Columna.EncabezadoVisible</td>
+                                <td class="small text-muted">@m.Columna.Ejemplo</td>
+                                <td>
+                                    <select class="form-select form-select-sm" @bind="m.Destino">
+                                        <option value="@DestinoColumnaEnsayo.Ignorar">Ignorar</option>
+                                        @if (usaTorre)
+                                        {
+                                            <option value="@DestinoColumnaEnsayo.Torre">Torre</option>
+                                        }
+                                        else
+                                        {
+                                            <option value="@DestinoColumnaEnsayo.Localizacion">Localización</option>
+                                        }
+                                        <option value="@DestinoColumnaEnsayo.Elemento">Elemento (pata)</option>
+                                        <option value="@DestinoColumnaEnsayo.Informe">No. Informe</option>
+                                        <option value="@DestinoColumnaEnsayo.DisenoMezcla">Diseño de mezcla (código)</option>
+                                        @foreach (var c in campos)
+                                        {
+                                            <option value="@DestinoColumnaEnsayo.ParaCampo(c.Clave)">@EtiquetaCampo(c.Clave)</option>
+                                        }
+                                    </select>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+
+            @if ((usaTorre ? !TieneTorre : !TieneLocalizacion) || !TieneElemento)
+            {
+                <div class="alert alert-warning py-1 mt-2">
+                    Marca una columna como "@(usaTorre ? "Torre" : "Localización")" y otra como "Elemento (pata)" para poder cruzar los resultados con Trazado.
+                </div>
+            }
+
+            <div class="d-flex justify-content-end gap-2 mt-2">
+                <button class="btn btn-secondary btn-sm" @onclick="Cerrar" title="Cancelar"><Ico Nombre="cancelar" /></button>
+                <button class="btn btn-primary btn-sm" disabled="@(procesando)" @onclick="Procesar">
+                    @(procesando ? "Revisando..." : $"Revisar ({tabla?.Filas.Count ?? 0} fila(s))")
+                </button>
+            </div>
+        }
+        else if (paso == "revision")
+        {
+            <div class="d-flex gap-3 mb-2 small">
+                <span class="badge bg-secondary">@filas.Count fila(s) leídas</span>
+                <span class="badge bg-success">@(filas.Count - filasConProblemas.Count) sin novedad</span>
+                <span class="badge bg-warning text-dark">@filasConProblemas.Count con advertencia o discrepancia</span>
+            </div>
+
+            @if (torresNoResueltas.Count > 0)
+            {
+                <div class="border border-warning rounded p-2 mb-2">
+                    <strong class="d-block mb-1 small">
+                        Torres que no coinciden exactamente con Trazado — elige a cuál corresponde cada una
+                        (se recuerda para las próximas cargas):
+                    </strong>
+                    @foreach (var t in torresNoResueltas)
+                    {
+                        <div class="d-flex align-items-center gap-2 mb-1 flex-wrap">
+                            <span class="small">"<strong>@t.Texto</strong>" (@t.Cantidad fila(s))</span>
+                            <input class="form-control form-control-sm" style="max-width: 160px;" list="listaCodigosTorre"
+                                   value="@(torreElegidaPorTexto.TryGetValue(t.Texto, out var v) ? v : (t.Sugerencias.FirstOrDefault() ?? ""))"
+                                   @oninput="@(e => torreElegidaPorTexto[t.Texto] = e.Value?.ToString() ?? "")" />
+                            <button class="btn btn-sm btn-outline-primary" @onclick="@(() => AplicarResolucionTorre(t.Texto, torreElegidaPorTexto.TryGetValue(t.Texto, out var v2) ? v2 : (t.Sugerencias.FirstOrDefault() ?? "")))">
+                                Es esta torre
+                            </button>
+                            <button class="btn btn-sm btn-outline-secondary" @onclick="@(() => DeclinarResolucionTorre(t.Texto))">
+                                Ninguna, dejar sin torre
+                            </button>
+                        </div>
+                    }
+                    <datalist id="listaCodigosTorre">
+                        @foreach (var c in codigosTorresExistentes)
+                        {
+                            <option value="@c"></option>
+                        }
+                    </datalist>
+                </div>
+            }
+
+            @if (filasConDiscrepancias.Count > 0)
+            {
+                <div class="d-flex gap-2 mb-2">
+                    <button class="btn btn-sm btn-outline-primary" @onclick='() => ElegirTodasLasDiscrepancias("calculado")'>
+                        Usar recalculado en todas las discrepancias
+                    </button>
+                    <button class="btn btn-sm btn-outline-secondary" @onclick='() => ElegirTodasLasDiscrepancias("excel")'>
+                        Usar valor del Excel en todas
+                    </button>
+                </div>
+            }
+
+            @if (filasConProblemas.Count == 0)
+            {
+                <div class="alert alert-success py-1">Todo se reconoció sin novedades. Puedes confirmar la carga.</div>
+            }
+            else
+            {
+                <div class="modal-area-flexible">
+                    <table class="table table-sm tabla-compacta align-middle">
+                        <thead style="position: sticky; top: 0; background: #fff;">
+                            <tr>
+                                <th style="width:60px;">Incluir</th>
+                                <th style="width:60px;">Fila</th>
+                                <th>Detalle</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var f in filasConProblemas)
+                            {
+                                <tr>
+                                    <td>
+                                        <input type="checkbox" checked="@(!filasExcluidas.Contains(f.Fila))"
+                                               @onchange="@(e => AlternarExcluida(f.Fila, (bool)e.Value!))" />
+                                    </td>
+                                    <td>@f.Fila</td>
+                                    <td class="small">
+                                        @foreach (var a in f.Advertencias)
+                                        {
+                                            <div class="text-warning">⚠ @a</div>
+                                        }
+                                        @if (f.SubElemento == SubElementoResultado.Otro && f.ElementoTrazadoId is not null)
+                                        {
+                                            <div class="d-flex align-items-center gap-2 mt-1">
+                                                <label class="form-label mb-0 small text-nowrap">Crear/usar como elemento:</label>
+                                                <input class="form-control form-control-sm" style="max-width: 220px;"
+                                                       value="@f.ElementoEspecialNombre"
+                                                       @oninput="@(e => f.ElementoEspecialNombre = e.Value?.ToString() ?? "")" />
+                                            </div>
+                                        }
+                                        @foreach (var (clave, par) in f.Discrepancias)
+                                        {
+                                            var claveLocal = clave;
+                                            <div>
+                                                <strong>@EtiquetaCampo(claveLocal)</strong> no coincide:
+                                                Excel = <code>@par.ValorExcel</code>, recalculado = <code>@par.ValorCalculado</code>.
+                                                <div class="form-check form-check-inline">
+                                                    <input class="form-check-input" type="radio" name="@("disc_" + f.Fila + "_" + claveLocal)"
+                                                           checked="@(f.EleccionDiscrepancia[claveLocal] == "calculado")"
+                                                           @onchange="@(() => f.EleccionDiscrepancia[claveLocal] = "calculado")" />
+                                                    <label class="form-check-label">Usar recalculado</label>
+                                                </div>
+                                                <div class="form-check form-check-inline">
+                                                    <input class="form-check-input" type="radio" name="@("disc_" + f.Fila + "_" + claveLocal)"
+                                                           checked="@(f.EleccionDiscrepancia[claveLocal] == "excel")"
+                                                           @onchange="@(() => f.EleccionDiscrepancia[claveLocal] = "excel")" />
+                                                    <label class="form-check-label">Usar del Excel</label>
+                                                </div>
+                                            </div>
+                                        }
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+
+            <div class="d-flex justify-content-end gap-2 mt-2">
+                <button class="btn btn-secondary btn-sm" @onclick="Cerrar" title="Cancelar"><Ico Nombre="cancelar" /></button>
+                <button class="btn btn-primary btn-sm" disabled="@procesando" @onclick="ConfirmarImportar">
+                    @(procesando ? "Importando..." : $"Confirmar e importar ({filas.Count - filasExcluidas.Count})")
+                </button>
+            </div>
+        }
+        else if (paso == "resultado")
+        {
+            <div class="alert alert-success">@mensajeResultado</div>
+            <div class="d-flex justify-content-end">
+                <button class="btn btn-primary btn-sm" @onclick="Cerrar">Cerrar</button>
+            </div>
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter] public int TipoEnsayoId { get; set; }
+    [Parameter] public EventCallback OnCerrar { get; set; }
+    [Parameter] public EventCallback OnImportado { get; set; }
+
+    private class MapeoColumnaUI
+    {
+        public ColumnaTablaTorres Columna { get; set; } = null!;
+        public string Destino { get; set; } = DestinoColumnaEnsayo.Ignorar;
+    }
+
+    private string paso = "subir"; // subir | mapeo | revision | resultado
+    private int filasEncabezado = 1;
+    private IBrowserFile? archivoCargado;
+    private string nombreArchivo = "";
+    private string errorArchivo = "";
+    private bool procesando = false;
+    private string mensajeProcesando = "";
+    private string mensajeResultado = "";
+
+    private TipoEnsayo? tipo;
+    private List<CampoEnsayo> campos = new();
+    private TablaTorresCruda? tabla;
+    private List<MapeoColumnaUI> mapeos = new();
+
+    private List<FilaImportadaEnsayo> filas = new();
+    private HashSet<int> filasExcluidas = new();
+
+    private List<FilaImportadaEnsayo> filasConProblemas => filas.Where(f => f.Advertencias.Count > 0 || f.Discrepancias.Count > 0).ToList();
+    private List<FilaImportadaEnsayo> filasConDiscrepancias => filas.Where(f => f.Discrepancias.Count > 0).ToList();
+
+    // ---------- Torres cuyo texto no coincidió con ninguna en Trazado ----------
+    // Se resuelven UNA vez por texto distinto (no fila por fila), y esa
+    // elección se recuerda para siempre como AliasTorre al confirmar.
+    private List<string> codigosTorresExistentes = new();
+    private Dictionary<string, int> resolucionesTorreManual = new(StringComparer.OrdinalIgnoreCase);
+    private HashSet<string> textosTorreDeclinados = new(StringComparer.OrdinalIgnoreCase);
+    private Dictionary<string, string> torreElegidaPorTexto = new(StringComparer.OrdinalIgnoreCase); // texto -> código elegido en el <select>, mientras no se aplica
+
+    private List<(string Texto, int Cantidad, List<string> Sugerencias)> torresNoResueltas =>
+        filas.Where(f => f.ElementoTrazadoId is null && !string.IsNullOrWhiteSpace(f.TorreTexto) && !textosTorreDeclinados.Contains(f.TorreTexto!.Trim()))
+            .GroupBy(f => f.TorreTexto!.Trim(), StringComparer.OrdinalIgnoreCase)
+            .Select(g => (Texto: g.Key, Cantidad: g.Count(), Sugerencias: g.First().TorresSugeridas))
+            .OrderByDescending(t => t.Cantidad)
+            .ToList();
+
+    private bool TieneTorre => mapeos.Any(m => m.Destino == DestinoColumnaEnsayo.Torre);
+    private bool TieneLocalizacion => mapeos.Any(m => m.Destino == DestinoColumnaEnsayo.Localizacion);
+    private bool TieneElemento => mapeos.Any(m => m.Destino == DestinoColumnaEnsayo.Elemento);
+
+    private bool usaTorre => tipo?.UsaTorre ?? true;
+
+    // Mismo catálogo que usa el diálogo manual Agregar/Editar resultado
+    // (DialogoAgregarResultadoEnsayo) para "Localización" — así una
+    // Localización agregada desde ahí ya aparece reconocida al importar, y
+    // viceversa.
+    private const string TipoCatalogoLocalizacion = "Localización";
+
+    protected override void OnInitialized()
+    {
+        tipo = Db.TiposEnsayo.AsNoTracking().FirstOrDefault(t => t.Id == TipoEnsayoId);
+        campos = Db.CamposEnsayo.AsNoTracking().Where(c => c.TipoEnsayoId == TipoEnsayoId && c.Activo).OrderBy(c => c.Orden).ToList();
+    }
+
+    // Incluye la unidad entre paréntesis (ej. "Carga máx (kN)"): varios
+    // campos de un mismo ensayo pueden compartir etiqueta pero distinta
+    // unidad (ej. carga en kN vs. en psi), y sin la unidad a la vista no
+    // se puede distinguir cuál columna del Excel corresponde a cuál al
+    // mapear.
+    private string EtiquetaCampo(string clave)
+    {
+        var campo = campos.FirstOrDefault(c => c.Clave == clave);
+        if (campo is null) return clave;
+        return string.IsNullOrWhiteSpace(campo.Unidad) ? campo.Etiqueta : $"{campo.Etiqueta} ({campo.Unidad})";
+    }
+
+    private void SeleccionarArchivo(InputFileChangeEventArgs e)
+    {
+        archivoCargado = e.File;
+        nombreArchivo = e.File.Name;
+        errorArchivo = "";
+    }
+
+    private async Task LeerArchivo()
+    {
+        if (archivoCargado is null) return;
+        errorArchivo = "";
+        procesando = true;
+        mensajeProcesando = "Leyendo archivo...";
+        StateHasChanged();
+        await Task.Yield();
+
+        try
+        {
+            await using var stream = archivoCargado.OpenReadStream(30 * 1024 * 1024); // 30 MB
+            using var ms = new MemoryStream();
+            await stream.CopyToAsync(ms);
+            ms.Position = 0;
+            tabla = await Task.Run(() => LectorExcelTablaTorres.Leer(ms, filasEncabezado));
+        }
+        catch (Exception ex)
+        {
+            errorArchivo = $"No se pudo leer el archivo: {ex.Message}";
+            procesando = false;
+            return;
+        }
+
+        if (tabla.Columnas.Count == 0)
+        {
+            errorArchivo = "No se detectaron columnas en la primera hoja del archivo.";
+            procesando = false;
+            return;
+        }
+
+        var recordados = Db.MapeosColumnaEnsayo.AsNoTracking()
+            .Where(m => m.TipoEnsayoId == TipoEnsayoId)
+            .ToDictionary(m => m.EncabezadoTexto, m => m.Destino, StringComparer.OrdinalIgnoreCase);
+
+        mapeos = tabla.Columnas.Select(c => new MapeoColumnaUI { Columna = c, Destino = SugerirDestino(c, recordados) }).ToList();
+        procesando = false;
+        paso = "mapeo";
+    }
+
+    private string SugerirDestino(ColumnaTablaTorres columna, Dictionary<string, string> recordados)
+    {
+        var encabezado = columna.EncabezadoVisible;
+        if (recordados.TryGetValue(encabezado, out var recordado))
+        {
+            var clave = DestinoColumnaEnsayo.ClaveCampo(recordado);
+            if (clave is null || campos.Any(c => c.Clave == clave)) return recordado;
+        }
+
+        var texto = QuitarTildes(encabezado.ToLowerInvariant());
+        if (string.IsNullOrWhiteSpace(texto)) return DestinoColumnaEnsayo.Ignorar;
+        if (usaTorre && texto.Contains("torre")) return DestinoColumnaEnsayo.Torre;
+        if (!usaTorre && (texto.Contains("localizacion") || texto.Contains("ubicacion"))) return DestinoColumnaEnsayo.Localizacion;
+        if (texto.Contains("elemento")) return DestinoColumnaEnsayo.Elemento;
+        if (texto.Contains("informe")) return DestinoColumnaEnsayo.Informe;
+        if (texto.Contains("diseno") && texto.Contains("mezcla")) return DestinoColumnaEnsayo.DisenoMezcla;
+
+        // Varios campos pueden compartir etiqueta con distinta unidad (ej.
+        // "Carga máx" en kN y en psi): si hay más de un candidato por
+        // etiqueta, se desempata por cuál unidad aparece en el encabezado
+        // del Excel (ej. "...kN" en el encabezado favorece al campo cuya
+        // Unidad es "kN").
+        var candidatos = campos.Where(c => texto.Contains(QuitarTildes(c.Etiqueta.ToLowerInvariant()))).ToList();
+        var campoParecido = candidatos.Count <= 1
+            ? candidatos.FirstOrDefault()
+            : candidatos.FirstOrDefault(c => !string.IsNullOrWhiteSpace(c.Unidad) && texto.Contains(QuitarTildes(c.Unidad.ToLowerInvariant())))
+                ?? candidatos.First();
+        if (campoParecido is not null) return DestinoColumnaEnsayo.ParaCampo(campoParecido.Clave);
+
+        return DestinoColumnaEnsayo.Ignorar;
+    }
+
+    private static string QuitarTildes(string texto)
+    {
+        var normalizado = texto.Normalize(System.Text.NormalizationForm.FormD);
+        var filtrado = normalizado.Where(c => System.Globalization.CharUnicodeInfo.GetUnicodeCategory(c) != System.Globalization.UnicodeCategory.NonSpacingMark);
+        return new string(filtrado.ToArray()).Normalize(System.Text.NormalizationForm.FormC);
+    }
+
+    private async Task Procesar()
+    {
+        if (tabla is null) return;
+        resolucionesTorreManual.Clear();
+        textosTorreDeclinados.Clear();
+        torreElegidaPorTexto.Clear();
+        filasExcluidas.Clear();
+        await EjecutarProcesamiento();
+        paso = "revision";
+    }
+
+    private async Task EjecutarProcesamiento()
+    {
+        if (tabla is null) return;
+
+        // Sin este "respiro" (StateHasChanged + Yield), Blazor Server no
+        // pinta el botón como "Revisando..." hasta que todo el método
+        // termine: con 1000+ filas se ve como si la pantalla se hubiera
+        // quedado pegada, aunque sí está trabajando.
+        procesando = true;
+        mensajeProcesando = "Revisando filas...";
+        StateHasChanged();
+        await Task.Yield();
+
+        var torresPorCodigo = Db.ElementosTrazado.AsNoTracking().Where(t => !t.Eliminado)
+            .ToDictionary(t => t.Codigo.Trim(), t => t.Id, StringComparer.OrdinalIgnoreCase);
+        codigosTorresExistentes = torresPorCodigo.Keys.ToList();
+
+        // Alias aprendidos de confirmaciones anteriores (texto que no
+        // coincidía con ningún código, pero el usuario ya confirmó a qué
+        // torre corresponde una vez): se tratan igual que un código
+        // exacto, así como las resoluciones elegidas en esta misma
+        // revisión (aún no guardadas como alias permanente).
+        foreach (var alias in Db.AliasTorres.AsNoTracking().ToList())
+        {
+            if (!torresPorCodigo.ContainsKey(alias.Texto)) torresPorCodigo[alias.Texto] = alias.ElementoTrazadoId;
+        }
+        foreach (var (texto, idTorre) in resolucionesTorreManual)
+        {
+            torresPorCodigo[texto] = idTorre;
+        }
+
+        var patasPorTorreLista = Db.Componentes.AsNoTracking().Where(c => c.EsPredeterminado && !c.EsHojaDeVida && !c.Eliminado).ToList();
+        var patasPorTorre = patasPorTorreLista.GroupBy(c => c.ElementoTrazadoId)
+            .ToDictionary(g => g.Key, g => g.Select(c => ParserElementoEnsayo.ObtenerCodigoPata(c.Nombre)).ToList());
+
+        // Localizaciones ya existentes en el catálogo (mismo que usa el
+        // diálogo manual): texto -> (grafía exacta del catálogo, Torre
+        // vinculada si la hay). Una Localización del Excel que no esté
+        // aquí se deja tal cual viene (se agrega al catálogo al confirmar
+        // la importación, ver ConfirmarImportar).
+        var localizacionesPorNombre = Db.Catalogos.AsNoTracking()
+            .Where(c => c.Tipo == TipoCatalogoLocalizacion && c.Activo)
+            .ToDictionary(c => c.Nombre.Trim(), c => (c.Nombre, c.ElementoTrazadoId), StringComparer.OrdinalIgnoreCase);
+
+        var destinoPorPosicion = new Dictionary<int, string>();
+        for (int i = 0; i < mapeos.Count; i++) destinoPorPosicion[i] = mapeos[i].Destino;
+
+        var tablaCapturada = tabla;
+        var camposCapturados = campos;
+        var codigosCapturados = codigosTorresExistentes;
+        var declinadosCapturados = textosTorreDeclinados;
+
+        // El procesamiento en sí no toca la base de datos (recibe todo
+        // ya resuelto en diccionarios en memoria), así que corre en un
+        // hilo aparte sin riesgo, y libera el hilo del circuito de
+        // Blazor mientras las 1000+ filas se interpretan.
+        filas = await Task.Run(() => ProcesadorImportacionEnsayos.Procesar(
+            tablaCapturada, destinoPorPosicion, camposCapturados,
+            texto => torresPorCodigo.TryGetValue(texto, out var id) ? id : (int?)null,
+            idTorre => patasPorTorre.TryGetValue(idTorre, out var p) ? p : new List<string>(),
+            texto => declinadosCapturados.Contains(texto) ? new List<string>() : SigWeb.Data.Trazado.ResolverTorre.SugerirCodigosParecidos(texto, codigosCapturados),
+            texto => localizacionesPorNombre.TryGetValue(texto, out var loc) ? loc : (texto, (int?)null)));
+
+        procesando = false;
+    }
+
+    // El usuario eligió, para un texto de torre que no coincidió, cuál es
+    // la torre real: se guarda como resolución de esta sesión de
+    // revisión y se reprocesa todo (recalcula patas, fórmulas, etc. con
+    // la torre ya correcta) antes de que el usuario confirme la carga.
+    private async Task AplicarResolucionTorre(string texto, string codigoElegido)
+    {
+        if (string.IsNullOrWhiteSpace(codigoElegido)) return;
+        var torre = await Db.ElementosTrazado.AsNoTracking()
+            .FirstOrDefaultAsync(t => !t.Eliminado && t.Codigo.ToLower() == codigoElegido.Trim().ToLower());
+        if (torre is null) return;
+
+        resolucionesTorreManual[texto] = torre.Id;
+        textosTorreDeclinados.Remove(texto);
+        await EjecutarProcesamiento();
+    }
+
+    private void DeclinarResolucionTorre(string texto)
+    {
+        textosTorreDeclinados.Add(texto);
+        resolucionesTorreManual.Remove(texto);
+    }
+
+    private void AlternarExcluida(int fila, bool incluir)
+    {
+        if (incluir) filasExcluidas.Remove(fila);
+        else filasExcluidas.Add(fila);
+    }
+
+    private void ElegirTodasLasDiscrepancias(string eleccion)
+    {
+        foreach (var f in filasConDiscrepancias)
+            foreach (var clave in f.Discrepancias.Keys.ToList())
+                f.EleccionDiscrepancia[clave] = eleccion;
+    }
+
+    private async Task ConfirmarImportar()
+    {
+        procesando = true;
+        mensajeProcesando = "Importando resultados...";
+        StateHasChanged();
+        await Task.Yield();
+
+        foreach (var f in filas) ProcesadorImportacionEnsayos.AplicarElecciones(f);
+
+        // Guarda como alias permanente cada torre que el usuario resolvió
+        // manualmente en esta revisión, para que la próxima carga (de
+        // este o cualquier otro módulo que use el mismo texto) resuelva
+        // sola sin volver a preguntar.
+        foreach (var (texto, idTorre) in resolucionesTorreManual)
+        {
+            var yaExiste = await Db.AliasTorres.AnyAsync(a => a.Texto == texto);
+            if (!yaExiste) Db.AliasTorres.Add(new AliasTorre { Texto = texto, ElementoTrazadoId = idTorre });
+        }
+        if (resolucionesTorreManual.Count > 0) await Db.SaveChangesAsync();
+
+        // Igual que al guardar manualmente: toda Localización nueva (que no
+        // coincidía con ninguna del catálogo) se agrega — así no se pierde
+        // el dato y queda disponible en el catálogo para la próxima vez.
+        if (!usaTorre)
+        {
+            var localizacionesExistentes = new HashSet<string>(
+                await Db.Catalogos.AsNoTracking().Where(c => c.Tipo == TipoCatalogoLocalizacion).Select(c => c.Nombre).ToListAsync(),
+                StringComparer.OrdinalIgnoreCase);
+            var localizacionesNuevas = filas
+                .Where(f => !filasExcluidas.Contains(f.Fila) && !string.IsNullOrWhiteSpace(f.LocalizacionTexto))
+                .Select(f => f.LocalizacionTexto!.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Where(texto => !localizacionesExistentes.Contains(texto))
+                .ToList();
+            foreach (var nueva in localizacionesNuevas)
+            {
+                Db.Catalogos.Add(new ItemCatalogo { Tipo = TipoCatalogoLocalizacion, Nombre = nueva, Descripcion = "Agregado desde carga Excel", Activo = true });
+            }
+            if (localizacionesNuevas.Count > 0) await Db.SaveChangesAsync();
+        }
+
+        var informesCache = Db.Informes.Where(i => i.TipoEnsayoId == TipoEnsayoId)
+            .ToDictionary(i => i.Numero, StringComparer.OrdinalIgnoreCase);
+
+        var componentesPorTorre = Db.Componentes.Where(c => c.EsPredeterminado && !c.EsHojaDeVida && !c.Eliminado).ToList()
+            .GroupBy(c => c.ElementoTrazadoId)
+            .ToDictionary(g => g.Key, g => g.ToDictionary(c => ParserElementoEnsayo.ObtenerCodigoPata(c.Nombre), c => c.Id, StringComparer.OrdinalIgnoreCase));
+
+        // Elementos especiales (no-pata) ya existentes por torre, para
+        // reutilizarlos si el usuario repite el mismo nombre en vez de
+        // crear uno duplicado (ej. "Cuneta M1" en dos cargas distintas).
+        var elementosEspecialesPorTorre = Db.Componentes.Where(c => !c.EsPredeterminado && !c.EsHojaDeVida && !c.Eliminado).ToList()
+            .GroupBy(c => c.ElementoTrazadoId)
+            .ToDictionary(g => g.Key, g => g.ToDictionary(c => c.Nombre, c => c.Id, StringComparer.OrdinalIgnoreCase));
+
+        var camposPorClave = campos.ToDictionary(c => c.Clave, StringComparer.OrdinalIgnoreCase);
+
+        string origen = $"Excel {nombreArchivo} - {DateTime.Now:dd/MM/yyyy HH:mm}";
+        int creadas = 0, omitidas = 0;
+
+        foreach (var f in filas)
+        {
+            if (filasExcluidas.Contains(f.Fila)) { omitidas++; continue; }
+
+            Informe? informe = null;
+            if (!string.IsNullOrWhiteSpace(f.InformeNumero))
+            {
+                var numero = f.InformeNumero.Trim();
+                if (!informesCache.TryGetValue(numero, out informe))
+                {
+                    informe = new Informe { TipoEnsayoId = TipoEnsayoId, Numero = numero };
+                    Db.Informes.Add(informe);
+                    await Db.SaveChangesAsync();
+                    informesCache[numero] = informe;
+                }
+            }
+
+            var resultado = new ResultadoEnsayo
+            {
+                TipoEnsayoId = TipoEnsayoId,
+                ElementoTrazadoId = f.ElementoTrazadoId,
+                ElementoTexto = f.ElementoTexto,
+                SubElemento = f.SubElemento,
+                InformeId = informe?.Id,
+                DisenoMezclaCodigo = string.IsNullOrWhiteSpace(f.DisenoMezclaCodigo) ? null : f.DisenoMezclaCodigo.Trim(),
+                Localizacion = !usaTorre && !string.IsNullOrWhiteSpace(f.LocalizacionTexto) ? f.LocalizacionTexto.Trim() : null,
+                Origen = origen
+            };
+            Db.ResultadosEnsayo.Add(resultado);
+            await Db.SaveChangesAsync();
+
+            if (f.ElementoTrazadoId is int idTorre)
+            {
+                if (componentesPorTorre.TryGetValue(idTorre, out var patasDict))
+                {
+                    foreach (var letra in f.Patas)
+                    {
+                        if (patasDict.TryGetValue(letra, out var componenteId))
+                        {
+                            Db.ResultadosEnsayoComponente.Add(new ResultadoEnsayoComponente { ResultadoEnsayoId = resultado.Id, ComponenteId = componenteId });
+                        }
+                    }
+                }
+
+                // Elemento especial (no-pata, ej. "Cuneta M1"): se crea
+                // (o reutiliza) el Componente de esa torre con el nombre
+                // que el usuario confirmó en la revisión, y este
+                // resultado queda ligado específicamente a ese elemento.
+                //
+                // Antes de crear nada: si ese nombre en realidad coincide
+                // con una pata real de la torre (ej. el usuario escribió o
+                // dejó "A" como nombre del elemento especial, o el parseo
+                // falló por algún motivo), se asocia a la pata real en vez
+                // de crear un duplicado suelto como "A" junto a "Pata A".
+                if (f.SubElemento == SubElementoResultado.Otro && !string.IsNullOrWhiteSpace(f.ElementoEspecialNombre))
+                {
+                    var nombreFinal = f.ElementoEspecialNombre.Trim();
+
+                    if (componentesPorTorre.TryGetValue(idTorre, out var patasDictParaEspecial)
+                        && patasDictParaEspecial.TryGetValue(nombreFinal, out var idPataRealCoincidente))
+                    {
+                        Db.ResultadosEnsayoComponente.Add(new ResultadoEnsayoComponente { ResultadoEnsayoId = resultado.Id, ComponenteId = idPataRealCoincidente });
+                    }
+                    else
+                    {
+                        if (!elementosEspecialesPorTorre.TryGetValue(idTorre, out var dictEspecial))
+                        {
+                            dictEspecial = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                            elementosEspecialesPorTorre[idTorre] = dictEspecial;
+                        }
+                        if (!dictEspecial.TryGetValue(nombreFinal, out var componenteEspecialId))
+                        {
+                            var nuevoComponente = new Componente
+                            {
+                                ElementoTrazadoId = idTorre,
+                                Nombre = nombreFinal,
+                                EsPredeterminado = false,
+                                EsHojaDeVida = false
+                            };
+                            Db.Componentes.Add(nuevoComponente);
+                            await Db.SaveChangesAsync();
+                            componenteEspecialId = nuevoComponente.Id;
+                            dictEspecial[nombreFinal] = componenteEspecialId;
+                        }
+                        Db.ResultadosEnsayoComponente.Add(new ResultadoEnsayoComponente { ResultadoEnsayoId = resultado.Id, ComponenteId = componenteEspecialId });
+                    }
+                }
+            }
+
+            foreach (var (clave, valor) in f.Valores)
+            {
+                if (!camposPorClave.TryGetValue(clave, out var campo)) continue;
+                Db.ValoresCampoEnsayo.Add(new ValorCampoEnsayo { ResultadoEnsayoId = resultado.Id, CampoEnsayoId = campo.Id, Valor = valor });
+            }
+
+            creadas++;
+        }
+
+        foreach (var m in mapeos)
+        {
+            var encabezado = m.Columna.EncabezadoVisible;
+            if (string.IsNullOrWhiteSpace(encabezado)) continue;
+            var existente = await Db.MapeosColumnaEnsayo.FirstOrDefaultAsync(x => x.TipoEnsayoId == TipoEnsayoId && x.EncabezadoTexto == encabezado);
+            if (existente is null) Db.MapeosColumnaEnsayo.Add(new MapeoColumnaEnsayo { TipoEnsayoId = TipoEnsayoId, EncabezadoTexto = encabezado, Destino = m.Destino });
+            else existente.Destino = m.Destino;
+        }
+
+        await Db.SaveChangesAsync();
+        Db.ChangeTracker.Clear();
+
+        mensajeResultado = $"{creadas} resultado(s) importado(s)" + (omitidas > 0 ? $", {omitidas} omitido(s) a propósito." : ".");
+        paso = "resultado";
+        procesando = false;
+        await OnImportado.InvokeAsync();
+    }
+
+    private async Task Cerrar()
+    {
+        await OnCerrar.InvokeAsync();
+    }
+}

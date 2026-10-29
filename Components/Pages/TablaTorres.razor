@@ -1,0 +1,438 @@
+@page "/trazado/tabla-torres"
+@rendermode InteractiveServer
+@using Microsoft.EntityFrameworkCore
+@using SigWeb.Data
+@using SigWeb.Data.Impacto
+@using SigWeb.Models
+@using SigWeb.Data.Tablas
+@inject AppDbContext Db
+@inject NavigationManager Nav
+@inject AnalizadorImpacto Analizador
+
+<PageTitle>Tabla de torres</PageTitle>
+
+<EncabezadoPagina Titulo="Tabla de torres" Icono="trazado" Atras="/trazado">
+    <Acciones>
+        <button type="button" class="pg-btn @(mostrarCargas ? "activo" : "")" title="Cargas hechas a esta tabla" @onclick="() => mostrarCargas = !mostrarCargas">🗂@(cargas.Count > 0 ? $" {cargas.Count}" : "")</button>
+        <span class="pg-sep"></span>
+        <BotonCampos Activo="verCampos" Deshabilitado="motor is null" OnClick="() => verCampos = true" />
+        <button type="button" class="pg-btn" title="Importar tabla" @onclick='() => Nav.NavigateTo("/trazado/datos-adicionales")'><Ico Nombre="importar" /></button>
+        <BotonExportar Titulo="Tabla de torres" />
+        <span class="pg-sep"></span>
+        @if (!modoEdicion)
+        {
+            <button type="button" class="pg-btn" title="Editar" @onclick="() => modoEdicion = true"><Ico Nombre="editar" /></button>
+        }
+        else
+        {
+            <button type="button" class="pg-btn" title="Descartar cambios y salir de edición" @onclick="CancelarEdicion">✕</button>
+            <button type="button" class="pg-btn pg-btn-primario" title="Guardar cambios" disabled="@(CambiosPendientes == 0 || procesando)" @onclick="GuardarCambios">💾@(CambiosPendientes > 0 ? $" {CambiosPendientes}" : "")</button>
+        }
+    </Acciones>
+</EncabezadoPagina>
+
+@if (verCampos && motor is not null)
+{
+    <PanelCampos Motor="motor" OnCerrar="() => verCampos = false" OnCambio="StateHasChanged" />
+}
+
+@if (!string.IsNullOrEmpty(mensaje)) { <div class="alert alert-warning py-1">@mensaje</div> }
+@if (!string.IsNullOrEmpty(mensajeExito)) { <div class="alert alert-success py-1">@mensajeExito</div> }
+
+@if (mostrarCargas)
+{
+    <div class="border rounded p-2 mb-2 bg-white">
+        @if (cargas.Count == 0)
+        {
+            <span class="text-muted small">Todavía no hay datos adicionales cargados.</span>
+        }
+        @foreach (var c in cargas)
+        {
+            <div class="d-flex justify-content-between align-items-center border rounded p-1 mb-1 small">
+                <span>@c.Origen <span class="text-muted">— @c.Cantidad dato(s)</span></span>
+                <button class="btn btn-sm btn-outline-danger py-0 px-1" title="Eliminar esta carga" @onclick="() => PedirEliminarCarga(c.Origen)"><Ico Nombre="eliminar" /></button>
+            </div>
+        }
+    </div>
+}
+
+<div class="d-flex gap-2 align-items-center mb-2">
+    <input class="form-control form-control-sm" style="max-width: 240px;" placeholder="Buscar por torre..." @bind="filtro" @bind:event="oninput" />
+    <span class="text-muted small ms-auto">@TorresFiltradas.Count torres</span>
+</div>
+
+@if (procesando) { <div class="text-muted small mb-1">Guardando…</div> }
+
+<div class="tt-scroll">
+    <table class="table table-sm tabla-compacta align-middle mb-0 tabla-pin">
+        <thead style="position: sticky; top: 0; background: #fff; z-index: 2;">
+            <tr>
+                @foreach (var c in Columnas)
+                {
+                    var col = ColDe(c);
+                    <th class="th-ordenable @(col?.Letra is null ? "" : "tt-pata")" title="@(col?.Ambito ?? c.Nombre)" style="@(c.Clave is "Latitud" or "Longitud" ? "width:110px" : null)" @onclick="() => OrdenarPor(c.Clave)">@c.Nombre@(Flecha(c.Clave))</th>
+                }
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var torre in TorresFiltradas)
+            {
+                <tr>
+                    @foreach (var c in Columnas)
+                    {
+                        var nat = c.Origen == OrigenCampoTabla.Nativo && (modoEdicion || Motor.Estilo(torre.Id, c) is null);
+                        var col = ColDe(c);
+                        if (nat && c.Clave == "Torre")
+                        {
+                            <td class="fw-semibold">@torre.Codigo</td>
+                        }
+                        else if (nat && c.Clave == "Latitud")
+                        {
+                            <td>
+                        @if (modoEdicion)
+                        {
+                            <input class="form-control form-control-sm" type="number" step="any" value="@CoordMostrada(torre, true)"
+                                   @onchange="e => PonerCoordenada(torre.Id, true, e.Value?.ToString())" />
+                        }
+                        else { <span>@CoordMostrada(torre, true)</span> }
+                    </td>
+                        }
+                        else if (nat && c.Clave == "Longitud")
+                        {
+                            <td>
+                        @if (modoEdicion)
+                        {
+                            <input class="form-control form-control-sm" type="number" step="any" value="@CoordMostrada(torre, false)"
+                                   @onchange="e => PonerCoordenada(torre.Id, false, e.Value?.ToString())" />
+                        }
+                        else { <span>@CoordMostrada(torre, false)</span> }
+                    </td>
+                        }
+                        else if (nat && col is not null)
+                        {
+                            <td class="@(modoEdicion ? "" : "text-nowrap")">
+                            @if (modoEdicion)
+                            {
+                                @if (col.Letra is not null && !patas.ContainsKey((torre.Id, col.Letra)))
+                                {
+                                    <span class="text-muted">—</span>
+                                }
+                                else
+                                {
+                                    <input class="form-control form-control-sm" value="@ValorMostrado(torre.Id, col)"
+                                           @onchange='e => PonerValor(torre.Id, col, e.Value?.ToString() ?? "")' />
+                                }
+                            }
+                            else { <span>@ValorMostrado(torre.Id, col)</span> }
+                        </td>
+                        }
+                        else
+                        {
+                            <CeldaCampo Motor="Motor" Campo="c" Fila="torre.Id" OnCambio="StateHasChanged" />
+                        }
+                    }
+                </tr>
+            }
+            @if (TorresFiltradas.Count == 0)
+            {
+                <tr><td colspan="@(Columnas.Count())" class="text-muted small text-center py-3"><em>Sin torres que coincidan.</em></td></tr>
+            }
+        </tbody>
+    </table>
+</div>
+
+@if (origenConfirmando is not null)
+{
+    <div class="modal-backdrop-custom">
+        <div class="modal-box-custom" style="max-width: 600px;">
+            <h5>¿Eliminar esta carga?</h5>
+            <PanelImpacto Informe="impacto" OnEntendido="@(v => impactoOk = v)" />
+            <div class="d-flex gap-2 justify-content-end">
+                <button class="btn btn-secondary btn-sm" @onclick="() => origenConfirmando = null" title="Cancelar"><Ico Nombre="cancelar" /></button>
+                <button class="btn btn-danger btn-sm" disabled="@(impacto is null || (impacto.RequiereEntender && !impactoOk))" @onclick="() => EliminarCargaConfirmada(origenConfirmando!)">Sí, eliminar</button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private class Col
+    {
+        public string Key { get; set; } = "";        // torre: la clave; pata: "Pata A | clave"
+        public string Etiqueta { get; set; } = "";
+        public string Ambito { get; set; } = "Torre";
+        public string? Letra { get; set; }            // null = campo de la torre
+        public string Clave { get; set; } = "";
+    }
+
+    private static string K(string s) => (s ?? "").Trim().ToLowerInvariant();
+
+    private List<ElementoTrazado> torres = new();
+    private Dictionary<(int TorreId, string Letra), int> patas = new();
+    private Dictionary<(int TorreId, string Clave), CampoExtraTorre> extrasT = new();
+    private Dictionary<(int CompId, string Clave), CampoExtraComponente> extrasP = new();
+    private List<Col> columnas = new();
+    private Dictionary<string, bool> activas = new();
+    private List<(string Origen, int Cantidad)> cargas = new();
+
+    private string filtro = "";
+    private bool mostrarColumnas, mostrarCargas;
+    private string? origenConfirmando;
+    private bool procesando;
+    private string mensaje = "", mensajeExito = "";
+    private InformeImpacto? impacto;
+    private bool impactoOk;
+
+    protected override async Task OnInitializedAsync() => await Cargar();
+
+    private async Task Cargar()
+    {
+        torres = await Db.ElementosTrazado.AsNoTracking().Where(t => !t.Eliminado).ToListAsync();
+        torres = torres.OrderBy(t => OrdenNatural(t.Codigo)).ToList();
+        var idsT = torres.Select(t => t.Id).ToList();
+
+        var comps = await Db.Componentes.AsNoTracking().Where(c => !c.Eliminado && idsT.Contains(c.ElementoTrazadoId)).ToListAsync();
+        patas = new();
+        var compTorre = new Dictionary<int, (int TorreId, string Letra)>();
+        foreach (var c in comps)
+        {
+            var n = c.Nombre.Trim();
+            if (n.StartsWith("Pata ", StringComparison.OrdinalIgnoreCase) && n.Length == 6)
+            {
+                var letra = n[5].ToString().ToUpperInvariant();
+                patas[(c.ElementoTrazadoId, letra)] = c.Id;
+                compTorre[c.Id] = (c.ElementoTrazadoId, letra);
+            }
+        }
+
+        var et = await Db.CamposExtraTorre.AsNoTracking().Where(c => !c.Eliminado).ToListAsync();
+        var ep = await Db.CamposExtraComponente.AsNoTracking().Where(c => !c.Eliminado && compTorre.Keys.Contains(c.ComponenteId)).ToListAsync();
+        extrasT = new(); extrasP = new();
+        foreach (var e in et) extrasT[(e.ElementoTrazadoId, K(e.Clave))] = e;
+        foreach (var e in ep) extrasP[(e.ComponenteId, K(e.Clave))] = e;
+
+        columnas = new();
+        foreach (var clave in et.Select(e => e.Clave.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(c => c, StringComparer.OrdinalIgnoreCase))
+            columnas.Add(new Col { Key = clave, Etiqueta = clave, Ambito = "Torre", Clave = clave });
+        foreach (var letra in new[] { "A", "B", "C", "D" })
+        {
+            var idsLetra = compTorre.Where(kv => kv.Value.Letra == letra).Select(kv => kv.Key).ToHashSet();
+            foreach (var clave in ep.Where(e => idsLetra.Contains(e.ComponenteId)).Select(e => e.Clave.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(c => c, StringComparer.OrdinalIgnoreCase))
+                columnas.Add(new Col { Key = $"Pata {letra} | {clave}", Etiqueta = $"{letra} · {clave}", Ambito = $"Pata {letra}", Letra = letra, Clave = clave });
+        }
+
+        // configuración (puede haber filas que solo difieren en mayúsculas)
+        var cfg = (await Db.ConfiguracionesCampoExtraTorre.AsNoTracking().ToListAsync())
+            .GroupBy(c => K(c.Clave)).ToDictionary(g => g.Key, g => g.All(c => c.Activo));
+        activas = columnas.ToDictionary(c => c.Key, c => !cfg.TryGetValue(K(c.Key), out var a) || a);
+
+        var origenes = et.Select(e => e.Origen).Concat(ep.Select(e => e.Origen));
+        var ultimo = new Dictionary<string, int>();
+        foreach (var e in et) ultimo[e.Origen] = Math.Max(ultimo.GetValueOrDefault(e.Origen), e.Id);
+        cargas = origenes.GroupBy(o => o).Select(g => (Origen: g.Key, Cantidad: g.Count(), U: ultimo.GetValueOrDefault(g.Key)))
+            .OrderByDescending(g => g.U).Select(g => (g.Origen, g.Cantidad)).ToList();
+
+        torresPorId = torres.ToDictionary(t => t.Id);
+        motor = await MotorTabla.CargarAsync(Db, "torres", ColumnasNativas(), torres.Select(t => (t.Id, t.Codigo)));
+    }
+
+    private static (int, string) OrdenNatural(string n)
+    {
+        var d = new string(n.TakeWhile(char.IsDigit).ToArray());
+        return (int.TryParse(d, out var v) ? v : int.MaxValue, n);
+    }
+
+    private List<ElementoTrazado> TorresFiltradas
+    {
+        get
+        {
+            var q = string.IsNullOrWhiteSpace(filtro) ? torres.AsEnumerable()
+                : torres.Where(t => t.Codigo.Contains(filtro, StringComparison.OrdinalIgnoreCase)
+                                 || (motor is not null && motor.TextoBusqueda(t.Id).Contains(filtro, StringComparison.OrdinalIgnoreCase)));
+            if (motor is not null && colOrden is not null) q = motor.Ordenar(q, t => t.Id, colOrden, ordenAsc);
+            return q.ToList();
+        }
+    }
+
+    // ---------- Campos (columnas visibles, campos creados, fórmulas y formatos) ----------
+    private MotorTabla? motor;
+    private MotorTabla Motor => motor!;
+    private bool verCampos;
+    private string? colOrden;
+    private bool ordenAsc = true;
+    private Dictionary<int, ElementoTrazado> torresPorId = new();
+
+    private IEnumerable<CampoTabla> Columnas => motor?.Visibles ?? Enumerable.Empty<CampoTabla>();
+
+    private void OrdenarPor(string clave) { if (colOrden == clave) ordenAsc = !ordenAsc; else { colOrden = clave; ordenAsc = true; } }
+    private string Flecha(string clave) => colOrden == clave ? (ordenAsc ? " ▲" : " ▼") : "";
+
+    // Columna cargada desde el Excel de la tabla de torres que corresponde a un campo nativo "x:…".
+    private Col? ColDe(CampoTabla c) => c.Origen == OrigenCampoTabla.Nativo && c.Clave.StartsWith("x:") ? columnas.FirstOrDefault(x => "x:" + x.Key == c.Clave) : null;
+
+    // Los valores del Excel son texto; si es un número se entrega como número (para fórmulas y formatos).
+    private static object? Numero(string v) =>
+        double.TryParse(v, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var n) ? n : (string.IsNullOrWhiteSpace(v) ? null : v);
+
+    private IEnumerable<ColumnaNativa> ColumnasNativas()
+    {
+        var l = new List<ColumnaNativa>
+        {
+            new("Torre", "Torre", TipoCampoTabla.Texto, id => torresPorId.TryGetValue(id, out var t) ? t.Codigo : null),
+            new("Latitud", "Latitud", TipoCampoTabla.Numero, id => torresPorId.TryGetValue(id, out var t) ? t.Latitud : null),
+            new("Longitud", "Longitud", TipoCampoTabla.Numero, id => torresPorId.TryGetValue(id, out var t) ? t.Longitud : null),
+        };
+        foreach (var col in columnas)
+        {
+            var cc = col;
+            l.Add(new ColumnaNativa("x:" + cc.Key, cc.Etiqueta, TipoCampoTabla.Texto, id => Numero(ValorActual(id, cc)), ColumnaActiva(cc), "Excel"));
+        }
+        return l;
+    }
+
+    private bool ColumnaActiva(Col c) => !activas.TryGetValue(c.Key, out var a) || a;
+    private List<Col> ColumnasVisibles => columnas.Where(ColumnaActiva).ToList();
+
+    private string ValorActual(int torreId, Col col)
+    {
+        if (col.Letra is null) return extrasT.TryGetValue((torreId, K(col.Clave)), out var t) ? t.Valor : "";
+        return patas.TryGetValue((torreId, col.Letra), out var comp) && extrasP.TryGetValue((comp, K(col.Clave)), out var p) ? p.Valor : "";
+    }
+
+    // ---------- Edición: los cambios se acumulan y se guardan juntos ----------
+    private bool modoEdicion;
+    private Dictionary<(int TorreId, string Key), string> pendValor = new();
+    private Dictionary<(int TorreId, bool EsLat), string> pendCoord = new();
+    private int CambiosPendientes => pendValor.Count + pendCoord.Count;
+
+    private string ValorMostrado(int torreId, Col col) => pendValor.TryGetValue((torreId, col.Key), out var v) ? v : ValorActual(torreId, col);
+
+    private string CoordMostrada(ElementoTrazado torre, bool esLat) =>
+        pendCoord.TryGetValue((torre.Id, esLat), out var v) ? v
+            : (esLat ? torre.Latitud : torre.Longitud).ToString(System.Globalization.CultureInfo.InvariantCulture);
+
+    private void PonerValor(int torreId, Col col, string valor)
+    {
+        if (valor == ValorActual(torreId, col)) pendValor.Remove((torreId, col.Key));
+        else pendValor[(torreId, col.Key)] = valor;
+    }
+
+    private void PonerCoordenada(int torreId, bool esLat, string? valor) => pendCoord[(torreId, esLat)] = valor ?? "";
+
+    private void CancelarEdicion() { pendValor.Clear(); pendCoord.Clear(); modoEdicion = false; mensaje = ""; }
+
+    private async Task GuardarCambios()
+    {
+        if (procesando) return;
+        mensaje = ""; mensajeExito = "";
+        var coords = new Dictionary<(int, bool), double>();
+        foreach (var kv in pendCoord)
+        {
+            if (!double.TryParse(kv.Value, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var v))
+            { mensaje = $"\"{kv.Value}\" no es una coordenada válida."; return; }
+            coords[kv.Key] = v;
+        }
+
+        procesando = true;
+        StateHasChanged();
+        await Task.Yield();
+        try
+        {
+            foreach (var kv in coords)
+            {
+                var item = await Db.ElementosTrazado.FirstOrDefaultAsync(t => t.Id == kv.Key.Item1);
+                if (item is null) continue;
+                if (kv.Key.Item2) item.Latitud = kv.Value; else item.Longitud = kv.Value;
+            }
+
+            var origen = "Editado manualmente — " + DateTime.Now.ToString("dd/MM/yyyy HH:mm");
+            var ahora = DateTime.Now;
+            foreach (var kv in pendValor)
+            {
+                var (torreId, key) = kv.Key;
+                var col = columnas.FirstOrDefault(c => c.Key == key);
+                if (col is null) continue;
+                var valor = kv.Value;
+                if (col.Letra is null)
+                {
+                    if (extrasT.TryGetValue((torreId, K(col.Clave)), out var ex))
+                    {
+                        var viva = await Db.CamposExtraTorre.FirstOrDefaultAsync(c => c.Id == ex.Id);
+                        if (viva is not null) { viva.Eliminado = true; viva.FechaEliminacion = ahora; }   // el valor anterior va a la Papelera
+                    }
+                    if (!string.IsNullOrWhiteSpace(valor))
+                        Db.CamposExtraTorre.Add(new CampoExtraTorre { ElementoTrazadoId = torreId, Clave = col.Clave, Valor = valor, Origen = origen });
+                }
+                else
+                {
+                    if (!patas.TryGetValue((torreId, col.Letra), out var compId)) continue;
+                    if (extrasP.TryGetValue((compId, K(col.Clave)), out var ex))
+                    {
+                        var viva = await Db.CamposExtraComponente.FirstOrDefaultAsync(c => c.Id == ex.Id);
+                        if (viva is not null) { viva.Eliminado = true; viva.FechaEliminacion = ahora; }
+                    }
+                    if (!string.IsNullOrWhiteSpace(valor))
+                        Db.CamposExtraComponente.Add(new CampoExtraComponente { ComponenteId = compId, Clave = col.Clave, Valor = valor, Origen = origen });
+                }
+            }
+
+            var n = CambiosPendientes;
+            await Db.SaveChangesAsync();
+            Db.ChangeTracker.Clear();
+            pendValor.Clear(); pendCoord.Clear();
+            modoEdicion = false;
+            await Cargar();
+            mensajeExito = $"Se guardaron {n} cambio(s).";
+        }
+        catch (Exception ex) { mensaje = $"No se pudo guardar: {ex.Message}"; }
+        finally { procesando = false; }
+    }
+
+    // ---------- Mostrar/ocultar una columna (de la torre o de una pata) ----------
+    private async Task AlternarColumna(Col col, bool activo)
+    {
+        if (procesando) return;
+        procesando = true;
+        try
+        {
+            var k = K(col.Key);
+            var cfg = await Db.ConfiguracionesCampoExtraTorre.FirstOrDefaultAsync(c => c.Clave.ToLower() == k);
+            if (cfg is null) Db.ConfiguracionesCampoExtraTorre.Add(new ConfiguracionCampoExtraTorre { Clave = col.Key, Activo = activo });
+            else cfg.Activo = activo;
+            await Db.SaveChangesAsync();
+            Db.ChangeTracker.Clear();
+            activas[col.Key] = activo;
+        }
+        finally { procesando = false; }
+    }
+
+    // ---------- Eliminar una carga completa (torre y patas), con aviso de impacto ----------
+    private async Task PedirEliminarCarga(string origen)
+    {
+        origenConfirmando = origen; impacto = null; impactoOk = false;
+        try { impacto = await Analizador.CargaTablaTorres(origen); }
+        catch { impacto = new InformeImpacto { Elemento = "No se pudo calcular el impacto" }; }
+    }
+
+    private async Task EliminarCargaConfirmada(string origen)
+    {
+        if (procesando) return;
+        procesando = true;
+        origenConfirmando = null;
+        StateHasChanged();
+        await Task.Yield();
+        try
+        {
+            var ahora = DateTime.Now;
+            var a1 = await Db.CamposExtraTorre.Where(c => c.Origen == origen && !c.Eliminado).ToListAsync();
+            var a2 = await Db.CamposExtraComponente.Where(c => c.Origen == origen && !c.Eliminado).ToListAsync();
+            foreach (var c in a1) { c.Eliminado = true; c.FechaEliminacion = ahora; }
+            foreach (var c in a2) { c.Eliminado = true; c.FechaEliminacion = ahora; }
+            await Db.SaveChangesAsync();
+            Db.ChangeTracker.Clear();
+            await Cargar();
+            mensajeExito = $"Carga eliminada: {a1.Count + a2.Count} dato(s) enviados a la Papelera.";
+        }
+        finally { procesando = false; }
+    }
+}

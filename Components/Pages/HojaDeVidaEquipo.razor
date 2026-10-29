@@ -1,0 +1,451 @@
+@page "/equipos/{EquipoId:int}/hoja-de-vida"
+@rendermode InteractiveServer
+@using Microsoft.EntityFrameworkCore
+@using SigWeb.Data
+@using SigWeb.Data.Equipos
+@using SigWeb.Models
+@using SigWeb.Data.Tablas
+@inject AppDbContext Db
+@inject IWebHostEnvironment Env
+
+@if (equipo is null)
+{
+    <EncabezadoPagina Titulo="Equipo no encontrado" Icono="equipos" Atras="equipos" />
+}
+else
+{
+    <PageTitle>Hoja de vida — @equipo.Nombre</PageTitle>
+    var vigente = EstadoEquipo.Vigente(historial);
+    var (txtEstado, claseEstado) = EstadoEquipo.Estado(vigente);
+
+    <EncabezadoPagina Titulo="@equipo.Nombre" Icono="equipos" Atras="equipos" Subtitulo="@Subtitulo()">
+        <Acciones>
+            <BotonCampos Activo="verCampos" Deshabilitado="motor is null" OnClick="() => verCampos = true" />
+            <BotonExportar Titulo="@($"Intervenciones - {equipo.Nombre}")" />
+            <span class="pg-sep"></span>
+            <button class="pg-btn" title="Registrar mantenimiento" aria-label="Registrar mantenimiento" @onclick="() => AbrirIntervencion(TipoIntervencionEquipo.Mantenimiento)"><Ico Nombre="mantenimiento" /></button>
+            <button class="pg-btn pg-btn-primario" title="Actualizar calibración" aria-label="Actualizar calibración" @onclick="() => AbrirIntervencion(TipoIntervencionEquipo.Calibracion)"><Ico Nombre="calibracion" /></button>
+        </Acciones>
+    </EncabezadoPagina>
+
+    @if (verCampos && motor is not null)
+    {
+        <PanelCampos Motor="motor" OnCerrar="() => verCampos = false" OnCambio="StateHasChanged" />
+    }
+
+    <div class="row g-3 mb-3">
+        <div class="col-lg-5">
+            <div class="card h-100">
+                <div class="card-header">Datos generales</div>
+                <div class="card-body">
+                    <dl class="row mb-0 small">
+                        <dt class="col-5">Equipo</dt><dd class="col-7">@equipo.Nombre</dd>
+                        @foreach (var c in campos)
+                        {
+                            <dt class="col-5">@c.Etiqueta</dt><dd class="col-7">@(valores.GetValueOrDefault(c.Id, "—"))</dd>
+                        }
+                        <dt class="col-5">Periodicidad</dt><dd class="col-7">@(equipo.PeriodicidadMeses is int m ? $"{m} meses" : "—")</dd>
+                        <dt class="col-5">Calibración vigente</dt>
+                        <dd class="col-7">@(vigente is null ? "—" : vigente.Fecha.ToString("dd/MM/yyyy"))</dd>
+                        <dt class="col-5">Vence</dt>
+                        <dd class="col-7">@(vigente?.ProximaFecha?.ToString("dd/MM/yyyy") ?? "—") <span class="badge @claseEstado ms-1">@txtEstado</span></dd>
+                        <dt class="col-5">Certificado vigente</dt>
+                        <dd class="col-7">
+                            @if (vigente?.RutaCertificado is string ruta)
+                            {
+                                <PildoraArchivo Url="@ruta" Nombre="@(vigente.NumeroCertificado ?? "Ver")" />
+                            }
+                            else { @(vigente?.NumeroCertificado ?? "—") }
+                        </dd>
+                    </dl>
+                </div>
+            </div>
+        </div>
+        <div class="col-lg-7">
+            <div class="card h-100">
+                <div class="card-header d-flex align-items-center gap-1 flex-wrap">
+                    <div class="btn-group btn-group-sm" role="group">
+                        <button type="button" class="btn @(pestana == "fotos" ? "btn-dark" : "btn-outline-secondary")" @onclick='() => pestana = "fotos"'>Fotografías @(fotos.Count > 0 ? $"({fotos.Count})" : "")</button>
+                        <button type="button" class="btn @(pestana == "certificado" ? "btn-dark" : "btn-outline-secondary")" @onclick='() => pestana = "certificado"'>Certificado vigente</button>
+                        <button type="button" class="btn @(pestana == "ficha" ? "btn-dark" : "btn-outline-secondary")" @onclick='() => pestana = "ficha"'>Ficha técnica @(fichaTecnica.Count > 0 ? $"({fichaTecnica.Count})" : "")</button>
+                    </div>
+                    @if (pestana == "fotos")
+                    {
+                        <label class="btn btn-sm btn-outline-secondary py-0 mb-0 ms-auto" title="Agregar fotos"><Ico Nombre="agregar" />
+                            <InputFile OnChange="CargarFotos" accept="image/*" multiple style="display:none" />
+                        </label>
+                    }
+                    else if (pestana == "ficha")
+                    {
+                        <label class="btn btn-sm btn-outline-secondary py-0 mb-0 ms-auto" title="Cargar anexos de la ficha técnica"><Ico Nombre="agregar" />
+                            <InputFile OnChange="CargarFicha" multiple style="display:none" />
+                        </label>
+                    }
+                </div>
+                <div class="card-body">
+                    @if (!string.IsNullOrEmpty(mensajeFoto)) { <div class="text-danger small mb-2">@mensajeFoto</div> }
+                    @if (pestana == "fotos")
+                    {
+                        if (fotos.Count == 0)
+                        {
+                            <div class="text-muted small">Sin fotografías.</div>
+                        }
+                        else
+                        {
+                            <div class="d-flex flex-wrap gap-2">
+                                @foreach (var f in fotos)
+                                {
+                                    <div class="position-relative" style="width:130px; height:130px;">
+                                        <img src="@f.RutaArchivo" alt="" style="width:100%; height:100%; object-fit:cover; border-radius:8px; cursor:zoom-in; border:1px solid #dee2e6;"
+                                             @onclick="() => fotoGrande = f.RutaArchivo" />
+                                        <button type="button" class="btn btn-sm btn-light position-absolute top-0 end-0 m-1 py-0 px-1" title="Quitar foto"
+                                                @onclick="() => QuitarFoto(f)">✕</button>
+                                        <label class="btn btn-sm btn-light position-absolute bottom-0 end-0 m-1 py-0 px-1 mb-1" title="Reemplazar foto">⟳
+                                            <InputFile OnChange="e => ReemplazarFoto(f, e.File)" accept="image/*" style="display:none" />
+                                        </label>
+                                    </div>
+                                }
+                            </div>
+                        }
+                    }
+                    else if (pestana == "certificado")
+                    {
+                        if (vigente?.RutaCertificado is string rutaCert)
+                        {
+                            <div class="d-flex align-items-center gap-2 mb-2 flex-wrap small">
+                                <PildoraArchivo Url="@rutaCert" Nombre="@(vigente.NombreCertificado ?? vigente.NumeroCertificado ?? "Certificado")" />
+                                <span class="text-muted">@vigente.Fecha.ToString("dd/MM/yyyy") @(vigente.ProximaFecha is DateTime pf ? $"· vence {pf:dd/MM/yyyy}" : "")</span>
+                                <span class="badge @claseEstado">@txtEstado</span>
+                            </div>
+                            if (rutaCert.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase))
+                            {
+                                <iframe src="@rutaCert" class="eq-cert-vista" title="Certificado vigente"></iframe>
+                            }
+                            else if (SigWeb.Data.Planes.AlmacenAnexos.EsImagen(rutaCert))
+                            {
+                                <img src="@rutaCert" alt="" class="eq-cert-vista" style="object-fit:contain;" />
+                            }
+                        }
+                        else
+                        {
+                            <div class="text-muted small">Sin certificado de calibración vigente cargado.</div>
+                        }
+                    }
+                    else
+                    {
+                        if (fichaTecnica.Count == 0)
+                        {
+                            <div class="text-muted small">Sin anexos de ficha técnica.</div>
+                        }
+                        else
+                        {
+                            <ul class="small list-unstyled mb-0 pildora-lista">
+                                @foreach (var a in fichaTecnica)
+                                {
+                                    var ax = a;
+                                    <li>
+                                        <PildoraArchivo Url="@ax.RutaArchivo" Nombre="@ax.NombreOriginal" Titulo="@($"{ax.NombreOriginal} · {ax.FechaCarga:dd/MM/yyyy}")" />
+                                        <button type="button" class="btn btn-link btn-sm text-danger p-0" title="Quitar (va a la Papelera)" @onclick="() => QuitarFicha(ax)">✕</button>
+                                    </li>
+                                }
+                            </ul>
+                        }
+                    }
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card-header">Historial de intervenciones</div>
+        <div class="card-body p-0">
+            <div class="tabla-scroll">
+                <table class="table table-sm table-bordered table-hover tabla-compacta align-middle mb-0 tabla-pin">
+                    <thead>
+                        <tr>
+                            @foreach (var c in Columnas)
+                            {
+                                <th class="th-ordenable" @onclick="() => OrdenarPor(c.Clave)">@c.Nombre@(Flecha(c.Clave))</th>
+                            }
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    @foreach (var i in HistorialMostrado)
+                    {
+                        <tr>
+                            @foreach (var c in Columnas)
+                            {
+                                var nat = c.Origen == OrigenCampoTabla.Nativo && Motor.Estilo(i.Id, c) is null;
+                                if (nat && c.Clave == "Tipo")
+                                {
+                                    <td>
+                                <span class="badge @(i.Tipo == TipoIntervencionEquipo.Calibracion ? "text-bg-primary" : "text-bg-secondary")">@(i.Tipo == TipoIntervencionEquipo.Calibracion ? "Calibración" : "Mantenimiento")</span>
+                                @if (vigente?.Id == i.Id) { <span class="badge text-bg-success">Vigente</span> }
+                            </td>
+                                }
+                                else if (nat && c.Clave == "Certificado")
+                                {
+                                    <td class="text-nowrap">
+                                @if (i.RutaCertificado is string r)
+                                {
+                                    <PildoraArchivo Url="@r" Nombre="@(i.NumeroCertificado ?? "Ver")" Titulo="@i.NombreCertificado" />
+                                }
+                                else { <span class="text-muted">—</span> }
+                            </td>
+                                }
+                                else
+                                {
+                                    <CeldaCampo Motor="Motor" Campo="c" Fila="i.Id" OnCambio="StateHasChanged" />
+                                }
+                            }
+                            <td class="text-nowrap">
+                                @if (eliminandoIntervencionId == i.Id)
+                                {
+                                    <button class="btn btn-sm btn-danger py-0" title="Confirmar eliminar" @onclick="() => EliminarIntervencion(i.Id)"><Ico Nombre="eliminar" /></button>
+                                    <button class="btn btn-sm btn-outline-secondary py-0" title="Cancelar" @onclick="() => eliminandoIntervencionId = null"><Ico Nombre="cancelar" /></button>
+                                }
+                                else
+                                {
+                                    <button class="btn btn-sm btn-outline-secondary py-0" title="Editar" @onclick="() => editandoIntervencionId = i.Id"><Ico Nombre="editar" /></button>
+                                    <button class="btn btn-sm btn-outline-danger py-0" title="Eliminar" @onclick="() => eliminandoIntervencionId = i.Id"><Ico Nombre="eliminar" /></button>
+                                }
+                            </td>
+                        </tr>
+                    }
+                    @if (historial.Count == 0)
+                    {
+                        <tr><td colspan="8" class="text-muted small text-center py-3">Sin intervenciones registradas.</td></tr>
+                    }
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    @if (intervencionTipo is TipoIntervencionEquipo tipoNuevo)
+    {
+        <DialogoIntervencionEquipo EquipoId="equipo.Id" TipoInicial="tipoNuevo"
+                                   OnGuardado="Cargar" OnCerrar="@(() => intervencionTipo = null)" />
+    }
+
+    @if (editandoIntervencionId is int idEdI)
+    {
+        <DialogoIntervencionEquipo EquipoId="equipo.Id" IntervencionId="idEdI"
+                                   OnGuardado="Cargar" OnCerrar="@(() => editandoIntervencionId = null)" />
+    }
+
+    @if (fotoGrande is not null)
+    {
+        <div class="modal-backdrop-custom" @onclick="() => fotoGrande = null">
+            <div class="modal-box-custom" style="max-width: 900px; padding:.5rem;" @onclick:stopPropagation="true">
+                <img src="@fotoGrande" alt="" style="width:100%; height:auto; border-radius:6px;" />
+            </div>
+        </div>
+    }
+}
+
+@code {
+    [Parameter] public int EquipoId { get; set; }
+
+    private Equipo? equipo;
+    private List<CampoEquipo> campos = new();
+    private Dictionary<int, string> valores = new();
+    private List<FotoEquipo> fotos = new();
+    private List<ArchivoEquipo> fichaTecnica = new();
+    private string pestana = "fotos";
+    private List<IntervencionEquipo> historial = new();
+    private TipoIntervencionEquipo? intervencionTipo;
+    private string? fotoGrande;
+    private int? editandoIntervencionId, eliminandoIntervencionId;
+    private string mensajeFoto = "";
+
+    protected override void OnParametersSet() => CargarDatos();
+
+    private Task Cargar() { CargarDatos(); return Task.CompletedTask; }
+
+    // ---------- Campos del historial de intervenciones ----------
+    private MotorTabla? motor;
+    private MotorTabla Motor => motor!;
+    private bool verCampos, motorPendiente = true;
+    private string? colOrden;
+    private bool ordenAsc;
+
+    private IEnumerable<CampoTabla> Columnas => motor?.Visibles ?? Enumerable.Empty<CampoTabla>();
+
+    private IEnumerable<IntervencionEquipo> HistorialMostrado
+    {
+        get
+        {
+            var q = historial.OrderByDescending(x => x.Fecha).ThenByDescending(x => x.Id).AsEnumerable();
+            return motor is not null && colOrden is not null ? motor.Ordenar(q, x => x.Id, colOrden, ordenAsc) : q;
+        }
+    }
+
+    private void OrdenarPor(string clave) { if (colOrden == clave) ordenAsc = !ordenAsc; else { colOrden = clave; ordenAsc = true; } }
+    private string Flecha(string clave) => colOrden == clave ? (ordenAsc ? " ▲" : " ▼") : "";
+
+    private object? I(int id, Func<IntervencionEquipo, object?> f) => historial.FirstOrDefault(x => x.Id == id) is { } i ? f(i) : null;
+
+    private IEnumerable<ColumnaNativa> ColumnasNativas() => new[]
+    {
+        new ColumnaNativa("Fecha", "Fecha", TipoCampoTabla.Fecha, id => I(id, i => i.Fecha)),
+        new ColumnaNativa("Tipo", "Tipo", TipoCampoTabla.Texto, id => I(id, i => i.Tipo == TipoIntervencionEquipo.Calibracion ? "Calibración" : "Mantenimiento")),
+        new ColumnaNativa("Responsable", "Laboratorio / responsable", TipoCampoTabla.Texto, id => I(id, i => i.Responsable)),
+        new ColumnaNativa("NumeroCertificado", "No. certificado", TipoCampoTabla.Texto, id => I(id, i => i.NumeroCertificado)),
+        new ColumnaNativa("Descripcion", "Descripción", TipoCampoTabla.Texto, id => I(id, i => i.Descripcion)),
+        new ColumnaNativa("ProximaFecha", "Próxima calibración", TipoCampoTabla.Fecha, id => I(id, i => i.ProximaFecha)),
+        new ColumnaNativa("Certificado", "Certificado", TipoCampoTabla.Texto, id => I(id, i => i.NombreCertificado)),
+    };
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!motorPendiente) return;
+        motorPendiente = false;
+        try { motor = await MotorTabla.CargarAsync(Db, "intervenciones-equipo", ColumnasNativas(), historial.Select(i => (i.Id, $"{i.Fecha:dd/MM/yyyy} · {i.Tipo}"))); }
+        catch { motor = null; }
+        StateHasChanged();
+    }
+
+    private void CargarDatos()
+    {
+        motorPendiente = true;
+        equipo = Db.Equipos.AsNoTracking().FirstOrDefault(e => e.Id == EquipoId && !e.Eliminado);
+        if (equipo is null) return;
+        campos = Db.CamposEquipo.AsNoTracking().Where(c => c.Activo).OrderBy(c => c.Orden).ThenBy(c => c.Id).ToList();
+        valores = Db.ValoresCampoEquipo.AsNoTracking().Where(v => v.EquipoId == EquipoId).ToDictionary(v => v.CampoEquipoId, v => v.Valor);
+        fotos = Db.FotosEquipo.AsNoTracking().Where(f => f.EquipoId == EquipoId).OrderBy(f => f.Id).ToList();
+        try { fichaTecnica = Db.ArchivosEquipo.AsNoTracking().Where(a => a.EquipoId == EquipoId).OrderBy(a => a.NombreOriginal).ToList(); }
+        catch { fichaTecnica = new(); }   // sin la migración aplicada
+        historial = Db.IntervencionesEquipo.AsNoTracking().Where(i => i.EquipoId == EquipoId).ToList();
+    }
+
+    private async Task EliminarIntervencion(int id)
+    {
+        var i = await Db.IntervencionesEquipo.FirstOrDefaultAsync(x => x.Id == id && x.EquipoId == EquipoId);
+        if (i is not null)
+        {
+            var ruta = i.RutaCertificado;
+            Db.IntervencionesEquipo.Remove(i);
+            await Db.SaveChangesAsync();
+            if (!string.IsNullOrEmpty(ruta) && !await Db.IntervencionesEquipo.AnyAsync(x => x.RutaCertificado == ruta))
+            {
+                try
+                {
+                    var fisica = Path.Combine(Env.WebRootPath, ruta.TrimStart('/').Replace('/', Path.DirectorySeparatorChar));
+                    if (File.Exists(fisica)) File.Delete(fisica);
+                }
+                catch (IOException) { }
+            }
+        }
+        Db.ChangeTracker.Clear();
+        eliminandoIntervencionId = null;
+        CargarDatos();
+    }
+
+    private string Subtitulo()
+    {
+        string V(string clave) => campos.FirstOrDefault(c => c.Clave == clave) is { } c ? valores.GetValueOrDefault(c.Id, "") : "";
+        var partes = new[] { V("Marca"), V("Modelo"), V("NoSerie") is { Length: > 0 } s ? "S/N " + s : "" }.Where(x => x != "");
+        return string.Join(" · ", partes);
+    }
+
+    private void AbrirIntervencion(TipoIntervencionEquipo t) => intervencionTipo = t;
+
+    private async Task CargarFotos(InputFileChangeEventArgs e)
+    {
+        mensajeFoto = "";
+        const long max = 10 * 1024 * 1024;
+        var carpeta = Path.Combine(Env.WebRootPath, "uploads", "equipos", "fotos");
+        Directory.CreateDirectory(carpeta);
+        foreach (var archivo in e.GetMultipleFiles(10))
+        {
+            if (!archivo.ContentType.StartsWith("image/")) { mensajeFoto = $"\"{archivo.Name}\" no es una imagen."; continue; }
+            if (archivo.Size > max) { mensajeFoto = $"\"{archivo.Name}\" supera 10 MB."; continue; }
+            var nombre = $"{Guid.NewGuid()}{Path.GetExtension(archivo.Name)}";
+            await using (var s = archivo.OpenReadStream(max))
+            await using (var d = File.Create(Path.Combine(carpeta, nombre)))
+                await s.CopyToAsync(d);
+            Db.FotosEquipo.Add(new FotoEquipo { EquipoId = EquipoId, RutaArchivo = $"/uploads/equipos/fotos/{nombre}" });
+        }
+        await Db.SaveChangesAsync();
+        Db.ChangeTracker.Clear();
+        CargarDatos();
+    }
+
+    private async Task ReemplazarFoto(FotoEquipo f, IBrowserFile archivo)
+    {
+        mensajeFoto = "";
+        const long max = 10 * 1024 * 1024;
+        if (!archivo.ContentType.StartsWith("image/")) { mensajeFoto = $"\"{archivo.Name}\" no es una imagen."; return; }
+        if (archivo.Size > max) { mensajeFoto = $"\"{archivo.Name}\" supera 10 MB."; return; }
+        var carpeta = Path.Combine(Env.WebRootPath, "uploads", "equipos", "fotos");
+        Directory.CreateDirectory(carpeta);
+        var nombre = $"{Guid.NewGuid()}{Path.GetExtension(archivo.Name)}";
+        await using (var s = archivo.OpenReadStream(max))
+        await using (var d = File.Create(Path.Combine(carpeta, nombre)))
+            await s.CopyToAsync(d);
+        var foto = await Db.FotosEquipo.FirstOrDefaultAsync(x => x.Id == f.Id);
+        if (foto is null) return;
+        var anterior = foto.RutaArchivo;
+        foto.RutaArchivo = $"/uploads/equipos/fotos/{nombre}";
+        await Db.SaveChangesAsync();
+        Db.ChangeTracker.Clear();
+        try
+        {
+            var fisica = Path.Combine(Env.WebRootPath, anterior.TrimStart('/').Replace('/', Path.DirectorySeparatorChar));
+            if (File.Exists(fisica)) File.Delete(fisica);
+        }
+        catch (IOException) { }
+        CargarDatos();
+    }
+
+    // ---------- Ficha técnica (anexos varios del equipo) ----------
+    private async Task CargarFicha(InputFileChangeEventArgs e)
+    {
+        mensajeFoto = "";
+        const long max = 50L * 1024 * 1024;
+        var carpeta = Path.Combine(Env.WebRootPath, "uploads", "equipos", "ficha");
+        Directory.CreateDirectory(carpeta);
+        try
+        {
+            foreach (var archivo in e.GetMultipleFiles(30))
+            {
+                if (archivo.Size > max) { mensajeFoto = $"\"{archivo.Name}\" supera 50 MB."; continue; }
+                var nombre = $"{Guid.NewGuid()}{Path.GetExtension(archivo.Name)}";
+                await using (var s = archivo.OpenReadStream(max))
+                await using (var d = File.Create(Path.Combine(carpeta, nombre)))
+                    await s.CopyToAsync(d);
+                Db.ArchivosEquipo.Add(new ArchivoEquipo { EquipoId = EquipoId, NombreOriginal = archivo.Name, RutaArchivo = $"/uploads/equipos/ficha/{nombre}" });
+            }
+            await Db.SaveChangesAsync();
+        }
+        catch (Exception ex) { mensajeFoto = "No se pudo cargar: " + ex.Message; }
+        Db.ChangeTracker.Clear();
+        CargarDatos();
+    }
+
+    private async Task QuitarFicha(ArchivoEquipo a)
+    {
+        var x = await Db.ArchivosEquipo.FirstOrDefaultAsync(e => e.Id == a.Id);
+        if (x is not null) { x.Eliminado = true; x.FechaEliminacion = DateTime.Now; await Db.SaveChangesAsync(); }
+        Db.ChangeTracker.Clear();
+        CargarDatos();
+    }
+
+    private async Task QuitarFoto(FotoEquipo f)
+    {
+        var foto = await Db.FotosEquipo.FirstOrDefaultAsync(x => x.Id == f.Id);
+        if (foto is null) return;
+        Db.FotosEquipo.Remove(foto);
+        await Db.SaveChangesAsync();
+        Db.ChangeTracker.Clear();
+        try
+        {
+            var fisica = Path.Combine(Env.WebRootPath, foto.RutaArchivo.TrimStart('/').Replace('/', Path.DirectorySeparatorChar));
+            if (File.Exists(fisica)) File.Delete(fisica);
+        }
+        catch (IOException) { }
+        CargarDatos();
+    }
+}

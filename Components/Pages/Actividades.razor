@@ -1,0 +1,558 @@
+﻿@page "/actividades"
+@rendermode InteractiveServer
+@using Microsoft.EntityFrameworkCore
+@using SigWeb.Data
+@using SigWeb.Models
+@using SigWeb.Data.Tablas
+@inject AppDbContext Db
+@inject SigWeb.Data.Iconos.IconosApp IconosApp
+@inject SigWeb.Data.Impacto.AnalizadorImpacto Analizador
+
+<EncabezadoPagina Titulo="Actividades y parámetros" Icono="actividades" Subtitulo="@actividadSeleccionada?.Nombre">
+    <Acciones>
+        @if (actividadSeleccionada is not null)
+        {
+            <BotonCampos Activo="verCampos" Deshabilitado="motor is null" OnClick="() => verCampos = true" />
+            <BotonExportar Titulo="@($"Parámetros - {actividadSeleccionada.Nombre}")" />
+            <span class="pg-sep"></span>
+        }
+        <button type="button" class="pg-btn pg-btn-primario @(mostrarFormActividad ? "activo" : "")" title="Nueva actividad" @onclick="AlternarFormActividad"><Ico Nombre="agregar" /></button>
+    </Acciones>
+</EncabezadoPagina>
+
+@if (verCampos && motor is not null && actividadSeleccionada is not null)
+{
+    <PanelCampos Motor="motor" OnCerrar="() => verCampos = false" OnCambio="StateHasChanged" />
+}
+
+@if (elimParametro is not null)
+{
+    <div class="card panel-formulario mb-3 border-danger">
+        <div class="card-body">
+            <div class="mb-2"><Ico Nombre="eliminar" /> <strong>@(string.IsNullOrWhiteSpace(elimParametro.Codigo) ? elimParametro.Nombre : elimParametro.Codigo + " - " + elimParametro.Nombre)</strong></div>
+            <PanelImpacto Informe="impacto" OnEntendido="@(v => impactoOk = v)" />
+            <div class="d-flex gap-2">
+                <button class="btn btn-secondary btn-sm" type="button" title="Cancelar" @onclick="CancelarEliminarParametro"><Ico Nombre="cancelar" /></button>
+                <button class="btn btn-danger btn-sm" type="button" title="Eliminar (va a la Papelera)" disabled="@BloqueadoPorImpacto" @onclick="ConfirmarEliminarParametro"><Ico Nombre="eliminar" /></button>
+            </div>
+        </div>
+    </div>
+}
+
+@if (elimActividad is not null)
+{
+    <div class="card panel-formulario mb-3 border-danger">
+        <div class="card-body">
+            <div class="mb-2"><Ico Nombre="eliminar" /> <strong>@elimActividad.Nombre</strong></div>
+            <PanelImpacto Informe="impacto" OnEntendido="@(v => impactoOk = v)" />
+            <div class="d-flex gap-2">
+                <button class="btn btn-secondary btn-sm" type="button" title="Cancelar" @onclick="CancelarEliminarActividad"><Ico Nombre="cancelar" /></button>
+                <button class="btn btn-danger btn-sm" type="button" title="Eliminar (va a la Papelera)" disabled="@BloqueadoPorImpacto" @onclick="ConfirmarEliminarActividad"><Ico Nombre="eliminar" /></button>
+            </div>
+        </div>
+    </div>
+}
+
+<div class="ens-grid mb-3">
+    @foreach (var amb in ambitos)
+    {
+        <div class="ens-cuadro @(ambitoSeleccionado == amb ? "activo" : "") @(arrastrando is not null && arrastrando.Ambito != amb ? "ens-destino" : "") @(sobreAmbito == amb ? "ens-sobre" : "")" role="button" title="@NombreAmbito(amb)" @onclick="() => CambiarAmbito(amb)"
+             @ondragover:preventDefault="true" @ondragenter="() => sobreAmbito = amb" @ondragleave="() => { if (sobreAmbito == amb) sobreAmbito = null; }" @ondrop="() => SoltarEnAmbito(amb)">
+            <img src="@RutaIconoAmbito(amb)" alt="" />
+            <div class="ens-nombre">@NombreAmbito(amb)</div>
+            <div class="ens-cuenta">@(conteoAmbito.TryGetValue(amb, out var n) ? n : 0)</div>
+        </div>
+    }
+</div>
+@if (!string.IsNullOrEmpty(mensajeMover))
+{
+    <div class="alert alert-warning py-1 px-2 small mb-2">@mensajeMover</div>
+}
+
+<div class="card panel-formulario mb-3">
+    <div class="card-header d-flex align-items-center gap-2">
+        <img src="@RutaIconoAmbito(ambitoSeleccionado)" alt="" width="24" height="24" style="object-fit:contain;" />
+        <span>@NombreAmbito(ambitoSeleccionado)</span>
+        <input class="form-control form-control-sm ms-3" style="max-width:240px;" placeholder="Buscar actividad..." @bind="filtroActividades" @bind:event="oninput" />
+        @if (ambitoSeleccionado == AmbitoActividad.Tiro)
+        {
+            <a href="tiros" class="btn btn-sm btn-outline-secondary" title="Tiros y sus torres"><img src="@RutaIconoAmbito(AmbitoActividad.Tiro)" alt="" width="18" height="18" style="object-fit:contain;" /></a>
+        }
+    </div>
+    <div class="card-body">
+        @if (mostrarFormActividad)
+        {
+            <EditForm Model="actividadActual" OnValidSubmit="GuardarActividad" FormName="ActividadForm">
+                <div class="frm-linea">
+                    <CampoFormulario Etiqueta="@(modoEdicionActividad ? "Editar actividad" : "Nueva actividad")" Ancho="" Obligatorio="true" Destacado="true">
+                        <InputText class="form-control" @bind-Value="actividadActual.Nombre" placeholder="Nombre de la actividad" />
+                    </CampoFormulario>
+                    @if (modoEdicionActividad)
+                    {
+                        <CampoFormulario Etiqueta="Grupo" Ancho="frm-corto">
+                            <select class="form-select" title="Mover a otro grupo" @bind="actividadActual.Ambito">
+                                @foreach (var amb in ambitos)
+                                {
+                                    <option value="@amb">@NombreAmbito(amb)</option>
+                                }
+                            </select>
+                        </CampoFormulario>
+                    }
+                    <div class="frm-linea-btns">
+                        <button class="btn btn-secondary btn-sm" type="button" @onclick="CerrarFormActividad" title="Cancelar"><Ico Nombre="cancelar" /></button>
+                        <button class="btn btn-primary btn-sm" type="submit" title="@(modoEdicionActividad ? "Guardar" : "Agregar")"><Ico Nombre="@(modoEdicionActividad ? "guardar" : "agregar")" /></button>
+                    </div>
+                </div>
+            </EditForm>
+            @if (!string.IsNullOrEmpty(mensajeActividad))
+            {
+                <div class="alert alert-warning py-1">@mensajeActividad</div>
+            }
+        }
+
+        <div class="ens-grid ens-grid-sub">
+            @foreach (var a in ActividadesMostradas)
+            {
+                <div class="ens-cuadro ens-sub @(actividadSeleccionada?.Id == a.Id ? "activo" : "") @(!a.Activo ? "inactivo" : "")" role="button"
+                     title="@NombreActividad(a)" @onclick="() => SeleccionarActividad(a)"
+                     draggable="true" @ondragstart="() => { arrastrando = a; mensajeMover = null; }" @ondragend="() => { arrastrando = null; sobreAmbito = null; }">
+                    <div class="ens-acc">
+                        <button type="button" class="ens-mini" title="Editar" @onclick:stopPropagation="true" @onclick="() => EditarActividad(a)"><Ico Nombre="editar" /></button>
+                        <button type="button" class="ens-mini" title="@(a.Activo ? "Desactivar" : "Activar")" @onclick:stopPropagation="true" @onclick="() => CambiarEstadoActividad(a)"><span class="@(a.Activo ? "" : "ico-apagado")"><Ico Nombre="activar" /></span></button>
+                        <button type="button" class="ens-mini @(a.EnMatrizPie ? "mini-on" : "mini-off")" title="@(a.EnMatrizPie ? "Quitar de Matriz PIE" : "Controlar en Matriz PIE")" @onclick:stopPropagation="true" @onclick="() => CambiarEnMatrizPie(a)">📊</button>
+                        <button type="button" class="ens-mini" title="Eliminar actividad" @onclick:stopPropagation="true" @onclick="() => PedirEliminarActividad(a)"><Ico Nombre="eliminar" /></button>
+                    </div>
+                    <img src="@RutaIconoActividad(a)" alt="" />
+                    <div class="ens-nombre">@a.Nombre</div>
+                </div>
+            }
+            @if (!ActividadesMostradas.Any())
+            {
+                <div class="text-muted small"><em>Sin actividades.</em></div>
+            }
+        </div>
+    </div>
+</div>
+
+@if (actividadSeleccionada is not null)
+{
+        <div class="card panel-formulario">
+            <div class="card-header">
+                @(actividadSeleccionada?.Nombre)
+            </div>
+            <div class="card-body">
+                @if (actividadSeleccionada is null)
+                {
+                }
+                else
+                {
+                    <EditForm Model="parametroActual" OnValidSubmit="GuardarParametro" FormName="ParametroForm">
+                        <div class="frm-linea">
+                            <CampoFormulario Etiqueta="Código" Ancho="frm-corto">
+                                <InputText class="form-control" @bind-Value="parametroActual.Codigo" />
+                            </CampoFormulario>
+                            <CampoFormulario Etiqueta="@(modoEdicionParametro ? "Editar parámetro" : "Nuevo parámetro")" Ancho="" Obligatorio="true" Destacado="true">
+                                <InputText class="form-control" @bind-Value="parametroActual.Nombre" />
+                            </CampoFormulario>
+                            <div class="frm-linea-btns">
+                                @if (modoEdicionParametro)
+                                {
+                                    <button class="btn btn-secondary btn-sm" type="button" @onclick="CancelarEdicionParametro" title="Cancelar"><Ico Nombre="cancelar" /></button>
+                                }
+                                <button class="btn btn-primary btn-sm" type="submit" title="@(modoEdicionParametro ? "Guardar" : "Agregar")"><Ico Nombre="@(modoEdicionParametro ? "guardar" : "agregar")" /></button>
+                            </div>
+                        </div>
+                    </EditForm>
+                    @if (!string.IsNullOrEmpty(mensajeParametro))
+                    {
+                        <div class="alert alert-warning py-1">@mensajeParametro</div>
+                    }
+
+                    <input class="form-control form-control-sm mb-2" placeholder="Buscar parámetro..." @bind="filtroParametros" @bind:event="oninput" />
+                    <div class="tabla-scroll"><table class="table table-sm table-bordered table-hover tabla-compacta align-middle mb-0 tabla-pin">
+                        <thead>
+                            <tr>
+                                @foreach (var c in Columnas)
+                                {
+                                    <th class="th-ordenable" @onclick="() => OrdenarParametrosPor(c.Clave)">@c.Nombre@(FlechaParametros(c.Clave))</th>
+                                }
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var p in ParametrosMostrados)
+                            {
+                                <tr>
+                                    @foreach (var c in Columnas)
+                                    {
+                                        <CeldaCampo Motor="Motor" Campo="c" Fila="p.Id" OnCambio="StateHasChanged" />
+                                    }
+                                    <td>
+                                        <button class="btn btn-sm btn-outline-primary" @onclick="() => EditarParametro(p)" title="Editar"><Ico Nombre="editar" /></button>
+                                        <button class="btn btn-sm btn-outline-secondary" title="@(p.Activo ? "Desactivar" : "Activar")" @onclick="() => CambiarEstadoParametro(p)"><span class="@(p.Activo ? "" : "ico-apagado")"><Ico Nombre="activar" /></span></button>
+                                        <button class="btn btn-sm btn-outline-danger" title="Eliminar parámetro" @onclick="() => PedirEliminarParametro(p)"><Ico Nombre="eliminar" /></button>
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table></div>
+                }
+            </div>
+        </div>
+}
+
+@code {
+    private List<Actividad> actividades = new();
+    private Actividad? actividadSeleccionada;
+    private Actividad actividadActual = new();
+    private bool modoEdicionActividad = false;
+    private string mensajeActividad = "";
+
+    private List<ParametroActividad> parametros = new();
+    private ParametroActividad parametroActual = new();
+    private bool modoEdicionParametro = false;
+    private string mensajeParametro = "";
+
+    // ---------- Ámbito (Torre / Pata): catálogos separados ----------
+    private AmbitoActividad ambitoSeleccionado = AmbitoActividad.Torre;
+
+    // ---------- Arrastrar una actividad a otro grupo (Torre / Pata / Tiro) ----------
+    private Actividad? arrastrando;
+    private AmbitoActividad? sobreAmbito;
+    private string? mensajeMover;
+
+    private async Task SoltarEnAmbito(AmbitoActividad destino)
+    {
+        var a = arrastrando;
+        arrastrando = null; sobreAmbito = null;
+        if (a is null || a.Ambito == destino) return;
+        var nombre = a.Nombre.Trim().ToLower();
+        if (Db.Actividades.AsNoTracking().Any(x => !x.Eliminado && x.Ambito == destino && x.Id != a.Id && x.Nombre.ToLower() == nombre))
+        {
+            mensajeMover = $"Ya existe una actividad \"{a.Nombre}\" en {NombreAmbito(destino)}.";
+            return;
+        }
+        var item = await Db.Actividades.FindAsync(a.Id);
+        if (item is null) return;
+        item.Ambito = destino;
+        item.Orden = (Db.Actividades.AsNoTracking().Where(x => x.Ambito == destino && !x.Eliminado).Max(x => (int?)x.Orden) ?? 0) + 1;
+        await Db.SaveChangesAsync();
+        Db.ChangeTracker.Clear();
+        if (actividadSeleccionada?.Id == a.Id) actividadSeleccionada = null;
+        CargarActividades();
+        CargarConteos();
+        CargarParametros();
+    }
+
+    private void CambiarAmbito(AmbitoActividad ambito)
+    {
+        if (ambitoSeleccionado == ambito) return;
+        ambitoSeleccionado = ambito;
+        CerrarFormActividad();
+        actividadSeleccionada = null;
+        CargarParametros();
+        CargarActividades();
+    }
+
+    // ---------- Búsqueda (lista de actividades, sobre la lista ya cargada) ----------
+    private string filtroActividades = "";
+
+    private IEnumerable<Actividad> ActividadesMostradas =>
+        string.IsNullOrWhiteSpace(filtroActividades)
+            ? actividades
+            : actividades.Where(a => a.Nombre.Contains(filtroActividades, StringComparison.OrdinalIgnoreCase));
+
+    // ---------- Búsqueda y orden (tabla de parámetros, sobre la lista ya cargada) ----------
+    private string filtroParametros = "";
+    private string columnaOrdenParametros = "Codigo";
+    private bool ordenAscendenteParametros = true;
+
+    private IEnumerable<ParametroActividad> ParametrosMostrados
+    {
+        get
+        {
+            var query = parametros.AsEnumerable();
+            if (!string.IsNullOrWhiteSpace(filtroParametros))
+            {
+                query = query.Where(p => $"{p.Codigo} {p.Nombre} {motor?.TextoBusqueda(p.Id)}".Contains(filtroParametros, StringComparison.OrdinalIgnoreCase));
+            }
+            query = columnaOrdenParametros switch
+            {
+                "Codigo" => ordenAscendenteParametros ? query.OrderBy(p => p.Codigo) : query.OrderByDescending(p => p.Codigo),
+                "Nombre" => ordenAscendenteParametros ? query.OrderBy(p => p.Nombre) : query.OrderByDescending(p => p.Nombre),
+                "Estado" => ordenAscendenteParametros ? query.OrderBy(p => p.Activo) : query.OrderByDescending(p => p.Activo),
+                _ => motor is null ? query : motor.Ordenar(query, p => p.Id, columnaOrdenParametros, ordenAscendenteParametros)
+            };
+            return query;
+        }
+    }
+
+    private void OrdenarParametrosPor(string columna)
+    {
+        if (columnaOrdenParametros == columna) ordenAscendenteParametros = !ordenAscendenteParametros;
+        else { columnaOrdenParametros = columna; ordenAscendenteParametros = true; }
+    }
+
+    private string FlechaParametros(string columna) => columnaOrdenParametros != columna ? "" : (ordenAscendenteParametros ? " ▲" : " ▼");
+
+    protected override void OnInitialized()
+    {
+        CargarActividades();
+        CargarConteos();
+    }
+
+    private void CargarActividades()
+    {
+        actividades = Db.Actividades.AsNoTracking()
+            .Where(a => a.Ambito == ambitoSeleccionado && !a.Eliminado)
+            .OrderBy(a => a.Orden).ThenBy(a => a.Nombre)
+            .ToList();
+    }
+
+    private void SeleccionarActividad(Actividad a)
+    {
+        actividadSeleccionada = a;
+        CancelarEdicionParametro();
+        CargarParametros();
+    }
+
+    private void CargarParametros()
+    {
+        motorPendiente = true;
+        if (actividadSeleccionada is null) { parametros = new(); motor = null; return; }
+        parametros = Db.ParametrosActividad.AsNoTracking()
+            .Where(p => p.ActividadId == actividadSeleccionada.Id)
+            .OrderBy(p => p.Orden).ThenBy(p => p.Codigo)
+            .ToList();
+    }
+
+    // ---------- Campos de la tabla de parámetros (uno por actividad) ----------
+    private MotorTabla? motor;
+    private MotorTabla Motor => motor!;
+    private bool verCampos, motorPendiente;
+
+    private IEnumerable<CampoTabla> Columnas => motor?.Visibles ?? Enumerable.Empty<CampoTabla>();
+
+    private IEnumerable<ColumnaNativa> ColumnasNativas()
+    {
+        ParametroActividad? P(int id) => parametros.FirstOrDefault(p => p.Id == id);
+        return new[]
+        {
+            new ColumnaNativa("Codigo", "Código", TipoCampoTabla.Texto, id => P(id)?.Codigo),
+            new ColumnaNativa("Nombre", "Nombre", TipoCampoTabla.Texto, id => P(id)?.Nombre),
+            new ColumnaNativa("Estado", "Estado", TipoCampoTabla.Texto, id => P(id) is { } p ? (p.Activo ? "Activo" : "Inactivo") : null),
+        };
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!motorPendiente || actividadSeleccionada is null) return;
+        motorPendiente = false;
+        try { motor = await MotorTabla.CargarAsync(Db, $"parametros:{actividadSeleccionada.Id}", ColumnasNativas(), parametros.Select(p => (p.Id, $"{p.Codigo} {p.Nombre}"))); }
+        catch { motor = null; }
+        StateHasChanged();
+    }
+
+    private async Task GuardarActividad()
+    {
+        mensajeActividad = "";
+        var nombre = (actividadActual.Nombre ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(nombre)) { mensajeActividad = "El nombre es obligatorio."; return; }
+
+        var ambDestino = modoEdicionActividad ? actividadActual.Ambito : ambitoSeleccionado;
+        bool duplicado = Db.Actividades.AsNoTracking().Any(a =>
+            !a.Eliminado && a.Ambito == ambDestino && a.Nombre.ToLower() == nombre.ToLower() && a.Id != actividadActual.Id);
+        if (duplicado) { mensajeActividad = $"Ya existe una actividad \"{nombre}\" en este ámbito."; return; }
+
+        actividadActual.Nombre = nombre;
+        if (!modoEdicionActividad) actividadActual.Ambito = ambitoSeleccionado;
+        if (modoEdicionActividad) Db.Actividades.Update(actividadActual);
+        else Db.Actividades.Add(actividadActual);
+
+        await Db.SaveChangesAsync();
+        Db.ChangeTracker.Clear();
+        if (actividadSeleccionada is not null && actividadSeleccionada.Id == actividadActual.Id && actividadActual.Ambito != ambitoSeleccionado)
+            actividadSeleccionada = null;
+        CerrarFormActividad();
+        CargarActividades();
+        CargarConteos();
+    }
+
+    private void EditarActividad(Actividad a)
+    {
+        actividadActual = new Actividad { Id = a.Id, Nombre = a.Nombre, Orden = a.Orden, Activo = a.Activo, Ambito = a.Ambito, EnMatrizPie = a.EnMatrizPie, TipoEnsayoId = a.TipoEnsayoId, IconoCatalogoId = a.IconoCatalogoId };
+        modoEdicionActividad = true;
+        mostrarFormActividad = true;
+    }
+
+    private void CancelarEdicionActividad()
+    {
+        actividadActual = new();
+        modoEdicionActividad = false;
+        mensajeActividad = "";
+    }
+
+    private async Task CambiarEnMatrizPie(Actividad a)
+    {
+        var item = await Db.Actividades.FindAsync(a.Id);
+        if (item is not null) { item.EnMatrizPie = !item.EnMatrizPie; await Db.SaveChangesAsync(); }
+        Db.ChangeTracker.Clear();
+        CargarActividades();
+    }
+
+    private async Task CambiarEstadoActividad(Actividad a)
+    {
+        var item = await Db.Actividades.FindAsync(a.Id);
+        if (item is not null) { item.Activo = !item.Activo; await Db.SaveChangesAsync(); }
+        Db.ChangeTracker.Clear();
+        CargarActividades();
+        CargarConteos();
+    }
+
+    private async Task GuardarParametro()
+    {
+        mensajeParametro = "";
+        if (actividadSeleccionada is null) return;
+        var nombre = (parametroActual.Nombre ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(nombre)) { mensajeParametro = "El nombre es obligatorio."; return; }
+
+        parametroActual.Nombre = nombre;
+        parametroActual.ActividadId = actividadSeleccionada.Id;
+
+        if (modoEdicionParametro) Db.ParametrosActividad.Update(parametroActual);
+        else Db.ParametrosActividad.Add(parametroActual);
+
+        await Db.SaveChangesAsync();
+        Db.ChangeTracker.Clear();
+        CancelarEdicionParametro();
+        CargarParametros();
+    }
+
+    private void EditarParametro(ParametroActividad p)
+    {
+        parametroActual = new ParametroActividad { Id = p.Id, ActividadId = p.ActividadId, Codigo = p.Codigo, Nombre = p.Nombre, Orden = p.Orden, Activo = p.Activo };
+        modoEdicionParametro = true;
+    }
+
+    private void CancelarEdicionParametro()
+    {
+        parametroActual = new();
+        modoEdicionParametro = false;
+        mensajeParametro = "";
+    }
+
+    private async Task CambiarEstadoParametro(ParametroActividad p)
+    {
+        var item = await Db.ParametrosActividad.FindAsync(p.Id);
+        if (item is not null) { item.Activo = !item.Activo; await Db.SaveChangesAsync(); }
+        Db.ChangeTracker.Clear();
+        CargarParametros();
+    }
+
+    // ---------- Vista por cuadros ----------
+    private static readonly AmbitoActividad[] ambitos = { AmbitoActividad.Torre, AmbitoActividad.Pata, AmbitoActividad.Tiro };
+    private Dictionary<AmbitoActividad, int> conteoAmbito = new();
+    private bool mostrarFormActividad = false;
+
+    private static string NombreAmbito(AmbitoActividad a) => a switch
+    {
+        AmbitoActividad.Torre => "Torre",
+        AmbitoActividad.Pata => "Pata",
+        _ => "Tiro (Tendido)"
+    };
+
+    // Ícono de cada ámbito: el asignado desde Catálogos (Usar en… → Torre/Pata/Tiro) o el de por defecto.
+    private string RutaIconoAmbito(AmbitoActividad a) => a switch
+    {
+        AmbitoActividad.Torre => IconosApp.Ruta("ico:torre") ?? "images/icono-torre.svg",
+        AmbitoActividad.Pata => IconosApp.Ruta("ico:pata") ?? "images/icono-pata.svg",
+        _ => IconosApp.Ruta("ico:tiro") ?? "images/icono-tiro.svg"
+    };
+
+    private string RutaIconoActividad(Actividad a) => IconosApp.RutaIcono(a.IconoCatalogoId) ?? RutaIconoAmbito(a.Ambito);
+
+    private static string NombreActividad(Actividad a) => a.Activo ? a.Nombre : a.Nombre + " (inactiva)";
+
+    private void AlternarFormActividad()
+    {
+        if (mostrarFormActividad) CerrarFormActividad();
+        else { CancelarEdicionActividad(); mostrarFormActividad = true; }
+    }
+
+    private void CerrarFormActividad() { CancelarEdicionActividad(); mostrarFormActividad = false; }
+
+    private void CargarConteos()
+    {
+        conteoAmbito = Db.Actividades.AsNoTracking().Where(a => !a.Eliminado).GroupBy(a => a.Ambito).Select(x => new { x.Key, N = x.Count() }).ToDictionary(x => x.Key, x => x.N);
+    }
+
+    // ---------- Eliminar actividad (con análisis de impacto) ----------
+    private Actividad? elimActividad;
+    private SigWeb.Data.Impacto.InformeImpacto? impacto;
+    private bool impactoOk;
+    private bool BloqueadoPorImpacto => impacto is null || (impacto.RequiereEntender && !impactoOk);
+
+    private async Task CalcularImpacto(Func<Task<SigWeb.Data.Impacto.InformeImpacto>> f)
+    {
+        impacto = null; impactoOk = false;
+        try { impacto = await f(); } catch { impacto = new SigWeb.Data.Impacto.InformeImpacto { Elemento = "No se pudo calcular el impacto" }; }
+        await InvokeAsync(StateHasChanged);
+    }
+
+    // ---------- Eliminar parámetro (sub actividad) → Papelera ----------
+    private ParametroActividad? elimParametro;
+
+    private void PedirEliminarParametro(ParametroActividad p)
+    {
+        elimActividad = null;
+        elimParametro = p;
+        _ = CalcularImpacto(() => Analizador.Parametro(p.Id));
+    }
+
+    private void CancelarEliminarParametro() { elimParametro = null; impacto = null; impactoOk = false; }
+
+    private async Task ConfirmarEliminarParametro()
+    {
+        if (elimParametro is null || BloqueadoPorImpacto) return;
+        var id = elimParametro.Id;
+        var ent = await Db.ParametrosActividad.FirstOrDefaultAsync(x => x.Id == id);
+        if (ent is not null)
+        {
+            ent.Eliminado = true;
+            ent.FechaEliminacion = DateTime.Now;
+            await Db.SaveChangesAsync();
+        }
+        Db.ChangeTracker.Clear();
+        if (parametroActual.Id == id) CancelarEdicionParametro();
+        CancelarEliminarParametro();
+        CargarParametros();
+    }
+
+    private void PedirEliminarActividad(Actividad a)
+    {
+        elimParametro = null;
+        elimActividad = a;
+        _ = CalcularImpacto(() => Analizador.Actividad(a.Id));
+    }
+
+    private void CancelarEliminarActividad() { elimActividad = null; impacto = null; impactoOk = false; }
+
+    private async Task ConfirmarEliminarActividad()
+    {
+        if (elimActividad is null || BloqueadoPorImpacto) return;
+        var id = elimActividad.Id;
+        var ent = await Db.Actividades.FirstOrDefaultAsync(x => x.Id == id);
+        if (ent is not null)
+        {
+            ent.Eliminado = true;
+            ent.FechaEliminacion = DateTime.Now;
+            ent.Activo = false;
+            await Db.SaveChangesAsync();
+        }
+        Db.ChangeTracker.Clear();
+        if (actividadSeleccionada?.Id == id) { actividadSeleccionada = null; parametros = new(); }
+        CancelarEliminarActividad();
+        CargarActividades();
+        CargarConteos();
+    }
+}

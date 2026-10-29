@@ -1,0 +1,68 @@
+@* Ícono de adjuntos con ventanita (como el menú del código en Documentos): muestra hasta 3 archivos
+   y "Ver todos" (lista completa en el área de contenido, junto al menú lateral, con Volver). Solo consulta: sin editar ni eliminar. *@
+
+<button type="button" class="ens-mini btn-archivos @Clase" title="@(Archivos.Count == 0 ? "Sin adjuntos" : $"Adjuntos ({Archivos.Count})")"
+        disabled="@(Archivos.Count == 0)" @onclick:stopPropagation="true" @onclick="Abrir">
+    <Ico Nombre="documento" />@if (Texto is not null) { <span class="ms-1">@Texto</span> } else if (Archivos.Count > 1) { <span class="ms-1 small">@Archivos.Count</span> }
+</button>
+
+@if (abierto)
+{
+    var x = posX.ToString(System.Globalization.CultureInfo.InvariantCulture);
+    var y = (posY + 8).ToString(System.Globalization.CultureInfo.InvariantCulture);
+    <div class="doc-menu-fondo" @onclick="() => abierto = false"></div>
+    <div class="doc-menu doc-menu-fijo" style="left:min(@(x)px, calc(100vw - 330px)); top:min(@(y)px, calc(100vh - 220px)); width:320px;">
+        <button type="button" class="doc-menu-op" @onclick="() => { abierto = false; verTodos = true; }">
+            <Ico Nombre="listado" /> <span>Ver todos</span> <span class="text-muted ms-auto">@Archivos.Count</span>
+        </button>
+        <div class="doc-menu-sep"></div>
+        @if (!string.IsNullOrWhiteSpace(Titulo)) { <div class="doc-menu-sec">@Titulo</div> }
+        @foreach (var a in Archivos.Take(Max))
+        {
+            <a class="doc-menu-op" href="@a.Url" target="_blank" rel="noopener" title="@(a.Detalle ?? a.Nombre)" @onclick="() => abierto = false">
+                <Ico Nombre="documento" /> <span class="text-truncate">@a.Nombre</span>
+            </a>
+        }
+    </div>
+}
+
+@if (verTodos)
+{
+    <div class="pc-capa archivos-todos">
+        <EncabezadoPagina Titulo="@(Titulo ?? "Adjuntos")" Icono="documentos" Subtitulo="@($"{Archivos.Count} archivo(s)")" OnAtras="() => verTodos = false" />
+        <div class="tabla-scroll tabla-auto">
+            <table class="table table-sm table-bordered table-hover tabla-compacta align-middle mb-0">
+                <thead><tr><th>Archivo</th><th>Detalle</th><th style="width:90px;"></th></tr></thead>
+                <tbody>
+                    @foreach (var a in Archivos)
+                    {
+                        <tr>
+                            <td class="small"><PildoraArchivo Url="@a.Url" Nombre="@a.Nombre" /></td>
+                            <td class="small text-muted">@a.Detalle</td>
+                            <td class="text-nowrap">
+                                <a class="ens-mini" href="@a.Url" target="_blank" rel="noopener" title="Ver"><Ico Nombre="ubicar" /></a>
+                                <a class="ens-mini" href="@a.Url" download="@a.Nombre" title="Descargar"><Ico Nombre="importar" /></a>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    </div>
+}
+
+@code {
+    public sealed record Archivo(string Nombre, string Url, string? Detalle = null);
+
+    [Parameter] public IReadOnlyList<Archivo> Archivos { get; set; } = Array.Empty<Archivo>();
+    [Parameter] public string? Titulo { get; set; }
+    // Texto junto al ícono (p. ej. el número del informe); si no, el número de archivos cuando hay más de uno.
+    [Parameter] public string? Texto { get; set; }
+    [Parameter] public string? Clase { get; set; }
+    private const int Max = 3;
+
+    private bool abierto, verTodos;
+    private double posX, posY;
+
+    private void Abrir(MouseEventArgs e) { posX = e.ClientX; posY = e.ClientY; abierto = !abierto; }
+}

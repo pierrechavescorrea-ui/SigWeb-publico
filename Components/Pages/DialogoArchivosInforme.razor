@@ -1,0 +1,187 @@
+@* Ver/subir/eliminar los PDF de un Informe, directamente desde la celda
+   "Informe" de la tabla de Ensayos, sin tener que abrir el formulario
+   completo de un resultado. Como el Informe es UNO SOLO compartido por
+   todos los resultados que tengan el mismo número (ver ConfirmarImportar
+   y Guardar en los diálogos de carga/captura), subir o eliminar un
+   archivo aquí se refleja automáticamente en todas las filas que
+   comparten ese informe (ej. un par o trío de cilindros fallados juntos)
+   — no hay que cargarlo dos veces, ni sincronizar nada a mano. *@
+@using Microsoft.AspNetCore.Components.Forms
+@using Microsoft.EntityFrameworkCore
+@using SigWeb.Data
+@using SigWeb.Models
+@inject AppDbContext Db
+@inject IWebHostEnvironment Env
+
+<div class="modal-backdrop-custom">
+    <div class="modal-box-custom" style="max-width: 520px;">
+        @if (subiendo)
+        {
+            <div class="overlay-procesando">
+                <div class="spinner-border text-primary" role="status"></div>
+                <div>Subiendo...</div>
+            </div>
+        }
+
+        <div class="d-flex justify-content-between align-items-center mb-2">
+            <h5 class="mb-0">📎 Informe @informe?.Numero</h5>
+            <button type="button" class="btn-close" aria-label="Cerrar" @onclick="Cerrar"></button>
+        </div>
+
+        @if (resultadosQueComparten.Count > 1)
+        {
+            <p class="text-muted small">
+                Este informe es compartido por @resultadosQueComparten.Count filas de la tabla
+                (@string.Join(", ", resultadosQueComparten)). Lo que subas o elimines aquí aplica para todas — no
+                hace falta cargarlo más de una vez.
+            </p>
+        }
+
+        @if (archivos.Count == 0)
+        {
+            <p class="text-muted small">Todavía no hay documentos cargados para este informe.</p>
+        }
+        else
+        {
+            <ul class="list-group list-group-flush mb-2">
+                @foreach (var a in archivos)
+                {
+                    <li class="list-group-item d-flex justify-content-between align-items-center px-0 py-1">
+                        <a href="@a.RutaArchivo" target="_blank" class="small text-truncate text-decoration-none" style="max-width: 360px;">📄 @a.NombreOriginal</a>
+                        @if (idPendienteEliminar == a.Id)
+                        {
+                            <span>
+                                <button class="btn btn-sm btn-danger" @onclick="() => ConfirmarEliminarArchivo(a.Id)">Sí</button>
+                                <button class="btn btn-sm btn-outline-secondary" @onclick="() => idPendienteEliminar = null">No</button>
+                            </span>
+                        }
+                        else
+                        {
+                            <button class="btn btn-sm btn-outline-danger" title="Eliminar" @onclick="() => idPendienteEliminar = a.Id"><Ico Nombre="eliminar" /></button>
+                        }
+                    </li>
+                }
+            </ul>
+        }
+
+        <div class="mb-2">
+            <label class="form-label mb-1 small">Agregar documento(s) (PDF, uno o varios)</label>
+            <InputFile class="form-control form-control-sm" multiple OnChange="SeleccionarArchivos" accept=".pdf" />
+        </div>
+
+        @if (!string.IsNullOrEmpty(error))
+        {
+            <div class="alert alert-warning py-1 small">@error</div>
+        }
+
+        <div class="d-flex justify-content-end gap-2">
+            <button class="btn btn-secondary btn-sm" @onclick="Cerrar">Cerrar</button>
+            <button class="btn btn-primary btn-sm" disabled="@(archivosSeleccionados.Count == 0 || subiendo)" @onclick="Subir">
+                Subir @(archivosSeleccionados.Count > 0 ? $"({archivosSeleccionados.Count})" : "")
+            </button>
+        </div>
+    </div>
+</div>
+
+@code {
+    [Parameter] public int InformeId { get; set; }
+    [Parameter] public EventCallback OnCerrar { get; set; }
+    [Parameter] public EventCallback OnCambiado { get; set; }
+
+    private Informe? informe;
+    private List<ArchivoInforme> archivos = new();
+    private List<string> resultadosQueComparten = new();
+    private IReadOnlyList<IBrowserFile> archivosSeleccionados = new List<IBrowserFile>();
+    private int? idPendienteEliminar;
+    private bool subiendo = false;
+    private string error = "";
+
+    protected override void OnInitialized()
+    {
+        CargarTodo();
+    }
+
+    private void CargarTodo()
+    {
+        informe = Db.Informes.AsNoTracking().FirstOrDefault(i => i.Id == InformeId);
+        archivos = Db.ArchivosInforme.AsNoTracking().Where(a => a.InformeId == InformeId).OrderBy(a => a.Id).ToList();
+
+        resultadosQueComparten = Db.ResultadosEnsayo.AsNoTracking()
+            .Where(r => r.InformeId == InformeId && !r.Eliminado)
+            .Select(r => r.ElementoTexto)
+            .ToList()
+            .Select(t => string.IsNullOrWhiteSpace(t) ? "(sin elemento)" : t)
+            .ToList();
+    }
+
+    private void SeleccionarArchivos(InputFileChangeEventArgs e)
+    {
+        archivosSeleccionados = e.GetMultipleFiles(10);
+        error = "";
+    }
+
+    private async Task Subir()
+    {
+        if (archivosSeleccionados.Count == 0) return;
+        subiendo = true;
+        error = "";
+        StateHasChanged();
+        await Task.Yield();
+
+        try
+        {
+            var carpeta = Path.Combine(Env.WebRootPath, "uploads", "ensayos");
+            Directory.CreateDirectory(carpeta);
+
+            foreach (var archivo in archivosSeleccionados)
+            {
+                var nombreArchivo = $"{Guid.NewGuid()}{Path.GetExtension(archivo.Name)}";
+                var rutaFisica = Path.Combine(carpeta, nombreArchivo);
+                await using (var stream = archivo.OpenReadStream(20 * 1024 * 1024))
+                await using (var destino = File.Create(rutaFisica))
+                {
+                    await stream.CopyToAsync(destino);
+                }
+                Db.ArchivosInforme.Add(new ArchivoInforme
+                {
+                    InformeId = InformeId,
+                    NombreOriginal = archivo.Name,
+                    RutaArchivo = $"/uploads/ensayos/{nombreArchivo}"
+                });
+            }
+            await Db.SaveChangesAsync();
+            Db.ChangeTracker.Clear();
+
+            archivosSeleccionados = new List<IBrowserFile>();
+            CargarTodo();
+            await OnCambiado.InvokeAsync();
+        }
+        catch (Exception ex)
+        {
+            error = $"No se pudo subir: {ex.Message}";
+        }
+        finally
+        {
+            subiendo = false;
+        }
+    }
+
+    private async Task ConfirmarEliminarArchivo(int id)
+    {
+        var item = await Db.ArchivosInforme.FindAsync(id);
+        if (item is not null)
+        {
+            Db.ArchivosInforme.Remove(item);
+            await Db.SaveChangesAsync();
+        }
+        Db.ChangeTracker.Clear();
+        idPendienteEliminar = null;
+        CargarTodo();
+        await OnCambiado.InvokeAsync();
+    }
+
+    private async Task Cerrar()
+    {
+        await OnCerrar.InvokeAsync();
+    }
+}

@@ -1,0 +1,1099 @@
+@page "/planos"
+@rendermode InteractiveServer
+@using Microsoft.AspNetCore.Components.Forms
+@using Microsoft.EntityFrameworkCore
+@using SigWeb.Data
+@using SigWeb.Data.Documentos
+@using SigWeb.Data.Planos
+@using SigWeb.Data.Tablas
+@using SigWeb.Models
+@inject AppDbContext Db
+@inject IServiceScopeFactory Scopes
+@inject IWebHostEnvironment Env
+
+@if (formArch is not null && planosPorId.TryGetValue(formArch.PlanoId, out var pfa))
+{
+    @* ---------- Actualizar un plano (pantalla sola): cargar hojas de una versión ---------- *@
+    var actualesPfa = ArchivosPlanos.Actuales(ArchivosDe(pfa.Id)).Select(a => a.Id).ToHashSet();
+    <EncabezadoPagina Titulo="@pfa.Codigo" Icono="planos" Subtitulo="@(string.IsNullOrWhiteSpace(pfa.Titulo) ? "Actualizar" : pfa.Titulo)" OnAtras="() => formArch = null">
+        <Acciones>
+            <button type="button" class="pg-btn" title="Cancelar" @onclick="() => formArch = null"><Ico Nombre="cancelar" /></button>
+            <button type="button" class="pg-btn pg-btn-primario" title="Guardar" disabled="@(formArch.Archivos.Count == 0 || string.IsNullOrWhiteSpace(formArch.Version) || guardando)" @onclick="GuardarArchivosPlano">
+                @if (guardando) { <span class="spinner-border spinner-border-sm" role="status"></span> } else { <Ico Nombre="guardar" /> @(formArch.Archivos.Count > 0 ? formArch.Archivos.Count.ToString() : "") }
+            </button>
+        </Acciones>
+    </EncabezadoPagina>
+    <div class="card panel-formulario frm mb-3">
+        <div class="card-body frm-cuerpo">
+            <div class="row g-3 align-items-end">
+                <div class="col-md-2">
+                    <label class="form-label mb-1 small">Clase</label>
+                    <select class="form-select form-select-sm" value="@((int)formArch.Clase)" @onchange="@(e => { formArch.Clase = (ClaseArchivoDocumento)int.Parse(e.Value!.ToString()!); formArch.Version = VersionSugerida(formArch.PlanoId, formArch.Clase); })">
+                        @foreach (var cl in ClasesPlano) { <option value="@((int)cl)">@PanelCargaArchivos.Nombre(cl, false)</option> }
+                    </select>
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label mb-1 small">Versión</label>
+                    <input class="form-control form-control-sm" @bind="formArch.Version" />
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label mb-1 small">Fecha</label>
+                    <input type="date" class="form-control form-control-sm" @bind="formArch.Fecha" />
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label mb-1 small">Archivos (hojas)</label>
+                    <InputFile class="form-control form-control-sm" multiple accept=".pdf" OnChange="@(e => formArch.Archivos = e.GetMultipleFiles(50).ToList())" />
+                </div>
+            </div>
+        </div>
+    </div>
+    @if (ArchivosDe(pfa.Id).Count > 0)
+    {
+        <div class="rg-bloque-tit">Archivos del plano</div>
+        <div class="tabla-scroll"><table class="table table-sm table-bordered tabla-compacta align-middle mb-0">
+            <thead><tr><th style="width:90px;">Versión</th><th style="width:150px;">Clase</th><th style="width:110px;">Fecha</th><th>Archivo</th></tr></thead>
+            <tbody>
+                @foreach (var a in ArchivosDe(pfa.Id).OrderByDescending(a => actualesPfa.Contains(a.Id)).ThenByDescending(a => a.FechaCarga))
+                {
+                    <tr>
+                        <td class="small fw-bold">@a.Version</td>
+                        <td class="small">@(actualesPfa.Contains(a.Id) ? "Vigente" : a.Clase == ClaseArchivoDocumento.Obsoleta ? "Obsoleta" : "Vigente reemplazada")</td>
+                        <td class="small text-nowrap">@(a.Fecha?.ToString("dd/MM/yyyy"))</td>
+                        <td class="small"><PildoraArchivo Url="@a.RutaArchivo" Nombre="@a.NombreOriginal" /></td>
+                    </tr>
+                }
+            </tbody>
+        </table></div>
+    }
+}
+else if (verAnterioresDe is int vaId && planosPorId.TryGetValue(vaId, out var planoVer))
+{
+    var actualesVer = ArchivosPlanos.Actuales(ArchivosDe(vaId)).Select(a => a.Id).ToHashSet();
+    var anteriores = verTodos
+        ? ArchivosDe(vaId).OrderByDescending(a => actualesVer.Contains(a.Id)).ThenByDescending(a => a.FechaCarga).ThenBy(a => a.NombreOriginal).ToList()
+        : ArchivosPlanos.Anteriores(ArchivosDe(vaId));
+    <EncabezadoPagina Titulo="@planoVer.Codigo" Icono="planos" Subtitulo="@($"{(verTodos ? "Todos los archivos" : "Obsoletos")} ({anteriores.Count})")" OnAtras="() => verAnterioresDe = null" />
+    <div class="tabla-scroll tabla-auto"><table class="table table-sm table-bordered table-hover tabla-compacta align-middle mb-0 tabla-pin">
+        <thead>
+            <tr><th>Versión</th><th>Clase</th><th>Fecha</th><th>Archivo</th><th>Cargado</th><th style="width:130px;"></th></tr>
+        </thead>
+        <tbody>
+            @foreach (var a in anteriores)
+            {
+                <tr>
+                    <td class="small fw-bold">@a.Version</td>
+                    <td class="small">@(actualesVer.Contains(a.Id) ? "Vigente" : a.Clase == ClaseArchivoDocumento.Obsoleta ? "Obsoleta" : "Vigente reemplazada")</td>
+                    <td class="small text-nowrap">@(a.Fecha?.ToString("dd/MM/yyyy"))</td>
+                    <td class="small">@a.NombreOriginal</td>
+                    <td class="small text-nowrap text-muted">@a.FechaCarga.ToString("dd/MM/yyyy HH:mm")</td>
+                    <td class="text-nowrap">
+                        <a class="ens-mini" href="@a.RutaArchivo" target="_blank" rel="noopener" title="Ver"><Ico Nombre="ubicar" /></a>
+                        <a class="ens-mini" href="@a.RutaArchivo" download="@a.NombreOriginal" title="Descargar"><Ico Nombre="importar" /></a>
+                        <button type="button" class="ens-mini" title="Reemplazar archivo" @onclick="() => AbrirReemplazo(a)"><Ico Nombre="editar" /></button>
+                        <button type="button" class="ens-mini" title="Eliminar archivo" @onclick="() => PedirEliminarArchivo(a)"><Ico Nombre="eliminar" /></button>
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table></div>
+}
+else
+{
+<div class="planos-listado @(pantallaCompleta ? "ens-pantalla" : "")">
+<EncabezadoPagina Titulo="Listado maestro de planos" Icono="planos" Subtitulo="@($"{planos.Count} plano{(planos.Count == 1 ? "" : "s")}")" OnAtras="AtrasPantalla">
+    <Acciones>
+        <button type="button" class="pg-btn @(pantallaCompleta ? "activo" : "")" title="@(pantallaCompleta ? "Salir de pantalla completa" : "Pantalla completa")" @onclick="() => pantallaCompleta = !pantallaCompleta"><Ico Nombre="pantalla-completa" /></button>
+        <button type="button" class="pg-btn @(verCargas ? "activo" : "")" title="@($"Cargas: {cargas.Count} de listado, {cargasArchivos.Count} de archivos")" @onclick="AlternarCargas"><Ico Nombre="cargas" />@(cargas.Count + cargasArchivos.Count > 0 ? $" {cargas.Count + cargasArchivos.Count}" : "")</button>
+        <span class="pg-sep"></span>
+        <BotonCampos Activo="verCampos" Deshabilitado="motor is null" OnClick="() => verCampos = true" />
+        <button type="button" class="pg-btn @(verImportar ? "activo" : "")" title="Importar listado (Excel)" disabled="@(motor is null)" @onclick="() => AbrirExcel(grupoSelId)"><Ico Nombre="cargar-excel" /></button>
+        <button type="button" class="pg-btn @(verLote ? "activo" : "")" title="Cargar planos (PDF)" disabled="@(motor is null)" @onclick="() => AbrirPdfs(grupoSelId)"><Ico Nombre="cargar-pdf" /></button>
+        <BotonExportar Titulo="Listado maestro de planos" Selector="table.tabla-planos" />
+        <span class="pg-sep"></span>
+        <button type="button" class="pg-btn pg-btn-primario @(mostrarFormGrupo ? "activo" : "")" title="Nuevo grupo de planos" @onclick="AlternarFormGrupo"><Ico Nombre="agregar" /></button>
+    </Acciones>
+</EncabezadoPagina>
+
+@if (verCampos && motor is not null)
+{
+    <PanelCampos Motor="motor" OnCerrar="() => verCampos = false" OnCambio="StateHasChanged" />
+}
+
+@if (!string.IsNullOrEmpty(mensaje))
+{
+    <div class="alert @(error ? "alert-warning" : "alert-success") py-1">@mensaje</div>
+}
+
+@* ---------- Cargas: Excel del listado y archivos ---------- *@
+@if (verCargas)
+{
+    <div class="card panel-formulario mb-3">
+        <div class="card-body">
+            <div class="btn-group btn-group-sm mb-2" role="group">
+                <button type="button" class="btn @(pestanaCargas == "listado" ? "btn-dark" : "btn-outline-secondary")" title="Bases de datos Excel del listado" @onclick='() => { pestanaCargas = "listado"; elimCargas = null; }'><Ico Nombre="listado" /> @cargas.Count</button>
+                <button type="button" class="btn @(pestanaCargas == "archivos" ? "btn-dark" : "btn-outline-secondary")" title="Cargas de archivos" @onclick='() => { pestanaCargas = "archivos"; elimCargas = null; }'><Ico Nombre="adjuntar" /> @cargasArchivos.Count</button>
+            </div>
+            @if (pestanaCargas == "listado")
+            {
+                if (cargas.Count == 0) { <div class="text-muted small">—</div> }
+                else
+                {
+                    <div class="tabla-scroll mb-2" style="max-height:280px;">
+                        <table class="table table-sm table-bordered align-middle mb-0">
+                            <thead>
+                                <tr>
+                                    <th style="width:32px;"><input type="checkbox" class="form-check-input" title="Todas" checked="@(cargasSel.Count == cargas.Count)" @onchange="@(e => { cargasSel = (bool)e.Value! ? cargas.Select(c => c.Id).ToHashSet() : new(); elimCargas = null; })" /></th>
+                                    <th>Archivo</th><th>Hoja</th><th>Fecha</th>
+                                    <th title="Planos de esta carga">Pl.</th><th title="Filas de otras cargas actualizadas por código">Act.</th>
+                                    <th style="width:40px;"></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var c in cargas)
+                                {
+                                    var id = c.Id;
+                                    <tr class="@(cargaFiltro == id ? "table-active" : "")">
+                                        <td><input type="checkbox" class="form-check-input" checked="@cargasSel.Contains(id)" @onchange="@(e => { if ((bool)e.Value!) cargasSel.Add(id); else cargasSel.Remove(id); elimCargas = null; })" /></td>
+                                        <td class="small">@c.NombreArchivo</td>
+                                        <td class="small">@c.Hoja</td>
+                                        <td class="small text-nowrap">@c.Fecha.ToString("dd/MM/yyyy HH:mm")</td>
+                                        <td class="small text-end">@(planosPorCarga.TryGetValue(id, out var n) ? n : 0)</td>
+                                        <td class="small text-end">@c.FilasActualizadas</td>
+                                        <td><button type="button" class="ens-mini @(cargaFiltro == id ? "activo" : "")" title="Ver solo esta carga" @onclick="() => cargaFiltro = cargaFiltro == id ? null : id"><Ico Nombre="ubicar" /></button></td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="d-flex justify-content-end">
+                        <button type="button" class="btn btn-danger btn-sm" title="@($"Eliminar cargas seleccionadas ({cargasSel.Count})")" disabled="@(cargasSel.Count == 0)" @onclick='() => PedirEliminarCargas("listado")'><Ico Nombre="eliminar" /> @cargasSel.Count</button>
+                    </div>
+                }
+            }
+            else
+            {
+                if (cargasArchivos.Count == 0) { <div class="text-muted small">—</div> }
+                else
+                {
+                    <div class="tabla-scroll mb-2" style="max-height:320px;">
+                        <table class="table table-sm table-bordered align-middle mb-0">
+                            <thead>
+                                <tr>
+                                    <th style="width:32px;"><input type="checkbox" class="form-check-input" title="Todas" checked="@(cargasArchSel.Count == cargasArchivos.Count)" @onchange="@(e => { cargasArchSel = (bool)e.Value! ? cargasArchivos.Select(c => c.Id).ToHashSet() : new(); elimCargas = null; })" /></th>
+                                    <th>Fecha</th><th>Origen</th><th>Descripción</th><th title="Archivos">Arch.</th><th title="Planos">Pl.</th>
+                                    <th style="width:70px;"></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var c in cargasArchivos)
+                                {
+                                    var id = c.Id;
+                                    var lista = archivosPorCarga.TryGetValue(id, out var l) ? l : new List<ArchivoPlanoMaestro>();
+                                    <tr class="@(cargaArchFiltro == id ? "table-active" : "")">
+                                        <td><input type="checkbox" class="form-check-input" checked="@cargasArchSel.Contains(id)" @onchange="@(e => { if ((bool)e.Value!) cargasArchSel.Add(id); else cargasArchSel.Remove(id); elimCargas = null; })" /></td>
+                                        <td class="small text-nowrap">@c.Fecha.ToString("dd/MM/yyyy HH:mm")</td>
+                                        <td class="small">@c.Origen</td>
+                                        <td class="small">@c.Descripcion</td>
+                                        <td class="small text-end">@lista.Count</td>
+                                        <td class="small text-end">@lista.Select(a => a.PlanoMaestroId).Distinct().Count()</td>
+                                        <td class="text-nowrap">
+                                            <button type="button" class="ens-mini @(cargaArchAbierta == id ? "activo" : "")" title="Archivos de esta carga" @onclick="() => cargaArchAbierta = cargaArchAbierta == id ? null : id"><Ico Nombre="listado" /></button>
+                                            <button type="button" class="ens-mini @(cargaArchFiltro == id ? "activo" : "")" title="Ver solo sus planos" @onclick="() => cargaArchFiltro = cargaArchFiltro == id ? null : id"><Ico Nombre="ubicar" /></button>
+                                        </td>
+                                    </tr>
+                                    if (cargaArchAbierta == id)
+                                    {
+                                        <tr>
+                                            <td></td>
+                                            <td colspan="6" class="p-0">
+                                                <table class="table table-sm mb-0 doc-sub">
+                                                    @foreach (var a in lista.OrderBy(a => CodigoPlano(a.PlanoMaestroId)))
+                                                    {
+                                                        <tr>
+                                                            <td class="small fw-bold">@CodigoPlano(a.PlanoMaestroId)</td>
+                                                            <td class="small">@(a.Clase == ClaseArchivoDocumento.Obsoleta ? "Obsoleta" : "Vigente")</td>
+                                                            <td class="small">@(string.IsNullOrWhiteSpace(a.Version) ? "" : "v" + a.Version)</td>
+                                                            <td class="small">@a.NombreOriginal</td>
+                                                            <td class="text-nowrap"><a class="ens-mini" href="@a.RutaArchivo" target="_blank" rel="noopener" title="Ver"><Ico Nombre="ubicar" /></a></td>
+                                                        </tr>
+                                                    }
+                                                </table>
+                                            </td>
+                                        </tr>
+                                    }
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="d-flex justify-content-end">
+                        <button type="button" class="btn btn-danger btn-sm" title="@($"Eliminar cargas de archivos seleccionadas ({cargasArchSel.Count})")" disabled="@(cargasArchSel.Count == 0)" @onclick='() => PedirEliminarCargas("archivos")'><Ico Nombre="eliminar" /> @cargasArchSel.Count</button>
+                    </div>
+                }
+            }
+            @if (elimCargas is not null)
+            {
+                <div class="border border-danger rounded p-2 mt-2">
+                    <PanelImpacto Informe="impactoCargas" OnEntendido="@(v => impactoCargasOk = v)" />
+                    <div class="d-flex gap-2">
+                        <button class="btn btn-secondary btn-sm" type="button" title="Cancelar" @onclick="() => elimCargas = null"><Ico Nombre="cancelar" /></button>
+                        <button class="btn btn-danger btn-sm" type="button" title="Eliminar (va a la Papelera)" disabled="@BloqueadoCargas" @onclick="ConfirmarEliminarCargas"><Ico Nombre="eliminar" /></button>
+                    </div>
+                </div>
+            }
+        </div>
+    </div>
+}
+
+@* ---------- Importar listado (Excel) ---------- *@
+@if (verImportar && motor is not null)
+{
+    <PanelImportarExcel Destinos="DestinosImportacion" Importando="importando" OnImportar="Importar" OnCancelar="() => verImportar = false">
+        <Extra>
+            <span class="rg-chip" title="Grupo de los planos nuevos"><Ico Nombre="carpeta" /> @NombreDestino</span>
+        </Extra>
+    </PanelImportarExcel>
+}
+
+@* ---------- Carga masiva de PDF ---------- *@
+@if (verLote)
+{
+    <PanelCargaArchivos Indice="indice" Clases="ClasesPlano" VersionSugerida="VersionSugerida" Accept=".pdf" TituloFila="Plano"
+                        Cargando="cargandoLote" OnCargar="CargarLote" OnCancelar="() => verLote = false" />
+}
+
+@if (mostrarFormGrupo)
+{
+    <div class="mb-3">
+        <div>
+            <div class="frm-linea mb-0">
+                <button type="button" class="frm-icono-btn" title="Elegir ícono" @onclick="@(() => mostrarSelectorIconoGrupo = !mostrarSelectorIconoGrupo)">
+                    <img src="@RutaIcono(grupoActual.IconoCatalogoId)" alt="" />
+                </button>
+                <CampoFormulario Etiqueta="@(modoEdicionGrupo ? "Editar grupo" : "Nuevo grupo")" Ancho="" Obligatorio="true" Destacado="true">
+                    <input class="form-control" @bind="grupoActual.Nombre" placeholder="Estructural" />
+                </CampoFormulario>
+                <div class="frm-linea-btns">
+                    <button class="btn btn-secondary btn-sm" type="button" @onclick="CerrarFormGrupo" title="Cancelar"><Ico Nombre="cancelar" /></button>
+                    <button class="btn btn-primary btn-sm" type="button" @onclick="GuardarGrupo" title="@(modoEdicionGrupo ? "Guardar" : "Agregar")"><Ico Nombre="@(modoEdicionGrupo ? "guardar" : "agregar")" /></button>
+                </div>
+            </div>
+            @if (mostrarSelectorIconoGrupo)
+            {
+                <SelectorIconos Iconos="iconosDisponibles" IconoSeleccionadoId="grupoActual.IconoCatalogoId" PermitirNinguno="false"
+                                OnSeleccionar="@(id => { grupoActual.IconoCatalogoId = id; mostrarSelectorIconoGrupo = false; })" />
+            }
+            @if (!string.IsNullOrEmpty(mensajeGrupo))
+            {
+                <div class="alert alert-warning py-1 mt-2 mb-0">@mensajeGrupo</div>
+            }
+        </div>
+    </div>
+}
+
+@if (elimGrupo is not null)
+{
+    <div class="card panel-formulario mb-3 border-danger">
+        <div class="card-body">
+            <div class="mb-2"><Ico Nombre="eliminar" /> <strong>@elimGrupo.Nombre</strong></div>
+            <PanelImpacto Informe="impacto" OnEntendido="@(v => impactoOk = v)" />
+            <div class="d-flex gap-2">
+                <button class="btn btn-secondary btn-sm" type="button" title="Cancelar" @onclick="CancelarEliminarGrupo"><Ico Nombre="cancelar" /></button>
+                <button class="btn btn-danger btn-sm" type="button" title="Eliminar (va a la Papelera)" disabled="@BloqueadoPorImpacto" @onclick="ConfirmarEliminarGrupo"><Ico Nombre="eliminar" /></button>
+            </div>
+        </div>
+    </div>
+}
+
+<div class="ens-grid mb-3">
+    <div class="ens-cuadro @(grupoSelId is null ? "activo" : "")" role="button" title="Todos" @onclick="SeleccionarTodos">
+        <img src="images/iconos/documento.svg" alt="" />
+        <div class="ens-nombre">Todos</div>
+        <div class="ens-cuenta">@planos.Count</div>
+        <div class="ens-acc-pie">
+            <button type="button" class="ens-mini" title="Importar listado (Excel)" @onclick:stopPropagation="true" @onclick="() => AbrirExcel(null)"><Ico Nombre="cargar-excel" /></button>
+            <button type="button" class="ens-mini" title="Cargar planos (PDF)" @onclick:stopPropagation="true" @onclick="() => AbrirPdfs(null)"><Ico Nombre="cargar-pdf" /></button>
+        </div>
+    </div>
+    @foreach (var g in grupos)
+    {
+        <div class="ens-cuadro @(grupoSelId == g.Id ? "activo" : "")" role="button" title="@g.Nombre" @onclick="() => SeleccionarGrupo(g)">
+            <div class="ens-acc">
+                <button type="button" class="ens-mini" title="Editar grupo" @onclick:stopPropagation="true" @onclick="() => EditarGrupo(g)"><Ico Nombre="editar" /></button>
+                <button type="button" class="ens-mini" title="Eliminar grupo" @onclick:stopPropagation="true" @onclick="() => PedirEliminarGrupo(g)"><Ico Nombre="eliminar" /></button>
+            </div>
+            <img src="@RutaIcono(g.IconoCatalogoId)" alt="" />
+            <div class="ens-nombre">@g.Nombre</div>
+            <div class="ens-cuenta">@(conteoGrupos.TryGetValue(g.Id, out var n) ? n : 0)</div>
+            <div class="ens-acc-pie">
+                <button type="button" class="ens-mini" title="Importar listado (Excel)" @onclick:stopPropagation="true" @onclick="() => AbrirExcel(g.Id)"><Ico Nombre="cargar-excel" /></button>
+                <button type="button" class="ens-mini" title="Cargar planos (PDF)" @onclick:stopPropagation="true" @onclick="() => AbrirPdfs(g.Id)"><Ico Nombre="cargar-pdf" /></button>
+            </div>
+        </div>
+    }
+</div>
+
+<div class="mpie-barra mb-2">
+    <input class="form-control form-control-sm" style="max-width:260px;" placeholder="Buscar plano..." @bind="filtro" @bind:event="oninput" />
+    @if (cargaFiltro is int cf && cargas.FirstOrDefault(c => c.Id == cf) is { } cg)
+    {
+        <span class="rg-chip"><Ico Nombre="cargas" /> @cg.NombreArchivo <button type="button" class="rg-chip-x" title="Quitar" @onclick="() => cargaFiltro = null">✕</button></span>
+    }
+    @if (cargaArchFiltro is int caf && cargasArchivos.FirstOrDefault(c => c.Id == caf) is { } ca)
+    {
+        <span class="rg-chip"><Ico Nombre="adjuntar" /> @ca.Origen @ca.Fecha.ToString("dd/MM HH:mm") <button type="button" class="rg-chip-x" title="Quitar" @onclick="() => cargaArchFiltro = null">✕</button></span>
+    }
+</div>
+
+<div class="tabla-scroll tabla-auto"><table class="table table-sm table-bordered table-hover tabla-compacta align-middle mb-0 tabla-pin tabla-planos">
+    <thead>
+        <tr>
+            @foreach (var c in ColumnasVisibles)
+            {
+                <th class="th-ordenable" @onclick="() => OrdenarPor(c.Clave)">@c.Nombre@(Flecha(c.Clave))</th>
+            }
+            <th style="width:80px;"></th>
+        </tr>
+    </thead>
+    <tbody>
+        @foreach (var p in PlanosFiltrados)
+        {
+            var plano = p;
+            <tr>
+                @foreach (var c in ColumnasVisibles)
+                {
+                    if (c.Origen == OrigenCampoTabla.Nativo && c.Clave == "Codigo")
+                    {
+                        <td class="small fw-bold">@CeldaCodigo(plano)</td>
+                    }
+                    else if (c.Origen == OrigenCampoTabla.Nativo && c.Clave == "Grupo")
+                    {
+                        <td class="small">
+                            <select class="form-select form-select-sm sel-grupo-plano" value="@(plano.GrupoPlanoId?.ToString() ?? "")" title="Grupo" @onchange="e => CambiarGrupoPlano(plano, e)">
+                                <option value="">—</option>
+                                @foreach (var g in grupos) { <option value="@g.Id">@g.Nombre</option> }
+                            </select>
+                        </td>
+                    }
+                    else
+                    {
+                        <CeldaCampo Motor="motor!" Campo="c" Fila="plano.Id" OnCambio="StateHasChanged" />
+                    }
+                }
+                <td class="text-nowrap text-end">
+                    <button type="button" class="ens-mini" title="Actualizar" @onclick="() => AbrirArchivosPlano(plano)"><Ico Nombre="nueva-version" /></button>
+                    <button type="button" class="btn btn-sm btn-outline-danger py-0" title="Eliminar (va a la Papelera)" @onclick="() => PedirEliminar(plano)"><Ico Nombre="eliminar" /></button>
+                </td>
+            </tr>
+        }
+    </tbody>
+</table></div>
+@MenuCodigo()
+</div>
+}
+
+@if (planoPendienteEliminar is not null)
+{
+    <div class="modal-backdrop-custom">
+        <div class="modal-box-custom" style="max-width: 480px;">
+            <h5 class="mb-2"><Ico Nombre="eliminar" /> @planoPendienteEliminar.Codigo</h5>
+            <PanelImpacto Informe="impacto" OnEntendido="@(v => impactoOk = v)" />
+            <div class="d-flex justify-content-end gap-2">
+                <button class="btn btn-secondary btn-sm" @onclick="() => planoPendienteEliminar = null" title="Cancelar"><Ico Nombre="cancelar" /></button>
+                <button class="btn btn-danger btn-sm" title="Eliminar (va a la Papelera)" disabled="@BloqueadoPorImpacto" @onclick="ConfirmarEliminar"><Ico Nombre="eliminar" /></button>
+            </div>
+        </div>
+    </div>
+}
+
+@if (archivoPendienteEliminar is not null)
+{
+    <div class="modal-backdrop-custom">
+        <div class="modal-box-custom" style="max-width: 480px;">
+            <h5 class="mb-2"><Ico Nombre="eliminar" /> @CodigoPlano(archivoPendienteEliminar.PlanoMaestroId) @(string.IsNullOrWhiteSpace(archivoPendienteEliminar.Version) ? "" : "· v" + archivoPendienteEliminar.Version)</h5>
+            <div class="small text-muted mb-2">@archivoPendienteEliminar.NombreOriginal</div>
+            <PanelImpacto Informe="impacto" OnEntendido="@(v => impactoOk = v)" />
+            <div class="d-flex justify-content-end gap-2">
+                <button class="btn btn-secondary btn-sm" @onclick="() => archivoPendienteEliminar = null" title="Cancelar"><Ico Nombre="cancelar" /></button>
+                <button class="btn btn-danger btn-sm" title="Eliminar (va a la Papelera)" disabled="@BloqueadoPorImpacto" @onclick="ConfirmarEliminarArchivo"><Ico Nombre="eliminar" /></button>
+            </div>
+        </div>
+    </div>
+}
+
+@if (reemplazo is not null)
+{
+    <div class="modal-backdrop-custom">
+        <div class="modal-box-custom" style="max-width:520px;">
+            <h5 class="mb-2"><Ico Nombre="editar" /> @CodigoPlano(reemplazo.PlanoMaestroId) @(string.IsNullOrWhiteSpace(reemplazo.Version) ? "" : "· v" + reemplazo.Version)</h5>
+            <div class="small text-muted mb-2">@reemplazo.NombreOriginal</div>
+            <InputFile class="form-control form-control-sm mb-2" accept=".pdf" OnChange="@(e => archivoReemplazo = e.File)" />
+            <div class="d-flex justify-content-end gap-2">
+                <button class="btn btn-secondary btn-sm" title="Cancelar" @onclick="() => reemplazo = null"><Ico Nombre="cancelar" /></button>
+                <button class="btn btn-primary btn-sm" title="Reemplazar" disabled="@(archivoReemplazo is null || guardando)" @onclick="Reemplazar"><Ico Nombre="guardar" /></button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    // ---------- Pantalla completa (igual que Ensayos): la tabla ocupa la ventana y todo sigue funcionando ----------
+    private bool pantallaCompleta;
+    private EventCallback AtrasPantalla => pantallaCompleta ? EventCallback.Factory.Create(this, () => pantallaCompleta = false) : default;
+
+    private const string Tabla = "planos";
+    private const long MaxArchivo = PanelCargaArchivos.MaxArchivo;
+    private static readonly ClaseArchivoDocumento[] ClasesPlano = { ClaseArchivoDocumento.Vigente, ClaseArchivoDocumento.Obsoleta };
+
+    private List<PlanoMaestro> planos = new();
+    private Dictionary<int, PlanoMaestro> planosPorId = new();
+    private Dictionary<int, List<ArchivoPlanoMaestro>> archivosPorPlano = new();
+    private string filtro = "";
+    private string mensaje = "";
+    private bool error = false;
+    private bool guardando;
+
+    // ?buscar=texto (buscador rápido Ctrl + K): llega como filtro de la lista.
+    [SupplyParameterFromQuery(Name = "buscar")] public string? BuscarQ { get; set; }
+    private string? buscarAplicado;
+    protected override void OnParametersSet()
+    {
+        if (BuscarQ == buscarAplicado) return;
+        buscarAplicado = BuscarQ;
+        if (!string.IsNullOrWhiteSpace(BuscarQ)) filtro = BuscarQ;
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        iconosDisponibles = Db.IconosCatalogo.AsNoTracking().Where(i => i.Activo).OrderBy(i => i.Categoria).ThenBy(i => i.Nombre).ToList();
+        CargarGrupos();
+        CargarPlanos();
+        motor = await MotorTabla.CargarAsync(Db, Tabla, ColumnasNativas(), FilasMotor());
+    }
+
+    private void CargarPlanos()
+    {
+        Db.ChangeTracker.Clear();
+        planos = Db.PlanosMaestro.AsNoTracking().Where(p => !p.Eliminado).OrderBy(p => p.Codigo).ToList();
+        planosPorId = planos.ToDictionary(p => p.Id);
+        if (motor is not null) motor.Filas = FilasMotor().ToList();
+        conteoGrupos = planos.Where(p => p.GrupoPlanoId != null).GroupBy(p => p.GrupoPlanoId!.Value).ToDictionary(x => x.Key, x => x.Count());
+        var archivos = Db.ArchivosPlanoMaestro.AsNoTracking().Where(a => !a.Eliminado).ToList();
+        archivosPorPlano = archivos.GroupBy(a => a.PlanoMaestroId).ToDictionary(g => g.Key, g => g.ToList());
+
+        cargas = Db.CargasPlanos.AsNoTracking().OrderByDescending(c => c.Fecha).ToList();
+        planosPorCarga = planos.Where(p => p.CargaPlanosId != null).GroupBy(p => p.CargaPlanosId!.Value).ToDictionary(g => g.Key, g => g.Count());
+        cargasArchivos = Db.CargasArchivosPlanos.AsNoTracking().OrderByDescending(c => c.Fecha).ToList();
+        archivosPorCarga = archivos.Where(a => a.CargaArchivosPlanosId != null && planosPorId.ContainsKey(a.PlanoMaestroId))
+            .GroupBy(a => a.CargaArchivosPlanosId!.Value).ToDictionary(g => g.Key, g => g.ToList());
+        cargasSel.RemoveWhere(id => cargas.All(c => c.Id != id));
+        cargasArchSel.RemoveWhere(id => cargasArchivos.All(c => c.Id != id));
+        if (cargaFiltro is int cf && cargas.All(c => c.Id != cf)) cargaFiltro = null;
+        if (cargaArchFiltro is int caf && cargasArchivos.All(c => c.Id != caf)) cargaArchFiltro = null;
+    }
+
+    private List<ArchivoPlanoMaestro> ArchivosDe(int planoId) => archivosPorPlano.TryGetValue(planoId, out var l) ? l : new();
+    private string CodigoPlano(int id) => planosPorId.TryGetValue(id, out var p) ? p.Codigo : $"#{id}";
+
+    // ---------- Campos (columnas visibles, campos creados, fórmulas y formatos) ----------
+    private MotorTabla? motor;
+    private bool verCampos;
+
+    private IEnumerable<ColumnaNativa> ColumnasNativas() => new[]
+    {
+        new ColumnaNativa("Codigo", "Código", TipoCampoTabla.Texto, id => planosPorId.TryGetValue(id, out var p) ? p.Codigo : null),
+        new ColumnaNativa("Titulo", "Título", TipoCampoTabla.Texto, id => planosPorId.TryGetValue(id, out var p) ? p.Titulo : null),
+        new ColumnaNativa("Fecha", "Fecha", TipoCampoTabla.Fecha, id => planosPorId.TryGetValue(id, out var p) ? p.Fecha : null),
+        new ColumnaNativa("RevisionVigente", "Rev. vigente", TipoCampoTabla.Texto, id => planosPorId.TryGetValue(id, out var p) ? p.RevisionVigente : null),
+        new ColumnaNativa("Estado", "Estado", TipoCampoTabla.Texto, id => planosPorId.TryGetValue(id, out var p) ? p.Estado : null),
+        new ColumnaNativa("Grupo", "Grupo", TipoCampoTabla.Texto, id => planosPorId.TryGetValue(id, out var p) && p.GrupoPlanoId is int g ? grupos.FirstOrDefault(x => x.Id == g)?.Nombre : null),
+        new ColumnaNativa("RevisionAnterior", "Rev. anterior", TipoCampoTabla.Texto, id => planosPorId.TryGetValue(id, out var p) ? p.RevisionAnterior : null, false),
+        new ColumnaNativa("Notas", "Notas", TipoCampoTabla.Texto, id => planosPorId.TryGetValue(id, out var p) ? p.Notas : null, false),
+    };
+
+    private IEnumerable<(int Id, string Etiqueta)> FilasMotor() =>
+        planos.Select(p => (p.Id, string.IsNullOrWhiteSpace(p.Titulo) ? p.Codigo : $"{p.Codigo} — {p.Titulo}"));
+
+    // El Grupo solo se ve en "Todos" (dentro de un grupo sería repetido).
+    private IEnumerable<CampoTabla> ColumnasVisibles =>
+        motor is null ? Enumerable.Empty<CampoTabla>() : motor.Visibles.Where(c => !(c.Clave == "Grupo" && c.Origen == OrigenCampoTabla.Nativo && grupoSelId is not null));
+
+    private IEnumerable<CampoTabla> CamposEditables =>
+        motor?.Ordenados.Where(c => c.Origen != OrigenCampoTabla.Nativo && !c.Calculado) ?? Enumerable.Empty<CampoTabla>();
+
+    // ---------- Grupos (disciplinas) ----------
+    private List<IconoCatalogo> iconosDisponibles = new();
+    private List<GrupoPlano> grupos = new();
+    private Dictionary<int, int> conteoGrupos = new();
+    private int? grupoSelId;               // null = "Todos"
+    private int? grupoDestinoId;           // grupo al que se cargan Excel/PDF
+    private GrupoPlano grupoActual = new();
+    private bool modoEdicionGrupo, mostrarFormGrupo, mostrarSelectorIconoGrupo;
+    private string mensajeGrupo = "";
+    private GrupoPlano? elimGrupo;
+
+    private string RutaIcono(int? id)
+    {
+        var ruta = id is null ? null : iconosDisponibles.FirstOrDefault(i => i.Id == id)?.RutaArchivo;
+        return ruta ?? "images/iconos/documento.svg";
+    }
+
+    private string NombreDestino => grupoDestinoId is null ? "Todos" : (grupos.FirstOrDefault(g => g.Id == grupoDestinoId)?.Nombre ?? "");
+
+    private IEnumerable<PlanoMaestro> PlanosDestino => grupoDestinoId is null ? planos : planos.Where(p => p.GrupoPlanoId == grupoDestinoId);
+
+    private void CargarGrupos()
+    {
+        grupos = Db.GruposPlano.AsNoTracking().Where(g => g.Activo).OrderBy(g => g.Orden).ThenBy(g => g.Nombre).ToList();
+        if (grupoSelId is not null && !grupos.Any(g => g.Id == grupoSelId)) grupoSelId = null;
+    }
+
+    private void SeleccionarTodos() { grupoSelId = null; }
+
+    private void SeleccionarGrupo(GrupoPlano g) { grupoSelId = grupoSelId == g.Id ? null : g.Id; }
+
+    private void AlternarFormGrupo()
+    {
+        if (mostrarFormGrupo) CerrarFormGrupo();
+        else { grupoActual = new(); modoEdicionGrupo = false; mensajeGrupo = ""; mostrarFormGrupo = true; }
+    }
+
+    private void CerrarFormGrupo()
+    {
+        grupoActual = new(); modoEdicionGrupo = false; mensajeGrupo = "";
+        mostrarFormGrupo = false; mostrarSelectorIconoGrupo = false;
+    }
+
+    private void EditarGrupo(GrupoPlano g)
+    {
+        grupoActual = new GrupoPlano { Id = g.Id, Nombre = g.Nombre, IconoCatalogoId = g.IconoCatalogoId, Orden = g.Orden, Activo = g.Activo };
+        modoEdicionGrupo = true; mostrarFormGrupo = true; mostrarSelectorIconoGrupo = false;
+    }
+
+    private async Task GuardarGrupo()
+    {
+        mensajeGrupo = "";
+        var nombre = (grupoActual.Nombre ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(nombre)) { mensajeGrupo = "El nombre es obligatorio."; return; }
+        bool dup = Db.GruposPlano.IgnoreQueryFilters().AsNoTracking().Any(g => g.Nombre.ToLower() == nombre.ToLower() && g.Id != grupoActual.Id);
+        if (dup) { mensajeGrupo = $"Ya existe \"{nombre}\" (puede estar en la Papelera)."; return; }
+        grupoActual.Nombre = nombre;
+        if (modoEdicionGrupo) Db.GruposPlano.Update(grupoActual);
+        else { grupoActual.Orden = grupos.Count; Db.GruposPlano.Add(grupoActual); }
+        await Db.SaveChangesAsync();
+        Db.ChangeTracker.Clear();
+        CerrarFormGrupo();
+        CargarGrupos();
+        CargarPlanos();
+    }
+
+    private void PedirEliminarGrupo(GrupoPlano g)
+    {
+        elimGrupo = g;
+        _ = CalcularImpacto(an => an.GrupoPlano(g.Id));
+    }
+
+    private void CancelarEliminarGrupo() { elimGrupo = null; impacto = null; impactoOk = false; }
+
+    private async Task ConfirmarEliminarGrupo()
+    {
+        if (elimGrupo is null || BloqueadoPorImpacto) return;
+        var g = await Db.GruposPlano.FirstOrDefaultAsync(x => x.Id == elimGrupo.Id);
+        if (g is not null) { g.Eliminado = true; g.FechaEliminacion = DateTime.Now; await Db.SaveChangesAsync(); }
+        Db.ChangeTracker.Clear();
+        if (grupoSelId == elimGrupo.Id) grupoSelId = null;
+        CancelarEliminarGrupo();
+        CargarGrupos();
+        CargarPlanos();
+    }
+
+    private async Task CambiarGrupoPlano(PlanoMaestro p, ChangeEventArgs e)
+    {
+        int? nuevo = int.TryParse(e.Value?.ToString(), out var v) ? v : null;
+        var ent = await Db.PlanosMaestro.FirstOrDefaultAsync(x => x.Id == p.Id);
+        if (ent is not null) { ent.GrupoPlanoId = nuevo; await Db.SaveChangesAsync(); }
+        CargarPlanos();
+    }
+
+    // ---------- Filtro y orden ----------
+    private string columnaOrden = "Codigo";
+    private bool ordenAscendente = true;
+
+    private IEnumerable<PlanoMaestro> PlanosFiltrados
+    {
+        get
+        {
+            var q = (grupoSelId is null ? planos : planos.Where(p => p.GrupoPlanoId == grupoSelId))
+                .Where(p => cargaFiltro is null || p.CargaPlanosId == cargaFiltro)
+                .Where(p => cargaArchFiltro is null || ArchivosDe(p.Id).Any(a => a.CargaArchivosPlanosId == cargaArchFiltro));
+            if (!string.IsNullOrWhiteSpace(filtro))
+                q = q.Where(p => $"{p.Codigo} {p.Titulo} {p.Estado} {p.RevisionVigente} {(motor is null ? "" : motor.TextoBusqueda(p.Id))}"
+                    .Contains(filtro, StringComparison.OrdinalIgnoreCase));
+            return columnaOrden switch
+            {
+                "Codigo" => ordenAscendente ? q.OrderBy(p => p.Codigo) : q.OrderByDescending(p => p.Codigo),
+                "Titulo" => ordenAscendente ? q.OrderBy(p => p.Titulo) : q.OrderByDescending(p => p.Titulo),
+                "Fecha" => ordenAscendente ? q.OrderBy(p => p.Fecha) : q.OrderByDescending(p => p.Fecha),
+                "RevisionVigente" => ordenAscendente ? q.OrderBy(p => p.RevisionVigente) : q.OrderByDescending(p => p.RevisionVigente),
+                "Estado" => ordenAscendente ? q.OrderBy(p => p.Estado) : q.OrderByDescending(p => p.Estado),
+                _ => OrdenarPorCampo(q)
+            };
+        }
+    }
+
+    // Orden por cualquier otro campo (Grupo, campos creados o calculados), con el valor que muestra la tabla.
+    private IEnumerable<PlanoMaestro> OrdenarPorCampo(IEnumerable<PlanoMaestro> query)
+    {
+        var c = motor?.PorClave(columnaOrden);
+        if (motor is null || c is null) return query;
+        object? V(PlanoMaestro p) { try { return motor.Valor(p.Id, c); } catch { return null; } }
+        var cmp = Comparer<object?>.Create(FormulaExcel.Comparar);
+        return ordenAscendente ? query.OrderBy(V, cmp) : query.OrderByDescending(V, cmp);
+    }
+
+    private void OrdenarPor(string columna)
+    {
+        if (columnaOrden == columna) ordenAscendente = !ordenAscendente;
+        else { columnaOrden = columna; ordenAscendente = true; }
+    }
+
+    private string Flecha(string columna) => columnaOrden != columna ? "" : (ordenAscendente ? " ▲" : " ▼");
+
+    // ---------- Código como vínculo: actual (todas sus hojas) y versiones anteriores ----------
+    private int? menuCodigo, verAnterioresDe;
+    private bool verTodos;   // pantalla de archivos: todos (true) u obsoletos/anteriores
+    private const int MaxMenu = 3;   // archivos vigentes que se listan en el menú; el resto, con "Ver todos"
+    private double menuX, menuY;
+
+    private RenderFragment CeldaCodigo(PlanoMaestro p) => __builder =>
+    {
+        if (ArchivosDe(p.Id).Count == 0) { <span>@p.Codigo</span> return; }
+        <button type="button" class="doc-vinculo" title="Ver plano" @onclick:stopPropagation="true" @onclick="@(e => AbrirMenuCodigo(p.Id, e))">@p.Codigo</button>
+    };
+
+    private void AbrirMenuCodigo(int id, MouseEventArgs e)
+    {
+        if (menuCodigo == id) { menuCodigo = null; return; }
+        menuCodigo = id; menuX = e.ClientX; menuY = e.ClientY;
+    }
+
+    // Fuera de la tabla y en posición fija: no queda bajo las columnas inmovilizadas.
+    private RenderFragment MenuCodigo() => __builder =>
+    {
+        if (menuCodigo is not int id) return;
+        var actuales = ArchivosPlanos.Actuales(ArchivosDe(id));
+        var anteriores = ArchivosPlanos.Anteriores(ArchivosDe(id)).Count;
+        var x = menuX.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        var y = (menuY + 8).ToString(System.Globalization.CultureInfo.InvariantCulture);
+        <div class="doc-menu-fondo" @onclick="() => menuCodigo = null"></div>
+        <div class="doc-menu doc-menu-fijo" style="left:min(@(x)px, calc(100vw - 330px)); top:min(@(y)px, calc(100vh - 260px)); width:320px;">
+            <button type="button" class="doc-menu-op" @onclick="() => { menuCodigo = null; verAnterioresDe = id; verTodos = true; }">
+                <Ico Nombre="listado" /> <span>Ver todos</span> <span class="text-muted ms-auto">@ArchivosDe(id).Count</span>
+            </button>
+            <div class="doc-menu-sep"></div>
+            <div class="doc-menu-sec">Vigente@(actuales.Count > MaxMenu ? $" ({MaxMenu} de {actuales.Count})" : "")</div>
+            @if (actuales.Count == 0)
+            {
+                <span class="doc-menu-op doc-menu-off"><Ico Nombre="documento" /> <span>—</span></span>
+            }
+            @foreach (var a in actuales.Take(MaxMenu))
+            {
+                var arch = a;
+                <div class="doc-menu-fila">
+                    <a class="doc-menu-op" href="@arch.RutaArchivo" target="_blank" rel="noopener" title="@arch.NombreOriginal" @onclick="() => menuCodigo = null">
+                        <Ico Nombre="documento" /> <span class="text-truncate">@arch.NombreOriginal</span>
+                        <span class="text-muted ms-auto">@(string.IsNullOrWhiteSpace(arch.Version) ? "" : "v" + arch.Version)</span>
+                    </a>
+                    <button type="button" class="ens-mini" title="Reemplazar archivo" @onclick="() => AbrirReemplazo(arch)"><Ico Nombre="editar" /></button>
+                    <button type="button" class="ens-mini" title="Eliminar archivo" @onclick="() => PedirEliminarArchivo(arch)"><Ico Nombre="eliminar" /></button>
+                </div>
+            }
+            <div class="doc-menu-sep"></div>
+            @if (anteriores > 0)
+            {
+                <button type="button" class="doc-menu-op" @onclick="() => { menuCodigo = null; verAnterioresDe = id; verTodos = false; }">
+                    <Ico Nombre="versiones" /> <span>Ver obsoletos</span> <span class="text-muted ms-auto">@anteriores</span>
+                </button>
+            }
+            else { <span class="doc-menu-op doc-menu-off"><Ico Nombre="versiones" /> <span>Ver obsoletos</span></span> }
+        </div>
+    };
+
+    // ---------- Importar listado (Excel) ----------
+    private bool verImportar, importando;
+
+    private void AbrirExcel(int? grupoId)
+    {
+        verImportar = !verImportar || grupoDestinoId != grupoId;
+        grupoDestinoId = grupoId;
+        verLote = false; formArch = null; mensaje = "";
+    }
+
+    private IReadOnlyList<DestinoColumna> DestinosImportacion =>
+        new List<DestinoColumna>
+        {
+            new("nat:Codigo", "Código", "codigo", "cod", "cod."),
+            new("nat:Titulo", "Título", "titulo del documento", "titulo", "descripcion", "nombre"),
+            new("nat:Fecha", "Fecha", "fecha de emision", "fecha de version"),
+            new("nat:RevisionVigente", "Rev. vigente", "revision vigente", "revision", "rev", "rev.", "version"),
+            new("nat:Estado", "Estado"),
+            new("nat:Notas", "Notas", "observaciones"),
+            new("nat:RevisionAnterior", "Rev. anterior", "revision anterior"),
+            new("nat:Grupo", "Grupo", "disciplina"),
+        }.Concat(CamposEditables.Select(c => new DestinoColumna($"c:{c.Id}", c.Nombre))).ToList();
+
+    private static readonly string[] FormatosFecha = { "dd/MM/yyyy", "d/M/yyyy", "yyyy-MM-dd", "dd-MM-yyyy", "dd/MM/yy", "dd/MM/yyyy HH:mm" };
+
+    private static DateTime? Fecha(string? texto)
+    {
+        if (string.IsNullOrWhiteSpace(texto)) return null;
+        texto = texto.Trim();
+        if (DateTime.TryParseExact(texto, FormatosFecha, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out var f)) return f;
+        if (double.TryParse(texto, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var n) && n > 20000 && n < 80000) return DateTime.FromOADate(n);
+        return DateTime.TryParse(texto, System.Globalization.CultureInfo.GetCultureInfo("es-CO"), System.Globalization.DateTimeStyles.None, out f) ? f : null;
+    }
+
+    private async Task Importar(ImportacionExcel imp)
+    {
+        var colCodigo = imp.ColumnaDe("nat:Codigo");
+        if (colCodigo is null) { mensaje = "Relaciona la columna del código del plano."; error = true; return; }
+        importando = true; mensaje = ""; error = false;
+        try
+        {
+            string? Val(string[] f, string destino) => imp.ColumnaDe(destino) is int c ? ImportacionExcel.Celda(f, c).Trim() : null;
+            var nativos = new HashSet<string>(ColumnasNativas().Select(n => n.Nombre), StringComparer.OrdinalIgnoreCase);
+            var porId = CamposEditables.ToDictionary(c => c.Id);
+            var nombres = imp.Destinos.Where(kv => !kv.Value.StartsWith("nat:"))
+                .ToDictionary(kv => kv.Key, kv => kv.Value.StartsWith("c:") && porId.TryGetValue(int.Parse(kv.Value[2..]), out var campo)
+                    ? campo.Nombre
+                    : nativos.Contains(imp.Encabezados[kv.Key]) ? imp.Encabezados[kv.Key] + " (Excel)" : imp.Encabezados[kv.Key]);
+            var gruposPorNombre = grupos.GroupBy(g => MigracionDocumentos.Normalizar(g.Nombre)).ToDictionary(g => g.Key, g => g.First().Id);
+
+            var carga = new CargaPlanos { NombreArchivo = imp.NombreArchivo, Hoja = imp.Hoja, FilaEncabezados = imp.FilaEncabezados, Fecha = DateTime.Now };
+            Db.CargasPlanos.Add(carga);
+            await Db.SaveChangesAsync();
+            var origen = $"{imp.NombreArchivo} › {imp.Hoja} — {carga.Fecha:dd/MM/yyyy HH:mm}";
+
+            // Un código es único en todo el listado (todos los grupos): si ya existe, se actualiza.
+            var mapa = (await Db.PlanosMaestro.Where(p => !p.Eliminado).ToListAsync())
+                .GroupBy(p => CoincidenciaPlanos.Normalizar(p.Codigo)).ToDictionary(g => g.Key, g => g.First());
+            int nuevos = 0, actualizados = 0, sinGrupo = 0;
+            var porFila = new List<(PlanoMaestro Plano, string[] Fila)>();
+            foreach (var f in imp.Filas)
+            {
+                var codigo = ImportacionExcel.Celda(f, colCodigo.Value).Trim();
+                if (codigo.Length == 0) continue;
+                var clave = CoincidenciaPlanos.Normalizar(codigo);
+                if (!mapa.TryGetValue(clave, out var p))
+                {
+                    p = new PlanoMaestro { Codigo = codigo, CargaPlanosId = carga.Id, GrupoPlanoId = grupoDestinoId };
+                    Db.PlanosMaestro.Add(p);
+                    mapa[clave] = p;
+                    nuevos++;
+                }
+                else if (p.Id != 0) actualizados++;
+                if (Val(f, "nat:Titulo") is string t) p.Titulo = t;
+                if (imp.ColumnaDe("nat:Fecha") is not null) p.Fecha = Fecha(Val(f, "nat:Fecha"));
+                if (Val(f, "nat:RevisionVigente") is string rv) p.RevisionVigente = rv;
+                if (Val(f, "nat:Estado") is string es) p.Estado = es;
+                if (Val(f, "nat:Notas") is string no) p.Notas = string.IsNullOrWhiteSpace(no) ? null : no;
+                if (Val(f, "nat:RevisionAnterior") is string ra) p.RevisionAnterior = string.IsNullOrWhiteSpace(ra) ? null : ra;
+                if (Val(f, "nat:Grupo") is { Length: > 0 } gr)
+                {
+                    if (gruposPorNombre.TryGetValue(MigracionDocumentos.Normalizar(gr), out var gid)) p.GrupoPlanoId = gid; else sinGrupo++;
+                }
+                else if (grupoDestinoId is not null) p.GrupoPlanoId = grupoDestinoId;
+                p.Origen = origen;
+                porFila.Add((p, f));
+            }
+            carga.FilasCreadas = nuevos;
+            carga.FilasActualizadas = actualizados;
+            await Db.SaveChangesAsync();
+
+            var extras = new Dictionary<int, Dictionary<string, string>>();
+            foreach (var (p, f) in porFila)
+                extras[p.Id] = nombres.ToDictionary(kv => kv.Value, kv => ImportacionExcel.Celda(f, kv.Key), StringComparer.OrdinalIgnoreCase);
+            if (nombres.Count > 0) await MotorTabla.GuardarExtrasExcelAsync(Db, Tabla, extras);
+
+            mensaje = $"{nuevos} plano(s) nuevo(s), {actualizados} actualizado(s)." + (sinGrupo > 0 ? $" {sinGrupo} fila(s) con un grupo que no existe quedaron sin cambiar de grupo." : "");
+            verImportar = false;
+            CargarPlanos();
+            motor = await MotorTabla.CargarAsync(Db, Tabla, ColumnasNativas(), FilasMotor());
+        }
+        catch (Exception ex) { mensaje = "No se pudo importar: " + ex.Message; error = true; }
+        finally { importando = false; }
+    }
+
+    // ---------- Carga masiva de PDF ----------
+    private bool verLote, cargandoLote;
+    private List<SugeridorArchivos.Indice> indice = new();
+
+    private void AbrirPdfs(int? grupoId)
+    {
+        verLote = !verLote || grupoDestinoId != grupoId;
+        grupoDestinoId = grupoId;
+        verImportar = false; formArch = null; mensaje = "";
+        indice = PlanosDestino.Select(p => SugeridorArchivos.Indexar(p.Id, string.IsNullOrWhiteSpace(p.Titulo) ? p.Codigo : $"{p.Codigo} · {p.Titulo}", p.Codigo, p.Titulo)).ToList();
+    }
+
+    // Vigente: la revisión vigente del listado (o la versión actual). Obsoleta: la revisión anterior, si la hay.
+    private string? VersionSugerida(int planoId, ClaseArchivoDocumento clase)
+    {
+        if (!planosPorId.TryGetValue(planoId, out var p)) return null;
+        if (clase == ClaseArchivoDocumento.Obsoleta) return string.IsNullOrWhiteSpace(p.RevisionAnterior) ? null : p.RevisionAnterior.Trim();
+        if (!string.IsNullOrWhiteSpace(p.RevisionVigente)) return p.RevisionVigente.Trim();
+        return ArchivosPlanos.Actuales(ArchivosDe(planoId)).FirstOrDefault()?.Version;
+    }
+
+    private async Task<string> GuardarArchivo(IBrowserFile archivo)
+    {
+        var carpeta = Path.Combine(Env.WebRootPath, "uploads", "planos");
+        Directory.CreateDirectory(carpeta);
+        var nombre = $"{Guid.NewGuid()}{Path.GetExtension(archivo.Name)}";
+        await using (var s = archivo.OpenReadStream(MaxArchivo))
+        await using (var destino = File.Create(Path.Combine(carpeta, nombre)))
+            await s.CopyToAsync(destino);
+        return $"/uploads/planos/{nombre}";
+    }
+
+    // Guarda los archivos en una carga. Un vigente con otra versión actualiza la revisión del listado
+    // (la anterior pasa a "Rev. anterior").
+    private async Task<(int Ok, List<string> Fallos)> Guardar(string origen, string? descripcion, DateTime? fecha, IEnumerable<ArchivoACargar> archivos)
+    {
+        var lista = archivos.ToList();
+        var carga = new CargaArchivosPlanos { Fecha = DateTime.Now, Origen = origen, Descripcion = descripcion };
+        Db.CargasArchivosPlanos.Add(carga);
+        await Db.SaveChangesAsync();
+        int ok = 0; var fallos = new List<string>();
+        var momento = DateTime.Now;
+        foreach (var a in lista)
+        {
+            try
+            {
+                var ruta = await GuardarArchivo(a.Archivo);
+                momento = momento.AddMilliseconds(10);
+                Db.ArchivosPlanoMaestro.Add(new ArchivoPlanoMaestro
+                {
+                    PlanoMaestroId = a.FilaId, Clase = a.Clase, Version = a.Version, Fecha = fecha,
+                    NombreOriginal = a.Archivo.Name, RutaArchivo = ruta, FechaCarga = momento, CargaArchivosPlanosId = carga.Id
+                });
+                if (a.Clase == ClaseArchivoDocumento.Vigente)
+                {
+                    var p = await Db.PlanosMaestro.FirstAsync(x => x.Id == a.FilaId);
+                    if (!string.Equals((p.RevisionVigente ?? "").Trim(), a.Version, StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (!string.IsNullOrWhiteSpace(p.RevisionVigente)) p.RevisionAnterior = p.RevisionVigente;
+                        p.RevisionVigente = a.Version;
+                        if (fecha is not null) p.Fecha = fecha;
+                    }
+                }
+                await Db.SaveChangesAsync();
+                ok++;
+            }
+            catch (Exception ex) { fallos.Add($"{a.Archivo.Name} ({ex.Message})"); }
+        }
+        var cg = await Db.CargasArchivosPlanos.FirstAsync(c => c.Id == carga.Id);
+        if (ok == 0) Db.CargasArchivosPlanos.Remove(cg); else cg.Archivos = ok;
+        await Db.SaveChangesAsync();
+        return (ok, fallos);
+    }
+
+    private async Task CargarLote((DateTime? Fecha, List<ArchivoACargar> Archivos) lote)
+    {
+        cargandoLote = true;
+        try
+        {
+            var clases = string.Join(", ", lote.Archivos.Select(a => PanelCargaArchivos.Nombre(a.Clase, true).ToLowerInvariant()).Distinct());
+            var (ok, fallos) = await Guardar("Carga masiva", clases, lote.Fecha, lote.Archivos);
+            mensaje = $"{ok} archivo(s) cargado(s)." + (fallos.Count > 0 ? " No se cargaron: " + string.Join("; ", fallos) : "");
+            error = fallos.Count > 0;
+            verLote = false;
+            CargarPlanos();
+        }
+        finally { cargandoLote = false; }
+    }
+
+    // ---------- Archivos para un plano (una o varias hojas) ----------
+    private sealed class FormArchivos
+    {
+        public int PlanoId;
+        public ClaseArchivoDocumento Clase = ClaseArchivoDocumento.Vigente;
+        public string? Version;
+        public DateTime? Fecha = DateTime.Today;
+        public List<IBrowserFile> Archivos = new();
+    }
+
+    private FormArchivos? formArch;
+
+    private void AbrirArchivosPlano(PlanoMaestro p)
+    {
+        verImportar = false; verLote = false; mensaje = "";
+        formArch = new FormArchivos { PlanoId = p.Id };
+        formArch.Version = VersionSugerida(p.Id, formArch.Clase);
+    }
+
+    private async Task GuardarArchivosPlano()
+    {
+        if (formArch is null || formArch.Archivos.Count == 0 || string.IsNullOrWhiteSpace(formArch.Version)) return;
+        var f = formArch;
+        var grandes = f.Archivos.Where(a => a.Size > MaxArchivo).Select(a => a.Name).ToList();
+        guardando = true;
+        try
+        {
+            var (ok, fallos) = await Guardar("Archivo agregado", $"{CodigoPlano(f.PlanoId)} v{f.Version!.Trim()}", f.Fecha,
+                f.Archivos.Where(a => a.Size <= MaxArchivo).Select(a => new ArchivoACargar(a, f.PlanoId, f.Clase, f.Version!.Trim())));
+            fallos.AddRange(grandes.Select(n => $"{n} (supera 50 MB)"));
+            mensaje = $"{ok} archivo(s) cargado(s)." + (fallos.Count > 0 ? " No se cargaron: " + string.Join("; ", fallos) : "");
+            error = fallos.Count > 0;
+            formArch = null;
+            CargarPlanos();
+        }
+        finally { guardando = false; }
+    }
+
+    // ---------- Cargas: Excel del listado y archivos ----------
+    private bool verCargas;
+    private string pestanaCargas = "listado";
+    private List<CargaPlanos> cargas = new();
+    private Dictionary<int, int> planosPorCarga = new();
+    private List<CargaArchivosPlanos> cargasArchivos = new();
+    private Dictionary<int, List<ArchivoPlanoMaestro>> archivosPorCarga = new();
+    private HashSet<int> cargasSel = new(), cargasArchSel = new();
+    private int? cargaFiltro, cargaArchFiltro, cargaArchAbierta;
+    private (string Tipo, List<int> Ids)? elimCargas;
+    private SigWeb.Data.Impacto.InformeImpacto? impactoCargas;
+    private bool impactoCargasOk;
+    private bool BloqueadoCargas => impactoCargas is null || (impactoCargas.RequiereEntender && !impactoCargasOk);
+
+    private void AlternarCargas() { verCargas = !verCargas; elimCargas = null; }
+
+    private void PedirEliminarCargas(string tipo)
+    {
+        var ids = (tipo == "listado" ? cargasSel : cargasArchSel).ToList();
+        if (ids.Count == 0) return;
+        elimCargas = (tipo, ids); impactoCargas = null; impactoCargasOk = false;
+        _ = CalcularImpactoCargas(tipo, ids);
+    }
+
+    private async Task CalcularImpactoCargas(string tipo, List<int> ids)
+    {
+        try
+        {
+            using var scope = Scopes.CreateScope();
+            var an = scope.ServiceProvider.GetRequiredService<SigWeb.Data.Impacto.AnalizadorImpacto>();
+            impactoCargas = tipo == "listado" ? await an.CargasPlanos(ids) : await an.CargasArchivosPlanos(ids);
+        }
+        catch { impactoCargas = new SigWeb.Data.Impacto.InformeImpacto { Elemento = "No se pudo calcular el impacto" }; }
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task ConfirmarEliminarCargas()
+    {
+        if (elimCargas is null || BloqueadoCargas) return;
+        var (tipo, ids) = elimCargas.Value;
+        // Misma marca de tiempo para la carga y lo suyo: la Papelera los restaura juntos.
+        var ahora = DateTime.Now; ahora = new DateTime(ahora.Year, ahora.Month, ahora.Day, ahora.Hour, ahora.Minute, ahora.Second);
+        int n = 0;
+        if (tipo == "listado")
+        {
+            foreach (var c in await Db.CargasPlanos.Where(c => ids.Contains(c.Id)).ToListAsync()) { c.Eliminado = true; c.FechaEliminacion = ahora; }
+            foreach (var p in await Db.PlanosMaestro.Where(p => !p.Eliminado && p.CargaPlanosId != null && ids.Contains(p.CargaPlanosId.Value)).ToListAsync())
+            { p.Eliminado = true; p.FechaEliminacion = ahora; n++; }
+            mensaje = $"{ids.Count} carga(s) y {n} plano(s) enviados a la Papelera.";
+        }
+        else
+        {
+            foreach (var c in await Db.CargasArchivosPlanos.Where(c => ids.Contains(c.Id)).ToListAsync()) { c.Eliminado = true; c.FechaEliminacion = ahora; }
+            foreach (var a in await Db.ArchivosPlanoMaestro.Where(a => !a.Eliminado && a.CargaArchivosPlanosId != null && ids.Contains(a.CargaArchivosPlanosId.Value)).ToListAsync())
+            { a.Eliminado = true; a.FechaEliminacion = ahora; n++; }
+            mensaje = $"{ids.Count} carga(s) y {n} archivo(s) enviados a la Papelera.";
+        }
+        await Db.SaveChangesAsync();
+        error = false;
+        elimCargas = null; cargasSel.Clear(); cargasArchSel.Clear();
+        CargarPlanos();
+    }
+
+    // ---------- Impacto ----------
+    private SigWeb.Data.Impacto.InformeImpacto? impacto;
+    private bool impactoOk;
+    private bool BloqueadoPorImpacto => impacto is null || (impacto.RequiereEntender && !impactoOk);
+
+    private async Task CalcularImpacto(Func<SigWeb.Data.Impacto.AnalizadorImpacto, Task<SigWeb.Data.Impacto.InformeImpacto>> f)
+    {
+        impacto = null; impactoOk = false;
+        try
+        {
+            using var scope = Scopes.CreateScope();
+            impacto = await f(scope.ServiceProvider.GetRequiredService<SigWeb.Data.Impacto.AnalizadorImpacto>());
+        }
+        catch { impacto = new SigWeb.Data.Impacto.InformeImpacto { Elemento = "No se pudo calcular el impacto" }; }
+        await InvokeAsync(StateHasChanged);
+    }
+
+    // ---------- Reemplazar / eliminar un archivo ----------
+    private ArchivoPlanoMaestro? reemplazo, archivoPendienteEliminar;
+    private IBrowserFile? archivoReemplazo;
+
+    private void AbrirReemplazo(ArchivoPlanoMaestro a) { menuCodigo = null; reemplazo = a; archivoReemplazo = null; }
+
+    // Mismo registro (versión, clase, vínculos con componentes); cambia el archivo. El anterior se borra del disco.
+    private async Task Reemplazar()
+    {
+        if (reemplazo is null || archivoReemplazo is null) return;
+        if (archivoReemplazo.Size > MaxArchivo) { mensaje = "El archivo supera 50 MB."; error = true; reemplazo = null; return; }
+        guardando = true;
+        try
+        {
+            var ruta = await GuardarArchivo(archivoReemplazo);
+            var ent = await Db.ArchivosPlanoMaestro.FirstAsync(x => x.Id == reemplazo.Id);
+            var anterior = ent.RutaArchivo;
+            ent.RutaArchivo = ruta;
+            ent.NombreOriginal = archivoReemplazo.Name;
+            await Db.SaveChangesAsync();
+            try
+            {
+                var fisica = Path.Combine(Env.WebRootPath, anterior.TrimStart('/').Replace('/', Path.DirectorySeparatorChar));
+                if (File.Exists(fisica)) File.Delete(fisica);
+            }
+            catch { }
+            mensaje = $"Archivo reemplazado: {archivoReemplazo.Name}."; error = false;
+            reemplazo = null;
+            CargarPlanos();
+        }
+        catch (Exception ex) { mensaje = "No se pudo reemplazar: " + ex.Message; error = true; }
+        finally { guardando = false; }
+    }
+
+    private void PedirEliminarArchivo(ArchivoPlanoMaestro a)
+    {
+        menuCodigo = null; archivoPendienteEliminar = a;
+        _ = CalcularImpacto(an => an.ArchivoPlano(a.Id));
+    }
+
+    private async Task ConfirmarEliminarArchivo()
+    {
+        if (archivoPendienteEliminar is null || BloqueadoPorImpacto) return;
+        var ent = await Db.ArchivosPlanoMaestro.FirstOrDefaultAsync(x => x.Id == archivoPendienteEliminar.Id);
+        if (ent is not null) { ent.Eliminado = true; ent.FechaEliminacion = DateTime.Now; await Db.SaveChangesAsync(); }
+        archivoPendienteEliminar = null;
+        CargarPlanos();
+    }
+
+    // ---------- Eliminar plano ----------
+    private PlanoMaestro? planoPendienteEliminar;
+
+    private void PedirEliminar(PlanoMaestro p)
+    {
+        planoPendienteEliminar = p;
+        _ = CalcularImpacto(an => an.Plano(p.Id));
+    }
+
+    private async Task ConfirmarEliminar()
+    {
+        if (planoPendienteEliminar is null || BloqueadoPorImpacto) return;
+        var ent = await Db.PlanosMaestro.FirstOrDefaultAsync(x => x.Id == planoPendienteEliminar.Id);
+        if (ent is not null) { ent.Eliminado = true; ent.FechaEliminacion = DateTime.Now; await Db.SaveChangesAsync(); }
+        planoPendienteEliminar = null;
+        CargarPlanos();
+    }
+}

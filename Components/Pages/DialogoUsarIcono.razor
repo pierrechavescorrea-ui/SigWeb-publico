@@ -1,0 +1,366 @@
+@* "Usar en…": recorre una miniatura de la app (menú → pantalla → grupos → elementos) y asigna el ícono
+   del catálogo al punto o elemento elegido, mostrando el ícono que tiene hoy. Ocupa el área de trabajo. *@
+@using Microsoft.EntityFrameworkCore
+@using SigWeb.Data
+@using SigWeb.Data.Iconos
+@using SigWeb.Models
+@inject AppDbContext Db
+@inject IconosApp IconosApp
+
+<div class="pc-capa ui-capa">
+    <div class="pc-cab">
+        <button type="button" class="pg-atras border-0" title="Volver" aria-label="Volver" @onclick="Atras">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>
+        </button>
+        <img src="@Icono.RutaArchivo" alt="" class="ui-nuevo" />
+        <h4 class="mb-0">@Icono.Nombre</h4>
+        <span class="ui-ruta">
+            <button type="button" class="ui-miga" @onclick="() => Elegir(null)">General</button>
+            @if (modulo is not null)
+            {
+                <span>›</span><button type="button" class="ui-miga" @onclick="() => Elegir(modulo)">@modulo.Nombre</button>
+            }
+            @if (sub is not null)
+            {
+                <span>›</span><span class="ui-miga">@NombreSub</span>
+            }
+        </span>
+    </div>
+
+    <div class="ui-app">
+        @* Menú lateral en miniatura *@
+        <nav class="ui-menu">
+            <button type="button" class="ui-menu-item @(modulo is null ? "activo" : "")" title="General" @onclick="() => Elegir(null)">
+                <span class="ui-menu-ico"><Ico Nombre="iconos" /></span> General
+            </button>
+            @foreach (var m in PuntosIcono.Modulos)
+            {
+                <button type="button" class="ui-menu-item @(modulo == m ? "activo" : "") @(UsaEste(m.MenuPunto) ? "ui-usa" : "")" title="@m.Nombre" @onclick="() => Elegir(m)">
+                    <span class="ui-menu-ico"><IconoPunto Punto="@m.MenuPunto" Clase="ui-svg">@Svg(m)</IconoPunto></span> @m.Nombre
+                </button>
+            }
+        </nav>
+
+        @* Pantalla en miniatura *@
+        <div class="ui-pantalla">
+            @if (modulo is null)
+            {
+                <div class="ui-pg-cab"><span class="ui-pg-titulo">General</span></div>
+            }
+            else if (sub is null)
+            {
+                <div class="ui-pg-cab">
+                    @if (modulo.CabClave is not null)
+                    {
+                        var pc = "cab:" + modulo.CabClave;
+                        <button type="button" class="ui-slot ui-slot-cab @(punto == pc ? "sel" : "") @(UsaEste(pc) ? "ui-usa" : "")" title="Encabezado" @onclick='() => ElegirPunto(pc, modulo.Nombre + ": encabezado")'>
+                            @if (IconosApp.Ruta(pc) is string r1) { <img src="@r1" alt="" class="ui-img" /> }
+                            else { <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">@((MarkupString)SigWeb.Components.Layout.EncabezadoPagina.Trazos(modulo.CabClave))</svg> }
+                        </button>
+                    }
+                    <span class="ui-pg-titulo">@modulo.Nombre</span>
+                </div>
+                <div class="ui-seccion">Menú</div>
+                <div class="ui-botones">
+                    <button type="button" class="ui-boton @(punto == modulo.MenuPunto ? "sel" : "") @(UsaEste(modulo.MenuPunto) ? "ui-usa" : "")" @onclick='() => ElegirPunto(modulo.MenuPunto, modulo.Nombre + ": menú")'>
+                        <span class="ui-boton-ico"><IconoPunto Punto="@modulo.MenuPunto" Clase="ui-svg">@Svg(modulo)</IconoPunto></span>
+                        <span>Opción del menú</span>
+                    </button>
+                </div>
+
+                @* Mosaicos de la pantalla (grupos / ámbitos / definiciones) *@
+                @switch (modulo.Ruta)
+                {
+                    case "ensayos":
+                        <div class="ui-seccion">Grupos de ensayo</div>
+                        <div class="ens-grid ens-grid-sub ui-mosaicos">
+                            @foreach (var g in gruposEnsayo)
+                            {
+                                var gid = g.Id;
+                                <div class="ens-cuadro ens-sub @(IdDe(punto, "ens-g") == gid ? "activo" : "") @(g.IconoCatalogoId == Icono.Id ? "ui-usa" : "")" role="button" title="@g.Nombre" @onclick='() => Entrar("ens:" + gid)'>
+                                    <img src="@RutaGrupoEnsayo(g)" alt="" />
+                                    <div class="ens-nombre">@g.Nombre</div>
+                                    <div class="ens-cuenta">@tiposEnsayo.Count(t => t.GrupoEnsayoId == gid)</div>
+                                </div>
+                            }
+                        </div>
+                        break;
+                    case "actividades":
+                        <div class="ui-seccion">Ámbitos</div>
+                        <div class="ens-grid ens-grid-sub ui-mosaicos">
+                            @foreach (var amb in ambitos)
+                            {
+                                var a2 = amb;
+                                <div class="ens-cuadro ens-sub @(UsaEste(PuntoAmbito(a2)) ? "ui-usa" : "")" role="button" title="@NombreAmbito(a2)" @onclick='() => Entrar("amb:" + (int)a2)'>
+                                    <img src="@RutaAmbito(a2)" alt="" />
+                                    <div class="ens-nombre">@NombreAmbito(a2)</div>
+                                    <div class="ens-cuenta">@actividades.Count(x => x.Ambito == a2)</div>
+                                </div>
+                            }
+                        </div>
+                        break;
+                    case "planos":
+                        <div class="ui-seccion">Grupos de planos</div>
+                        <div class="ens-grid ens-grid-sub ui-mosaicos">
+                            @foreach (var g in gruposPlano)
+                            {
+                                var pg = "pla-g:" + g.Id;
+                                <div class="ens-cuadro ens-sub @(punto == pg ? "activo" : "") @(g.IconoCatalogoId == Icono.Id ? "ui-usa" : "")" role="button" title="@g.Nombre" @onclick="() => ElegirPunto(pg, g.Nombre)">
+                                    <img src="@(IconosApp.RutaIcono(g.IconoCatalogoId) ?? Documento)" alt="" />
+                                    <div class="ens-nombre">@g.Nombre</div>
+                                </div>
+                            }
+                        </div>
+                        break;
+                    case "catalogos":
+                        <div class="ui-seccion">Catálogos</div>
+                        <div class="ens-grid ens-grid-sub ui-mosaicos">
+                            @foreach (var d in definiciones)
+                            {
+                                var pd = "cat-d:" + d.Id;
+                                <div class="ens-cuadro ens-sub @(punto == pd ? "activo" : "") @(d.IconoCatalogoId == Icono.Id ? "ui-usa" : "")" role="button" title="@d.Nombre" @onclick="() => ElegirPunto(pd, d.Nombre)">
+                                    <img src="@RutaDefinicion(d)" alt="" />
+                                    <div class="ens-nombre">@d.Nombre</div>
+                                </div>
+                            }
+                        </div>
+                        break;
+                }
+            }
+            else if (sub.StartsWith("ens:") && GrupoSub is GrupoEnsayo gs)
+            {
+                var pgs = "ens-g:" + gs.Id;
+                <div class="ui-pg-cab">
+                    <button type="button" class="ui-atras border-0 text-reset" title="Volver" @onclick="Atras">‹</button>
+                    <button type="button" class="ui-slot @(punto == pgs ? "sel" : "") @(gs.IconoCatalogoId == Icono.Id ? "ui-usa" : "")" title="Ícono del grupo" @onclick="() => ElegirPunto(pgs, gs.Nombre)">
+                        <img src="@RutaGrupoEnsayo(gs)" alt="" class="ui-img" />
+                    </button>
+                    <span class="ui-pg-titulo">@gs.Nombre</span>
+                </div>
+                <div class="ui-seccion">Tipos de ensayo</div>
+                <div class="ens-grid ens-grid-sub ui-mosaicos">
+                    @foreach (var t in tiposEnsayo.Where(t => t.GrupoEnsayoId == gs.Id))
+                    {
+                        var pt = "ens-t:" + t.Id;
+                        <div class="ens-cuadro ens-sub @(punto == pt ? "activo" : "") @(t.IconoCatalogoId == Icono.Id ? "ui-usa" : "")" role="button" title="@t.Nombre" @onclick="() => ElegirPunto(pt, t.Nombre)">
+                            <img src="@RutaTipoEnsayo(t)" alt="" />
+                            <div class="ens-nombre">@t.Nombre</div>
+                        </div>
+                    }
+                </div>
+            }
+            else if (sub.StartsWith("amb:"))
+            {
+                var amb = (AmbitoActividad)int.Parse(sub[4..]);
+                var pa = PuntoAmbito(amb);
+                <div class="ui-pg-cab">
+                    <button type="button" class="ui-atras border-0 text-reset" title="Volver" @onclick="Atras">‹</button>
+                    <button type="button" class="ui-slot @(punto == pa ? "sel" : "") @(UsaEste(pa) ? "ui-usa" : "")" title="Ícono del ámbito" @onclick='() => ElegirPunto(pa, NombreAmbito(amb))'>
+                        <img src="@RutaAmbito(amb)" alt="" class="ui-img" />
+                    </button>
+                    <span class="ui-pg-titulo">@NombreAmbito(amb)</span>
+                </div>
+                <div class="ui-seccion">Actividades</div>
+                <div class="ens-grid ens-grid-sub ui-mosaicos">
+                    @foreach (var a in actividades.Where(x => x.Ambito == amb))
+                    {
+                        var pa2 = "act:" + a.Id;
+                        <div class="ens-cuadro ens-sub @(punto == pa2 ? "activo" : "") @(!a.Activo ? "inactivo" : "") @(a.IconoCatalogoId == Icono.Id ? "ui-usa" : "")" role="button" title="@a.Nombre" @onclick="() => ElegirPunto(pa2, a.Nombre)">
+                            <img src="@RutaActividad(a)" alt="" />
+                            <div class="ens-nombre">@a.Nombre</div>
+                        </div>
+                    }
+                </div>
+            }
+
+            @if (sub is null)
+            {
+                <div class="ui-seccion">@(modulo is null ? "Botones estándar" : "Botones de esta pantalla")</div>
+                <div class="ui-botones">
+                    @foreach (var c in Conceptos)
+                    {
+                        var pt = "ico:" + c;
+                        <button type="button" class="ui-boton @(punto == pt ? "sel" : "") @(UsaEste(pt) ? "ui-usa" : "")" title="@PuntosIcono.NombreConcepto(c)" @onclick="() => ElegirPunto(pt, PuntosIcono.NombreConcepto(c))">
+                            <span class="ui-boton-ico"><Ico Nombre="@c" /></span>
+                            <span>@PuntosIcono.NombreConcepto(c)</span>
+                        </button>
+                    }
+                </div>
+            }
+        </div>
+    </div>
+
+    @if (punto is not null)
+    {
+        <div class="ui-confirmar">
+            <span class="fw-semibold">@nombrePunto</span>
+            <span class="ui-actual">@ActualDe(punto)</span>
+            <span>→</span>
+            <img src="@Icono.RutaArchivo" alt="" class="ui-nuevo" />
+            <span class="ms-auto"></span>
+            @if (Asignado(punto))
+            {
+                <button type="button" class="btn btn-sm btn-outline-secondary" title="Volver al ícono por defecto" @onclick="Restablecer"><Ico Nombre="restaurar" /></button>
+            }
+            <button type="button" class="btn btn-sm btn-primary" title="Usar este ícono aquí" disabled="@UsaEste(punto)" @onclick="Asignar">✓</button>
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public IconoCatalogo Icono { get; set; } = default!;
+    [Parameter] public EventCallback OnCerrar { get; set; }
+
+    private const string Documento = "images/iconos/documento.svg";
+    private static readonly AmbitoActividad[] ambitos = { AmbitoActividad.Torre, AmbitoActividad.Pata, AmbitoActividad.Tiro };
+
+    private ModuloIconos? modulo;
+    private string? sub;              // "ens:{grupoId}" | "amb:{ámbito}"
+    private string? punto, nombrePunto;
+
+    private List<GrupoEnsayo> gruposEnsayo = new();
+    private List<TipoEnsayo> tiposEnsayo = new();
+    private List<Actividad> actividades = new();
+    private List<GrupoPlano> gruposPlano = new();
+    private List<DefinicionCatalogo> definiciones = new();
+    private string? rutaCatalogoDefecto;
+
+    protected override void OnInitialized() => Cargar();
+
+    private void Cargar()
+    {
+        gruposEnsayo = Db.GruposEnsayo.AsNoTracking().Where(g => !g.Eliminado && g.Activo).OrderBy(g => g.Orden).ThenBy(g => g.Nombre).ToList();
+        tiposEnsayo = Db.TiposEnsayo.AsNoTracking().Where(t => !t.Eliminado && t.Activo).OrderBy(t => t.Orden).ThenBy(t => t.Nombre).ToList();
+        actividades = Db.Actividades.AsNoTracking().Where(a => !a.Eliminado).OrderBy(a => a.Orden).ThenBy(a => a.Nombre).ToList();
+        gruposPlano = Db.GruposPlano.AsNoTracking().Where(g => !g.Eliminado && g.Activo).OrderBy(g => g.Orden).ThenBy(g => g.Nombre).ToList();
+        definiciones = Db.DefinicionesCatalogo.AsNoTracking().Where(d => !d.Eliminado && d.Activo).OrderBy(d => d.Orden).ThenBy(d => d.Nombre).ToList();
+        rutaCatalogoDefecto = Db.IconosCatalogo.AsNoTracking().Where(i => i.Clave == "catalogo").Select(i => i.RutaArchivo).FirstOrDefault();
+    }
+
+    private IReadOnlyList<string> Conceptos => modulo is null ? PuntosIcono.Conceptos.Keys.ToList() : modulo.Conceptos;
+
+    private static MarkupString Svg(ModuloIconos m) => (MarkupString)m.MenuSvg.Replace("class=\"nav-ico\"", "class=\"ui-svg\"");
+
+    private GrupoEnsayo? GrupoSub => sub is not null && sub.StartsWith("ens:") && int.TryParse(sub[4..], out var id) ? gruposEnsayo.FirstOrDefault(g => g.Id == id) : null;
+
+    private string? NombreSub => sub is null ? null
+        : sub.StartsWith("ens:") ? GrupoSub?.Nombre
+        : sub.StartsWith("amb:") ? NombreAmbito((AmbitoActividad)int.Parse(sub[4..])) : null;
+
+    private static string NombreAmbito(AmbitoActividad a) => a switch
+    {
+        AmbitoActividad.Torre => "Torre",
+        AmbitoActividad.Pata => "Pata",
+        _ => "Tiro (Tendido)"
+    };
+
+    private static string PuntoAmbito(AmbitoActividad a) => a switch
+    {
+        AmbitoActividad.Torre => "ico:torre",
+        AmbitoActividad.Pata => "ico:pata",
+        _ => "ico:tiro"
+    };
+
+    // Mismas reglas de respaldo que las pantallas reales.
+    private string RutaAmbito(AmbitoActividad a) => IconosApp.Ruta(PuntoAmbito(a)) ?? a switch
+    {
+        AmbitoActividad.Torre => "images/icono-torre.svg",
+        AmbitoActividad.Pata => "images/icono-pata.svg",
+        _ => "images/icono-tiro.svg"
+    };
+    private string RutaActividad(Actividad a) => IconosApp.RutaIcono(a.IconoCatalogoId) ?? RutaAmbito(a.Ambito);
+    private string RutaGrupoEnsayo(GrupoEnsayo g) => IconosApp.RutaIcono(g.IconoCatalogoId) ?? Documento;
+    private string RutaTipoEnsayo(TipoEnsayo t) =>
+        IconosApp.RutaIcono(t.IconoCatalogoId ?? gruposEnsayo.FirstOrDefault(g => g.Id == t.GrupoEnsayoId)?.IconoCatalogoId) ?? Documento;
+    private string RutaDefinicion(DefinicionCatalogo d) => IconosApp.RutaIcono(d.IconoCatalogoId) ?? rutaCatalogoDefecto ?? Documento;
+
+    private static int? IdDe(string? p, string prefijo) =>
+        p is not null && p.StartsWith(prefijo + ":") && int.TryParse(p[(prefijo.Length + 1)..], out var id) ? id : null;
+
+    // Ícono que el elemento tiene asignado hoy (Id de la galería) o null si usa el de por defecto.
+    private int? IdAsignado(string p)
+    {
+        if (IdDe(p, "ens-g") is int g) return gruposEnsayo.FirstOrDefault(x => x.Id == g)?.IconoCatalogoId;
+        if (IdDe(p, "ens-t") is int t) return tiposEnsayo.FirstOrDefault(x => x.Id == t)?.IconoCatalogoId;
+        if (IdDe(p, "act") is int a) return actividades.FirstOrDefault(x => x.Id == a)?.IconoCatalogoId;
+        if (IdDe(p, "pla-g") is int pg) return gruposPlano.FirstOrDefault(x => x.Id == pg)?.IconoCatalogoId;
+        if (IdDe(p, "cat-d") is int d) return definiciones.FirstOrDefault(x => x.Id == d)?.IconoCatalogoId;
+        return null;
+    }
+
+    private static bool EsElemento(string p) => p.StartsWith("ens-g:") || p.StartsWith("ens-t:") || p.StartsWith("act:") || p.StartsWith("pla-g:") || p.StartsWith("cat-d:");
+
+    private bool UsaEste(string p) => EsElemento(p) ? IdAsignado(p) == Icono.Id : IconosApp.Ruta(p) == Icono.RutaArchivo;
+
+    private bool Asignado(string p) => EsElemento(p) ? IdAsignado(p) is not null : IconosApp.Asignado(p);
+
+    private void Elegir(ModuloIconos? m) { modulo = m; sub = null; punto = null; }
+
+    private void Entrar(string s) { sub = s; punto = null; }
+
+    private async Task Atras()
+    {
+        if (sub is not null) { sub = null; punto = null; }
+        else if (modulo is not null) { modulo = null; punto = null; }
+        else await OnCerrar.InvokeAsync();
+    }
+
+    private void ElegirPunto(string p, string nombre) { punto = p; nombrePunto = nombre; }
+
+    // Miniatura del ícono que hoy tiene el punto.
+    private RenderFragment ActualDe(string p) => b =>
+    {
+        string? img = null;
+        if (IdDe(p, "ens-g") is int g && gruposEnsayo.FirstOrDefault(x => x.Id == g) is { } ge) img = RutaGrupoEnsayo(ge);
+        else if (IdDe(p, "ens-t") is int t && tiposEnsayo.FirstOrDefault(x => x.Id == t) is { } te) img = RutaTipoEnsayo(te);
+        else if (IdDe(p, "act") is int a && actividades.FirstOrDefault(x => x.Id == a) is { } ac) img = RutaActividad(ac);
+        else if (IdDe(p, "pla-g") is int pg && gruposPlano.FirstOrDefault(x => x.Id == pg) is { } gp) img = IconosApp.RutaIcono(gp.IconoCatalogoId) ?? Documento;
+        else if (IdDe(p, "cat-d") is int d && definiciones.FirstOrDefault(x => x.Id == d) is { } de) img = RutaDefinicion(de);
+        else img = IconosApp.Ruta(p);
+
+        if (img is not null)
+        {
+            b.OpenElement(0, "img"); b.AddAttribute(1, "src", img); b.AddAttribute(2, "class", "ui-nuevo"); b.AddAttribute(3, "alt", ""); b.CloseElement();
+        }
+        else if (p.StartsWith("ico:"))
+        {
+            b.OpenComponent<SigWeb.Components.Layout.Ico>(4); b.AddAttribute(5, "Nombre", p[4..]); b.CloseComponent();
+        }
+        else if (p.StartsWith("menu:"))
+        {
+            var m = PuntosIcono.Modulos.FirstOrDefault(x => x.MenuPunto == p);
+            if (m is not null) b.AddMarkupContent(6, m.MenuSvg.Replace("class=\"nav-ico\"", "class=\"ui-svg\""));
+        }
+        else if (p.StartsWith("cab:"))
+        {
+            b.AddMarkupContent(7, "<svg class=\"ui-svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\">"
+                + SigWeb.Components.Layout.EncabezadoPagina.Trazos(p[4..]) + "</svg>");
+        }
+    };
+
+    private async Task Asignar()
+    {
+        if (punto is null) return;
+        if (EsElemento(punto)) await GuardarElementoAsync(punto, Icono.Id);
+        else await IconosApp.AsignarAsync(Db, punto, Icono.Id);
+    }
+
+    private async Task Restablecer()
+    {
+        if (punto is null) return;
+        if (EsElemento(punto)) await GuardarElementoAsync(punto, null);
+        else await IconosApp.RestablecerAsync(Db, punto);
+    }
+
+    // Guarda el ícono propio del elemento (IconoCatalogoId) sin tocar el resto de sus datos.
+    private async Task GuardarElementoAsync(string p, int? iconoId)
+    {
+        if (IdDe(p, "ens-g") is int g) await Db.GruposEnsayo.Where(x => x.Id == g).ExecuteUpdateAsync(s => s.SetProperty(x => x.IconoCatalogoId, iconoId));
+        else if (IdDe(p, "ens-t") is int t) await Db.TiposEnsayo.Where(x => x.Id == t).ExecuteUpdateAsync(s => s.SetProperty(x => x.IconoCatalogoId, iconoId));
+        else if (IdDe(p, "act") is int a) await Db.Actividades.Where(x => x.Id == a).ExecuteUpdateAsync(s => s.SetProperty(x => x.IconoCatalogoId, iconoId));
+        else if (IdDe(p, "pla-g") is int pg) await Db.GruposPlano.Where(x => x.Id == pg).ExecuteUpdateAsync(s => s.SetProperty(x => x.IconoCatalogoId, iconoId));
+        else if (IdDe(p, "cat-d") is int d) await Db.DefinicionesCatalogo.Where(x => x.Id == d).ExecuteUpdateAsync(s => s.SetProperty(x => x.IconoCatalogoId, iconoId));
+        Cargar();
+        IconosApp.Recargar();
+    }
+}

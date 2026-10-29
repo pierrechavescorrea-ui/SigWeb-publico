@@ -1,0 +1,738 @@
+@page "/equipos"
+@rendermode InteractiveServer
+@implements IAsyncDisposable
+@using System.Globalization
+@using Microsoft.EntityFrameworkCore
+@using SigWeb.Data
+@using SigWeb.Data.Equipos
+@using SigWeb.Models
+@using SigWeb.Data.Tablas
+@using SigWeb.Data.Documentos
+@inject AppDbContext Db
+@inject IServiceScopeFactory Scopes
+@inject IJSRuntime JS
+
+<PageTitle>Equipos</PageTitle>
+
+<div class="@(PantallaCompleta ? "ens-pantalla" : "")">
+<EncabezadoPagina Titulo="Equipos" Icono="equipos" Subtitulo="@($"{filas.Count} equipo{(filas.Count == 1 ? "" : "s")}")" OnAtras="AtrasPantalla">
+    <Acciones>
+        <button type="button" class="pg-btn @(pantallaCompleta ? "activo" : "")" title="@(pantallaCompleta ? "Salir de pantalla completa" : "Pantalla completa")" disabled="@vistaExcel" @onclick="() => pantallaCompleta = !pantallaCompleta"><Ico Nombre="pantalla-completa" /></button>
+        <button class="pg-btn @(vistaExcel ? "activo" : "")" title="Vista de hoja de cálculo" @onclick="CambiarVista">📊</button>
+        <button type="button" class="pg-btn @(verCargas ? "activo" : "")" title="@($"Cargas ({listaCargas.Count})")" @onclick="AlternarCargas"><Ico Nombre="cargas" />@(listaCargas.Count > 0 ? $" {listaCargas.Count}" : "")</button>
+        <span class="pg-sep"></span>
+        <BotonCampos Activo="verCampos" Deshabilitado="motor is null" OnClick="() => verCampos = true" />
+        <button type="button" class="pg-btn @(verImportar ? "activo" : "")" title="Importar listado (Excel)" @onclick="() => { verImportar = !verImportar; verCargas = false; }"><Ico Nombre="cargar-excel" /></button>
+        @if (!vistaExcel) { <BotonExportar Titulo="Equipos" /> }
+        <span class="pg-sep"></span>
+        <button class="pg-btn pg-btn-primario" title="Nuevo equipo" @onclick="() => AbrirEdicion(null)"><Ico Nombre="agregar" /></button>
+    </Acciones>
+</EncabezadoPagina>
+
+@if (verCampos && motor is not null)
+{
+    <PanelCampos Motor="motor" OnCerrar="() => verCampos = false" OnCambio="StateHasChanged">
+        <Acciones>
+            <button type="button" class="pg-btn" title="Campos de la matriz importada (tipo de dato y edición en la vista de hoja de cálculo)" @onclick="() => { verCampos = false; mostrarCampos = true; }"><Ico Nombre="listado" /></button>
+        </Acciones>
+    </PanelCampos>
+}
+
+@if (!string.IsNullOrEmpty(mensaje))
+{
+    <div class="alert @(error ? "alert-warning" : "alert-success") py-1 d-flex justify-content-between">
+        <span>@mensaje</span>
+        <button type="button" class="btn-close btn-sm" aria-label="Cerrar" @onclick='() => mensaje = ""'></button>
+    </div>
+}
+
+@if (verCargas)
+{
+    <div class="card panel-formulario mb-3">
+        <div class="card-body">
+            @if (listaCargas.Count == 0) { <div class="text-muted small">—</div> }
+            else
+            {
+                <div class="tabla-scroll mb-2" style="max-height:280px;">
+                    <table class="table table-sm table-bordered align-middle mb-0">
+                        <thead>
+                            <tr>
+                                <th style="width:32px;"><input type="checkbox" class="form-check-input" title="Todas" checked="@(cargasSel.Count == listaCargas.Count)" @onchange="@(e => { cargasSel = (bool)e.Value! ? listaCargas.Select(c => c.Carga.Id).ToHashSet() : new(); elimCargas = null; })" /></th>
+                                <th>Archivo</th><th>Hoja</th><th>Fecha</th><th title="Equipos de esta carga">Eq.</th><th title="Calibraciones de esta carga">Cal.</th>
+                                <th style="width:40px;"></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var c in listaCargas)
+                            {
+                                var id = c.Carga.Id;
+                                <tr class="@(cargaFiltro == id ? "table-active" : "")">
+                                    <td><input type="checkbox" class="form-check-input" checked="@cargasSel.Contains(id)" @onchange="@(e => { if ((bool)e.Value!) cargasSel.Add(id); else cargasSel.Remove(id); elimCargas = null; })" /></td>
+                                    <td class="small">@c.Carga.NombreArchivo</td>
+                                    <td class="small">@c.Carga.Hoja</td>
+                                    <td class="small text-nowrap">@c.Carga.Fecha.ToString("dd/MM/yyyy HH:mm")</td>
+                                    <td class="small text-end">@c.Equipos</td>
+                                    <td class="small text-end">@c.Calibraciones</td>
+                                    <td><button type="button" class="ens-mini @(cargaFiltro == id ? "activo" : "")" title="Ver solo esta carga" @onclick="() => cargaFiltro = cargaFiltro == id ? null : id"><Ico Nombre="ubicar" /></button></td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+                <div class="d-flex justify-content-end">
+                    <button type="button" class="btn btn-danger btn-sm" title="@($"Eliminar cargas seleccionadas ({cargasSel.Count})")" disabled="@(cargasSel.Count == 0)" @onclick="PedirEliminarCargas"><Ico Nombre="eliminar" /> @cargasSel.Count</button>
+                </div>
+            }
+            @if (elimCargas is not null)
+            {
+                <div class="border border-danger rounded p-2 mt-2">
+                    <PanelImpacto Informe="impactoCargas" OnEntendido="@(v => impactoCargasOk = v)" />
+                    <div class="d-flex gap-2">
+                        <button class="btn btn-secondary btn-sm" type="button" title="Cancelar" @onclick="() => elimCargas = null"><Ico Nombre="cancelar" /></button>
+                        <button class="btn btn-danger btn-sm" type="button" title="Eliminar (va a la Papelera)" disabled="@(impactoCargas is null || (impactoCargas.RequiereEntender && !impactoCargasOk))" @onclick="ConfirmarEliminarCargas"><Ico Nombre="eliminar" /></button>
+                    </div>
+                </div>
+            }
+        </div>
+    </div>
+}
+
+@if (verImportar)
+{
+    <PanelImportarExcel Destinos="DestinosImportacion" Importando="importando" OnImportar="ImportarExcel" OnCancelar="() => verImportar = false" />
+}
+
+<div class="d-flex gap-2 mb-2 flex-wrap align-items-center">
+    @if (cargaFiltro is int cf && listaCargas.FirstOrDefault(c => c.Carga.Id == cf) is { } cg)
+    {
+        <span class="rg-chip"><Ico Nombre="cargas" /> @cg.Carga.NombreArchivo <button type="button" class="rg-chip-x" title="Quitar" @onclick="() => cargaFiltro = null">✕</button></span>
+    }
+    <input class="form-control form-control-sm" style="max-width:320px;" placeholder="Buscar equipo, marca, serie..." @bind="filtro" @bind:event="oninput" />
+    <select class="form-select form-select-sm" style="max-width:200px;" @bind="filtroEstado">
+        <option value="">Todos los estados</option>
+        <option value="vigente">Vigentes</option>
+        <option value="porvencer">Por vencer (30 días)</option>
+        <option value="vencido">Vencidos</option>
+        <option value="alerta">Vencidos y por vencer</option>
+        <option value="sin">Sin calibración</option>
+    </select>
+</div>
+
+@if (vistaExcel)
+{
+    <div id="hoja-equipos" style="height:74vh;"></div>
+}
+else
+{
+    <div class="tabla-scroll tabla-auto">
+        <table class="table table-sm table-bordered table-hover tabla-compacta align-middle mb-0 tabla-pin">
+            <thead>
+                <tr>
+                    @foreach (var c in Columnas)
+                    {
+                        <th class="th-ordenable" @onclick="() => OrdenarPor(c.Clave)">@c.Nombre@(Flecha(c.Clave))</th>
+                    }
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var f in Mostradas)
+                {
+                    var (txt, clase) = EstadoEquipo.Estado(f.Vigente);
+                    <tr>
+                        @foreach (var c in Columnas)
+                        {
+                            var nat = c.Origen == OrigenCampoTabla.Nativo && Motor.Estilo(f.Equipo.Id, c) is null;
+                            if (nat && c.Clave == "Nombre")
+                            {
+                                <td class="fw-semibold text-nowrap">
+                            <a href="equipos/@f.Equipo.Id/hoja-de-vida" class="text-decoration-none" title="Abrir hoja de vida">
+                                @f.Equipo.Nombre <span aria-hidden="true">📋</span>
+                            </a>
+                        </td>
+                            }
+                            else if (nat && c.Clave == "Estado")
+                            {
+                                <td><span class="badge @clase">@txt</span></td>
+                            }
+                            else if (nat && c.Clave == "Certificado")
+                            {
+                                <td class="text-nowrap">
+                            @if (f.Vigente?.RutaCertificado is string ruta)
+                            {
+                                <a href="@ruta" target="_blank" rel="noopener" class="text-decoration-none" title="@f.Vigente.NombreCertificado">📄 @(f.Vigente.NumeroCertificado ?? "Ver")</a>
+                            }
+                            else if (!string.IsNullOrEmpty(f.Vigente?.NumeroCertificado))
+                            {
+                                <span class="text-muted" title="Sin archivo adjunto">@f.Vigente.NumeroCertificado</span>
+                            }
+                            else { <span class="text-muted">—</span> }
+                        </td>
+                            }
+                            else
+                            {
+                                <CeldaCampo Motor="Motor" Campo="c" Fila="f.Equipo.Id" OnCambio="StateHasChanged" />
+                            }
+                        }
+                        <td class="text-nowrap">
+                            <button class="btn btn-sm btn-primary py-0" title="Actualizar calibración y certificado" @onclick="() => calibrandoId = f.Equipo.Id"><Ico Nombre="calibracion" /></button>
+                            <button class="btn btn-sm btn-outline-secondary py-0" @onclick="() => AbrirEdicion(f.Equipo.Id)" title="Editar"><Ico Nombre="editar" /></button>
+                            <button class="btn btn-sm btn-outline-danger py-0" title="Eliminar" @onclick="() => eliminandoId = f.Equipo.Id"><Ico Nombre="eliminar" /></button>
+                        </td>
+                    </tr>
+                }
+                @if (!Mostradas.Any())
+                {
+                    <tr><td colspan="@(Columnas.Count() + 1)" class="text-muted small text-center py-3">Sin equipos.</td></tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+</div>
+
+@if (calibrandoId is int idCal)
+{
+    <DialogoIntervencionEquipo EquipoId="idCal" TipoInicial="TipoIntervencionEquipo.Calibracion"
+                               OnGuardado="Recargar" OnCerrar="@(() => calibrandoId = null)" />
+}
+
+@if (mostrarCampos)
+{
+    <DialogoConfigurarCamposEquipo OnCambiado="Recargar" OnCerrar="@(() => mostrarCampos = false)" />
+}
+
+@if (editando is not null)
+{
+    <div class="modal-backdrop-custom">
+        <div class="modal-box-custom" style="max-width: 680px;">
+            <div class="d-flex justify-content-between align-items-center mb-2">
+                <h5 class="mb-0">@(editando.Id == 0 ? "Nuevo equipo" : "Editar equipo")</h5>
+                <button type="button" class="btn-close" aria-label="Cerrar" @onclick="() => editando = null"></button>
+            </div>
+            <SeccionFormulario Titulo="Equipo">
+                <CampoFormulario Etiqueta="Nombre" Ancho="col-md-8" Obligatorio="true" Destacado="true">
+                    <input class="form-control" @bind="editando.Nombre" />
+                </CampoFormulario>
+                <CampoFormulario Etiqueta="Periodicidad (meses)" Ancho="col-md-4">
+                    <input type="number" min="0" class="form-control" @bind="editando.PeriodicidadMeses" />
+                </CampoFormulario>
+            </SeccionFormulario>
+            @if (campos.Count > 0)
+            {
+                <SeccionFormulario Titulo="Datos del equipo">
+                    @foreach (var c in campos)
+                    {
+                        <CampoFormulario Etiqueta="@c.Etiqueta" Ancho="col-md-6">
+                            <input class="form-control" type="@(c.TipoDato == TipoDatoCampoEnsayo.Fecha ? "date" : c.TipoDato == TipoDatoCampoEnsayo.Numero ? "number" : "text")"
+                                   step="any" value="@editandoValores.GetValueOrDefault(c.Clave, "")"
+                                   @onchange="e => PonerValor(c.Clave, e.Value)" />
+                        </CampoFormulario>
+                    }
+                </SeccionFormulario>
+            }
+            @if (!string.IsNullOrEmpty(errorEdicion)) { <div class="alert alert-warning py-1 mt-3 mb-0">@errorEdicion</div> }
+            <div class="frm-pie">
+                <button class="btn btn-sm btn-secondary" @onclick="() => editando = null" title="Cancelar"><Ico Nombre="cancelar" /></button>
+                <button class="btn btn-sm btn-primary" @onclick="GuardarEdicion" title="Guardar"><Ico Nombre="guardar" /></button>
+            </div>
+        </div>
+    </div>
+}
+
+@if (eliminandoId is int idEl)
+{
+    <div class="modal-backdrop-custom">
+        <div class="modal-box-custom">
+            <h5 class="mb-2">¿Eliminar este equipo?</h5>
+            <p class="small mb-3">Se quita del listado junto con su hoja de vida.</p>
+            <div class="d-flex justify-content-end gap-2">
+                <button class="btn btn-sm btn-secondary" @onclick="() => eliminandoId = null" title="Cancelar"><Ico Nombre="cancelar" /></button>
+                <button class="btn btn-sm btn-danger" @onclick="() => EliminarAsync(idEl)">Eliminar</button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    // ---------- Pantalla completa (igual que Ensayos): la tabla ocupa la ventana y todo sigue funcionando ----------
+    private bool pantallaCompleta;
+    private bool PantallaCompleta => pantallaCompleta && !vistaExcel;
+    private EventCallback AtrasPantalla => PantallaCompleta ? EventCallback.Factory.Create(this, () => pantallaCompleta = false) : default;
+
+    private class FilaEquipo
+    {
+        public Equipo Equipo { get; set; } = new();
+        public Dictionary<string, string> Valores { get; set; } = new();
+        public IntervencionEquipo? Vigente { get; set; }
+    }
+
+    private List<CampoEquipo> campos = new();
+    private List<FilaEquipo> filas = new();
+    private string filtro = "", filtroEstado = "", mensaje = "", errorEdicion = "";
+    private bool error, vistaExcel, mostrarCampos;
+    private string colOrden = "Nombre";
+    private bool ordenAsc = true;
+    private int? calibrandoId, eliminandoId;
+    private Dictionary<int, CargaEquipos> cargas = new();
+    private class InfoCarga { public CargaEquipos Carga { get; set; } = new(); public int Equipos { get; set; } public int Calibraciones { get; set; } }
+    private List<InfoCarga> listaCargas = new();
+    private HashSet<(int EquipoId, int CargaId)> filasCargaCal = new();   // equipos con calibraciones de cada carga
+
+    private string Origen(FilaEquipo f) => f.Equipo.CargaEquiposId is int c && cargas.TryGetValue(c, out var k)
+        ? $"Excel · {k.NombreArchivo}" : "Manual";
+
+    // ---------- Cargas (bases de datos Excel) ----------
+    private bool verCargas;
+    private HashSet<int> cargasSel = new();
+    private int? cargaFiltro;
+    private List<int>? elimCargas;
+    private SigWeb.Data.Impacto.InformeImpacto? impactoCargas;
+    private bool impactoCargasOk;
+
+    private void AlternarCargas() { verCargas = !verCargas; verImportar = false; elimCargas = null; }
+
+    private void CargarCargas()
+    {
+        var cs = Db.CargasEquipos.AsNoTracking().OrderByDescending(c => c.Fecha).ToList();
+        var eq = Db.Equipos.AsNoTracking().Where(e => e.CargaEquiposId != null && !e.Eliminado).GroupBy(e => e.CargaEquiposId!.Value).Select(g => new { g.Key, N = g.Count() }).ToDictionary(x => x.Key, x => x.N);
+        var ca = Db.IntervencionesEquipo.AsNoTracking().Where(i => i.CargaEquiposId != null).GroupBy(i => i.CargaEquiposId!.Value).Select(g => new { g.Key, N = g.Count() }).ToDictionary(x => x.Key, x => x.N);
+        listaCargas = cs.Select(c => new InfoCarga { Carga = c, Equipos = eq.GetValueOrDefault(c.Id), Calibraciones = ca.GetValueOrDefault(c.Id) }).ToList();
+        cargasSel.RemoveWhere(id => listaCargas.All(c => c.Carga.Id != id));
+        if (cargaFiltro is int cf && listaCargas.All(c => c.Carga.Id != cf)) cargaFiltro = null;
+    }
+
+    private void PedirEliminarCargas()
+    {
+        if (cargasSel.Count == 0) return;
+        elimCargas = cargasSel.ToList(); impactoCargas = null; impactoCargasOk = false;
+        _ = CalcularImpactoCargas(elimCargas);
+    }
+
+    private async Task CalcularImpactoCargas(List<int> ids)
+    {
+        try
+        {
+            using var scope = Scopes.CreateScope();
+            impactoCargas = await scope.ServiceProvider.GetRequiredService<SigWeb.Data.Impacto.AnalizadorImpacto>().CargasEquipos(ids);
+        }
+        catch { impactoCargas = new SigWeb.Data.Impacto.InformeImpacto { Elemento = "No se pudo calcular el impacto" }; }
+        await InvokeAsync(StateHasChanged);
+    }
+
+    // A la Papelera con la misma marca de tiempo: sus calibraciones y los equipos que solo existen por
+    // ella (los que tienen fotos u otras intervenciones se conservan, sin carga).
+    private async Task ConfirmarEliminarCargas()
+    {
+        if (elimCargas is null) return;
+        var ids = elimCargas;
+        var ahora = DateTime.Now; ahora = new DateTime(ahora.Year, ahora.Month, ahora.Day, ahora.Hour, ahora.Minute, ahora.Second);
+        try
+        {
+            var calibs = await Db.IntervencionesEquipo.Where(i => i.CargaEquiposId != null && ids.Contains(i.CargaEquiposId.Value)).ToListAsync();
+            foreach (var i in calibs) { i.Eliminado = true; i.FechaEliminacion = ahora; }
+            var idsCal = calibs.Select(i => i.Id).ToHashSet();
+            int seVan = 0, conservados = 0;
+            foreach (var e in await Db.Equipos.Where(e => !e.Eliminado && e.CargaEquiposId != null && ids.Contains(e.CargaEquiposId.Value)).ToListAsync())
+            {
+                bool usado = await Db.IntervencionesEquipo.AnyAsync(i => i.EquipoId == e.Id && !idsCal.Contains(i.Id)) || await Db.FotosEquipo.AnyAsync(f => f.EquipoId == e.Id);
+                if (usado) { e.CargaEquiposId = null; conservados++; }
+                else { e.Eliminado = true; e.FechaEliminacion = ahora; seVan++; }
+            }
+            foreach (var c in await Db.CargasEquipos.Where(c => ids.Contains(c.Id)).ToListAsync()) { c.Eliminado = true; c.FechaEliminacion = ahora; }
+            await Db.SaveChangesAsync();
+            mensaje = $"{ids.Count} carga(s), {calibs.Count} calibración(es) y {seVan} equipo(s) enviados a la Papelera."
+                + (conservados > 0 ? $" {conservados} equipo(s) con fotos u otras intervenciones se conservaron." : "");
+            error = false;
+        }
+        catch (Exception ex) { mensaje = "No se pudo eliminar: " + ex.Message; error = true; }
+        Db.ChangeTracker.Clear();
+        elimCargas = null; cargasSel.Clear();
+        Cargar();
+    }
+
+    // ---------- Importar listado (Excel) con mapeo de columnas ----------
+    private bool verImportar, importando;
+
+    private IReadOnlyList<DestinoColumna> DestinosImportacion =>
+        new List<DestinoColumna>
+        {
+            new("eq:Nombre", "Equipo / instrumento", "instrumento", "equipo", "nombre", "descripcion"),
+            new("eq:Periodicidad", "Periodicidad (meses)", "periodicidad", "periodicidad de calibracion", "frecuencia"),
+            new("cal:Fecha", "Fecha de calibración", "fecha de calibracion", "fecha calibracion", "ultima calibracion"),
+            new("cal:Proxima", "Próxima calibración", "proxima fecha", "proxima fecha de calibracion", "proxima calibracion", "vencimiento"),
+            new("cal:Certificado", "No. certificado", "certificado", "certificado de calibracion", "no. certificado"),
+            new("cal:Laboratorio", "Laboratorio", "laboratorio", "responsable"),
+        }
+        .Concat(campos.Select(c => new DestinoColumna("ce:" + c.Clave, c.Etiqueta,
+            c.Clave switch { "NoSerie" => new[] { "no. de serie", "no de serie", "serie", "numero de serie" }, "Ubicacion" => new[] { "ubicacion" }, _ => Array.Empty<string>() })))
+        .Concat((motor?.Ordenados ?? Enumerable.Empty<CampoTabla>()).Where(c => c.Origen != OrigenCampoTabla.Nativo && !c.Calculado)
+            .Select(c => new DestinoColumna($"c:{c.Id}", c.Nombre)))
+        .ToList();
+
+    private async Task ImportarExcel(ImportacionExcel imp)
+    {
+        if (imp.ColumnaDe("eq:Nombre") is null) { mensaje = "Relaciona la columna del equipo / instrumento."; error = true; return; }
+        importando = true;
+        try
+        {
+            var (r, _, filasEq) = await ImportadorMatrizEquipos.ImportarAsync(Db, imp);
+            // Columnas para los Campos de la tabla (existentes o nuevas).
+            var nativos = new HashSet<string>(ColumnasNativas().Select(n => n.Nombre), StringComparer.OrdinalIgnoreCase);
+            var porId = (motor?.Campos ?? new()).ToDictionary(c => c.Id);
+            var nombres = imp.Destinos.Where(kv => kv.Value == ImportacionExcel.Nueva || kv.Value.StartsWith("c:"))
+                .ToDictionary(kv => kv.Key, kv => kv.Value.StartsWith("c:") && porId.TryGetValue(int.Parse(kv.Value[2..]), out var campo)
+                    ? campo.Nombre
+                    : nativos.Contains(imp.Encabezados[kv.Key]) ? imp.Encabezados[kv.Key] + " (Excel)" : imp.Encabezados[kv.Key]);
+            if (nombres.Count > 0)
+            {
+                var extras = new Dictionary<int, Dictionary<string, string>>();
+                foreach (var (eqId, f) in filasEq)
+                    extras[eqId] = nombres.ToDictionary(kv => kv.Value, kv => ImportacionExcel.Celda(f, kv.Key), StringComparer.OrdinalIgnoreCase);
+                await MotorTabla.GuardarExtrasExcelAsync(Db, "equipos", extras);
+            }
+            mensaje = $"Importación lista: {r.EquiposNuevos} equipo(s) nuevo(s) y {r.CalibracionesNuevas} calibración(es) agregada(s)." + (r.FilasOmitidas > 0 ? $" {r.FilasOmitidas} fila(s) sin equipo se omitieron." : "");
+            error = false;
+            verImportar = false;
+            Cargar();
+        }
+        catch (Exception ex) { mensaje = "No se pudo importar: " + ex.Message; error = true; }
+        finally { importando = false; }
+    }
+
+    private Equipo? editando;
+    private Dictionary<string, string> editandoValores = new();
+    private DotNetObjectReference<Equipos>? dotNetRef;
+    private int version;
+    private string? firmaExcel;
+
+    // ?buscar=texto (buscador rápido Ctrl + K): llega como filtro de la lista.
+    [SupplyParameterFromQuery(Name = "buscar")] public string? BuscarQ { get; set; }
+    // ?estado=vigente|porvencer|vencido|alerta|sin (tablero de inicio): llega como filtro de estado.
+    [SupplyParameterFromQuery(Name = "estado")] public string? EstadoQ { get; set; }
+    private string? buscarAplicado, estadoAplicado;
+    protected override void OnParametersSet()
+    {
+        if (EstadoQ != estadoAplicado)
+        {
+            estadoAplicado = EstadoQ;
+            if (!string.IsNullOrWhiteSpace(EstadoQ)) filtroEstado = EstadoQ;
+        }
+        if (BuscarQ == buscarAplicado) return;
+        buscarAplicado = BuscarQ;
+        if (!string.IsNullOrWhiteSpace(BuscarQ)) filtro = BuscarQ;
+    }
+
+    protected override void OnInitialized() => Cargar();
+
+    // ---------- Campos (columnas visibles, campos creados, fórmulas y formatos) ----------
+    private MotorTabla? motor;
+    private MotorTabla Motor => motor!;
+    private bool verCampos, motorPendiente = true;
+    private Dictionary<int, FilaEquipo> filasPorId = new();
+
+    private IEnumerable<CampoTabla> Columnas => motor?.Visibles ?? Enumerable.Empty<CampoTabla>();
+
+    private static TipoCampoTabla TipoDe(TipoDatoCampoEnsayo t) => t switch
+    {
+        TipoDatoCampoEnsayo.Numero => TipoCampoTabla.Numero,
+        TipoDatoCampoEnsayo.Fecha => TipoCampoTabla.Fecha,
+        _ => TipoCampoTabla.Texto
+    };
+
+    private object? ValorCampo(int id, CampoEquipo c)
+    {
+        if (!filasPorId.TryGetValue(id, out var f) || !f.Valores.TryGetValue(c.Clave, out var v) || string.IsNullOrWhiteSpace(v)) return null;
+        return MotorTabla.Tipar(new CampoTabla { Tipo = TipoDe(c.TipoDato) }, v);
+    }
+
+    // Columnas propias + las de la matriz importada (CampoEquipo), que siguen administrándose con su diálogo.
+    private IEnumerable<ColumnaNativa> ColumnasNativas()
+    {
+        var l = new List<ColumnaNativa>
+        {
+            new("Nombre", "Equipo", TipoCampoTabla.Texto, id => filasPorId.TryGetValue(id, out var f) ? f.Equipo.Nombre : null)
+        };
+        foreach (var c in campos)
+            l.Add(new ColumnaNativa("campo:" + c.Clave, c.Etiqueta, TipoDe(c.TipoDato), id => ValorCampo(id, c), true, "Excel"));
+        l.Add(new("Fecha", "Calibración", TipoCampoTabla.Fecha, id => filasPorId.TryGetValue(id, out var f) ? f.Vigente?.Fecha : null));
+        l.Add(new("Proxima", "Próxima", TipoCampoTabla.Fecha, id => filasPorId.TryGetValue(id, out var f) ? f.Vigente?.ProximaFecha : null));
+        l.Add(new("Estado", "Estado", TipoCampoTabla.Texto, id => filasPorId.TryGetValue(id, out var f) ? EstadoEquipo.Estado(f.Vigente).Item1 : null));
+        l.Add(new("DiasProxima", "Días para la próxima calibración", TipoCampoTabla.Numero, id => filasPorId.TryGetValue(id, out var f) ? Dias(f) : null, false));
+        l.Add(new("Origen", "Origen", TipoCampoTabla.Texto, id => filasPorId.TryGetValue(id, out var f) ? Origen(f) : null));
+        l.Add(new("Certificado", "Certificado vigente", TipoCampoTabla.Texto, id => filasPorId.TryGetValue(id, out var f) ? f.Vigente?.NumeroCertificado : null));
+        return l;
+    }
+
+    private IEnumerable<(int Id, string Etiqueta)> FilasMotor() => filas.Select(f => (f.Equipo.Id, f.Equipo.Nombre));
+
+    // Cargar() es síncrono y se llama en muchos lugares: el motor se (re)arma después de dibujar.
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        await OnAfterRenderEquiposAsync(firstRender);
+        if (!motorPendiente) return;
+        motorPendiente = false;
+        try { motor = await MotorTabla.CargarAsync(Db, "equipos", ColumnasNativas(), FilasMotor()); }
+        catch (Exception ex) { mensaje = "No se pudieron leer los Campos (¿falta aplicar la migración?): " + ex.Message; error = true; }
+        StateHasChanged();
+    }
+
+    private void Cargar()
+    {
+        try
+        {
+            campos = Db.CamposEquipo.AsNoTracking().Where(c => c.Activo).OrderBy(c => c.Orden).ThenBy(c => c.Id).ToList();
+            cargas = Db.CargasEquipos.AsNoTracking().ToDictionary(c => c.Id);
+            CargarCargas();
+            filasCargaCal = Db.IntervencionesEquipo.AsNoTracking().Where(i => i.CargaEquiposId != null)
+                .Select(i => new { i.EquipoId, C = i.CargaEquiposId!.Value }).ToList().Select(x => (x.EquipoId, x.C)).ToHashSet();
+            var equipos = Db.Equipos.AsNoTracking().Where(e => !e.Eliminado).ToList();
+            var valores = Db.ValoresCampoEquipo.AsNoTracking().ToList();
+            var porCampo = Db.CamposEquipo.AsNoTracking().ToDictionary(c => c.Id, c => c.Clave);
+            var calibs = Db.IntervencionesEquipo.AsNoTracking().Where(i => i.Tipo == TipoIntervencionEquipo.Calibracion).ToList()
+                           .GroupBy(i => i.EquipoId).ToDictionary(g => g.Key, g => EstadoEquipo.Vigente(g));
+            filas = equipos.Select(e => new FilaEquipo
+            {
+                Equipo = e,
+                Vigente = calibs.GetValueOrDefault(e.Id),
+                Valores = valores.Where(v => v.EquipoId == e.Id && porCampo.ContainsKey(v.CampoEquipoId))
+                                 .ToDictionary(v => porCampo[v.CampoEquipoId], v => v.Valor),
+            }).ToList();
+            filasPorId = filas.ToDictionary(f => f.Equipo.Id);
+            motorPendiente = true;
+            version++;
+        }
+        catch (Exception ex)
+        {
+            filas = new(); campos = new();
+            mensaje = "No se pudo leer Equipos (¿falta aplicar la migración?): " + ex.Message; error = true;
+        }
+    }
+
+    private Task Recargar() { Cargar(); return Task.CompletedTask; }
+
+    private static string Fmt(DateTime? d) => d?.ToString("dd/MM/yyyy") ?? "";
+    private static string Valor(FilaEquipo f, CampoEquipo c) => f.Valores.GetValueOrDefault(c.Clave, "");
+
+    private static int? Dias(FilaEquipo f) => f.Vigente?.ProximaFecha is DateTime p ? (int)(p.Date - DateTime.Today).TotalDays : null;
+
+    private IEnumerable<FilaEquipo> Mostradas
+    {
+        get
+        {
+            IEnumerable<FilaEquipo> q = filas;
+            if (cargaFiltro is int cf) q = q.Where(f => f.Equipo.CargaEquiposId == cf || filasCargaCal.Contains((f.Equipo.Id, cf)));
+            var t = filtro.Trim();
+            if (t.Length > 0)
+                q = q.Where(f => f.Equipo.Nombre.Contains(t, StringComparison.OrdinalIgnoreCase)
+                    || f.Valores.Values.Any(v => v.Contains(t, StringComparison.OrdinalIgnoreCase))
+                    || (f.Vigente?.NumeroCertificado ?? "").Contains(t, StringComparison.OrdinalIgnoreCase)
+                    || (motor is not null && motor.TextoBusqueda(f.Equipo.Id).Contains(t, StringComparison.OrdinalIgnoreCase)));
+            q = filtroEstado switch
+            {
+                "vigente" => q.Where(f => Dias(f) is int d && d > 30),
+                "porvencer" => q.Where(f => Dias(f) is int d && d >= 0 && d <= 30),
+                "vencido" => q.Where(f => Dias(f) is int d && d < 0),
+                "alerta" => q.Where(f => Dias(f) is int d && d <= 30),
+                "sin" => q.Where(f => Dias(f) is null),
+                _ => q
+            };
+            if (motor is not null && !(colOrden is "Nombre" or "Fecha" or "Proxima" or "Estado" or "Origen") && !colOrden.StartsWith("campo:"))
+                return motor.Ordenar(q, f => f.Equipo.Id, colOrden, ordenAsc);
+            var col = colOrden.StartsWith("campo:") ? colOrden[6..] : colOrden;
+            Func<FilaEquipo, object?> clave = col switch
+            {
+                "Nombre" => f => f.Equipo.Nombre,
+                "Fecha" => f => f.Vigente?.Fecha,
+                "Proxima" => f => f.Vigente?.ProximaFecha,
+                "Estado" => f => Dias(f),
+                "Origen" => f => Origen(f),
+                var k => f => f.Valores.GetValueOrDefault(k, "")
+            };
+            return ordenAsc ? q.OrderBy(f => clave(f) is null ? 1 : 0).ThenBy(f => clave(f)) : q.OrderBy(f => clave(f) is null ? 1 : 0).ThenByDescending(f => clave(f));
+        }
+    }
+
+    private void OrdenarPor(string col)
+    {
+        if (colOrden == col) ordenAsc = !ordenAsc; else { colOrden = col; ordenAsc = true; }
+    }
+    private string Flecha(string col) => colOrden == col ? (ordenAsc ? " ▲" : " ▼") : "";
+
+    // ---------- Alta / edición ----------
+    private void AbrirEdicion(int? id)
+    {
+        errorEdicion = "";
+        if (id is int i && filas.FirstOrDefault(f => f.Equipo.Id == i) is { } fila)
+        {
+            editando = new Equipo { Id = fila.Equipo.Id, Nombre = fila.Equipo.Nombre, PeriodicidadMeses = fila.Equipo.PeriodicidadMeses };
+            editandoValores = new Dictionary<string, string>(fila.Valores);
+        }
+        else { editando = new Equipo(); editandoValores = new(); }
+    }
+
+    private void PonerValor(string clave, object? v) => editandoValores[clave] = v?.ToString() ?? "";
+
+    private async Task GuardarEdicion()
+    {
+        if (editando is null) return;
+        if (string.IsNullOrWhiteSpace(editando.Nombre)) { errorEdicion = "Escribe el nombre del equipo."; return; }
+        Equipo destino;
+        if (editando.Id == 0)
+        {
+            destino = new Equipo();
+            Db.Equipos.Add(destino);
+        }
+        else destino = await Db.Equipos.FirstAsync(e => e.Id == editando.Id);
+        destino.Nombre = editando.Nombre.Trim();
+        destino.PeriodicidadMeses = editando.PeriodicidadMeses is > 0 ? editando.PeriodicidadMeses : null;
+        await Db.SaveChangesAsync();
+
+        foreach (var c in campos)
+        {
+            var valor = editandoValores.GetValueOrDefault(c.Clave, "").Trim();
+            var existente = await Db.ValoresCampoEquipo.FirstOrDefaultAsync(v => v.EquipoId == destino.Id && v.CampoEquipoId == c.Id);
+            if (valor == "") { if (existente is not null) Db.ValoresCampoEquipo.Remove(existente); }
+            else if (existente is null) Db.ValoresCampoEquipo.Add(new ValorCampoEquipo { EquipoId = destino.Id, CampoEquipoId = c.Id, Valor = valor });
+            else existente.Valor = valor;
+        }
+        await Db.SaveChangesAsync();
+        Db.ChangeTracker.Clear();
+        editando = null;
+        Cargar();
+    }
+
+    private async Task EliminarAsync(int id)
+    {
+        var e = await Db.Equipos.FirstOrDefaultAsync(x => x.Id == id);
+        if (e is not null) { e.Eliminado = true; e.FechaEliminacion = DateTime.Now; await Db.SaveChangesAsync(); }
+        Db.ChangeTracker.Clear();
+        eliminandoId = null;
+        Cargar();
+    }
+
+    // ---------- Importar matriz ----------
+    private async Task ImportarAsync(InputFileChangeEventArgs e)
+    {
+        try
+        {
+            await using var ms = new MemoryStream();
+            await using (var s = e.File.OpenReadStream(20 * 1024 * 1024)) await s.CopyToAsync(ms);
+            ms.Position = 0;
+            var r = await ImportadorMatrizEquipos.ImportarAsync(Db, ms, e.File.Name);
+            mensaje = $"Importación lista: {r.EquiposNuevos} equipo(s) nuevo(s) y {r.CalibracionesNuevas} calibración(es) agregada(s).";
+            error = false;
+            Cargar();
+        }
+        catch (Exception ex) { mensaje = "No se pudo importar: " + ex.Message; error = true; }
+    }
+
+    // ---------- Vista Excel (misma hoja Univer que Ensayos: wwwroot/js/hojaExcel.js) ----------
+    private async Task CambiarVista()
+    {
+        if (vistaExcel)
+        {
+            try { await JS.InvokeVoidAsync("sigwebHojaExcelDestruir", "hoja-equipos"); } catch (JSDisconnectedException) { }
+            vistaExcel = false;
+        }
+        else { firmaExcel = null; vistaExcel = true; }
+    }
+
+    private async Task OnAfterRenderEquiposAsync(bool firstRender)
+    {
+        if (!vistaExcel) return;
+        try
+        {
+            var firma = $"{version}|{filtro}|{filtroEstado}|{colOrden}|{ordenAsc}";
+            if (firma == firmaExcel) return;
+            dotNetRef ??= DotNetObjectReference.Create(this);
+            await JS.InvokeVoidAsync("sigwebHojaExcel", "hoja-equipos", ColumnasExcel(), FilasExcel(), dotNetRef);
+            firmaExcel = firma;
+        }
+        catch (JSDisconnectedException) { }
+    }
+
+    private List<Dictionary<string, object>> ColumnasExcel()
+    {
+        var cols = new List<Dictionary<string, object>>
+        {
+            new() { ["title"] = "Equipo", ["field"] = "Nombre", ["headerFilter"] = "input", ["frozen"] = true, ["editor"] = "input" },
+        };
+        foreach (var c in campos)
+        {
+            var col = new Dictionary<string, object> { ["title"] = c.Etiqueta, ["field"] = c.Clave, ["headerFilter"] = "input" };
+            if (c.EditableEnVistaExcel) col["editor"] = "input";
+            cols.Add(col);
+        }
+        cols.Add(new() { ["title"] = "Calibración", ["field"] = "Fecha", ["headerFilter"] = "input" });
+        cols.Add(new() { ["title"] = "Próxima", ["field"] = "Proxima", ["headerFilter"] = "input" });
+        cols.Add(new() { ["title"] = "Estado", ["field"] = "Estado", ["headerFilter"] = "input" });
+        cols.Add(new() { ["title"] = "Origen", ["field"] = "Origen", ["headerFilter"] = "input" });
+        cols.Add(new() { ["title"] = "Certificado", ["field"] = "Certificado", ["headerFilter"] = "input" });
+        return cols;
+    }
+
+    private List<Dictionary<string, object>> FilasExcel()
+    {
+        var res = new List<Dictionary<string, object>>();
+        foreach (var f in Mostradas)
+        {
+            var d = new Dictionary<string, object>
+            {
+                ["__Id"] = f.Equipo.Id,
+                ["Nombre"] = f.Equipo.Nombre,
+                ["Fecha"] = Fmt(f.Vigente?.Fecha),
+                ["Proxima"] = Fmt(f.Vigente?.ProximaFecha),
+                ["Estado"] = EstadoEquipo.Estado(f.Vigente).Texto,
+                ["Certificado"] = f.Vigente?.NumeroCertificado ?? "",
+                ["Origen"] = Origen(f),
+            };
+            foreach (var c in campos) d[c.Clave] = Valor(f, c);
+            res.Add(d);
+        }
+        return res;
+    }
+
+    [JSInvokable]
+    public async Task<Dictionary<string, string>> CeldaEditada(int equipoId, string clave, string valor)
+    {
+        var vacio = new Dictionary<string, string>();
+        try
+        {
+            if (clave == "Nombre")
+            {
+                if (string.IsNullOrWhiteSpace(valor)) return vacio;
+                var e = await Db.Equipos.FirstOrDefaultAsync(x => x.Id == equipoId);
+                if (e is not null) { e.Nombre = valor.Trim(); await Db.SaveChangesAsync(); }
+            }
+            else if (campos.FirstOrDefault(c => c.Clave == clave) is { EditableEnVistaExcel: true } campo)
+            {
+                var v = await Db.ValoresCampoEquipo.FirstOrDefaultAsync(x => x.EquipoId == equipoId && x.CampoEquipoId == campo.Id);
+                if (string.IsNullOrWhiteSpace(valor)) { if (v is not null) Db.ValoresCampoEquipo.Remove(v); }
+                else if (v is null) Db.ValoresCampoEquipo.Add(new ValorCampoEquipo { EquipoId = equipoId, CampoEquipoId = campo.Id, Valor = valor.Trim() });
+                else v.Valor = valor.Trim();
+                await Db.SaveChangesAsync();
+            }
+            Db.ChangeTracker.Clear();
+            var fila = filas.FirstOrDefault(f => f.Equipo.Id == equipoId);
+            if (fila is not null)
+            {
+                if (clave == "Nombre") fila.Equipo.Nombre = valor.Trim();
+                else if (string.IsNullOrWhiteSpace(valor)) fila.Valores.Remove(clave); else fila.Valores[clave] = valor.Trim();
+            }
+        }
+        catch (Exception) { Db.ChangeTracker.Clear(); }
+        return vacio;
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (vistaExcel)
+        {
+            try { await JS.InvokeVoidAsync("sigwebHojaExcelDestruir", "hoja-equipos"); }
+            catch (JSDisconnectedException) { }
+            catch (InvalidOperationException) { }
+        }
+        dotNetRef?.Dispose();
+    }
+}

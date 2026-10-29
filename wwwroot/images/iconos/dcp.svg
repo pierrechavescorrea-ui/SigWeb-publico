@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <!-- Penetrómetro dinámico de cono (PDC / DCP): varilla vertical con
+       martillo deslizante y punta cónica -->
+  <line x1="16" y1="2" x2="16" y2="29" stroke="#5b5b5b" stroke-width="1.6" stroke-linecap="round"/>
+  <rect x="11.5" y="4" width="9" height="2.6" rx="0.6" fill="#7a8a99" stroke="#3f4a52" stroke-width="1"/>
+  <rect x="12.5" y="12" width="7" height="6" rx="0.8" fill="#9AA7B2" stroke="#3f4a52" stroke-width="1.1"/>
+  <line x1="10" y1="22" x2="22" y2="22" stroke="#5b5b5b" stroke-width="1.6" stroke-linecap="round"/>
+  <path d="M14 25 L18 25 L16 30 Z" fill="#5b5b5b" stroke="#3f4a52" stroke-width="1"/>
+</svg>

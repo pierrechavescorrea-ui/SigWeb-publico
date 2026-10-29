@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <!-- Perfil de viga en I (estructuras / obra civil) -->
+  <path d="M6 5 L26 5 L26 9 L18 9 L18 23 L26 23 L26 27 L6 27 L6 23 L14 23 L14 9 L6 9 Z"
+        fill="#B0B8C2" stroke="#4a4f57" stroke-width="1.3" stroke-linejoin="round"/>
+</svg>

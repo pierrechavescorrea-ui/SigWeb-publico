@@ -1,0 +1,133 @@
+@using Microsoft.EntityFrameworkCore
+@using SigWeb.Data
+@using SigWeb.Data.Equipos
+@using SigWeb.Models
+@inject AppDbContext Db
+
+<div class="modal-backdrop-custom">
+    <div class="modal-box-custom" style="max-width: 760px;">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+            <h5 class="mb-0">Campos de los equipos</h5>
+            <button type="button" class="btn-close" aria-label="Cerrar" @onclick="Cerrar"></button>
+        </div>
+
+        <div class="d-flex gap-2 mb-3">
+            <input class="form-control form-control-sm" placeholder="Nombre del campo" @bind="nuevaEtiqueta" @bind:event="oninput" />
+            <select class="form-select form-select-sm" style="max-width:140px;" @bind="nuevoTipo">
+                <option value="@TipoDatoCampoEnsayo.Texto">Texto</option>
+                <option value="@TipoDatoCampoEnsayo.Numero">Número</option>
+                <option value="@TipoDatoCampoEnsayo.Fecha">Fecha</option>
+            </select>
+            <button type="button" class="btn btn-sm btn-primary" disabled="@string.IsNullOrWhiteSpace(nuevaEtiqueta)" title="Agregar" @onclick="Agregar"><Ico Nombre="agregar" /></button>
+        </div>
+        @if (!string.IsNullOrEmpty(error)) { <div class="text-danger small mb-2">@error</div> }
+
+        <div class="modal-area-flexible">
+            <table class="table table-sm align-middle mb-0">
+                <thead><tr><th style="width:22px"></th><th>Campo</th><th>Tipo</th><th class="text-center">Editable en Excel</th><th class="text-center">Activo</th><th></th></tr></thead>
+                <tbody>
+                @foreach (var c in campos)
+                {
+                    <tr class="@(c.Activo ? "" : "text-muted") @(arr?.Id == c.Id ? "arr-origen" : "") @(sobre?.Id == c.Id && arr?.Id != c.Id ? "arr-sobre" : "")"
+                        @ondragover:preventDefault="true" @ondragenter="() => sobre = c" @ondrop="() => Soltar(c)">
+                        <td><span class="arr-asa" draggable="true" data-arrastre title="Arrastrar para reordenar" @ondragstart="() => arr = c" @ondragend="() => { arr = null; sobre = null; }">⠿</span></td>
+                        <td><input class="form-control form-control-sm" value="@c.Etiqueta" @onchange="e => Renombrar(c, e.Value?.ToString())" /></td>
+                        <td>
+                            <select class="form-select form-select-sm" value="@c.TipoDato" @onchange="e => CambiarTipo(c, e.Value?.ToString())">
+                                <option value="@TipoDatoCampoEnsayo.Texto">Texto</option>
+                                <option value="@TipoDatoCampoEnsayo.Numero">Número</option>
+                                <option value="@TipoDatoCampoEnsayo.Fecha">Fecha</option>
+                            </select>
+                        </td>
+                        <td class="text-center"><input type="checkbox" class="form-check-input" checked="@c.EditableEnVistaExcel" @onchange="e => Guardar(c, x => x.EditableEnVistaExcel = (bool)(e.Value ?? false))" /></td>
+                        <td class="text-center"><input type="checkbox" class="form-check-input" checked="@c.Activo" @onchange="e => Guardar(c, x => x.Activo = (bool)(e.Value ?? false))" /></td>
+                        <td class="text-nowrap">
+                            <button type="button" class="btn btn-sm btn-outline-danger py-0" title="Eliminar campo y sus valores" @onclick="() => Eliminar(c)"><Ico Nombre="eliminar" /></button>
+                        </td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        </div>
+        <div class="text-end mt-3"><button type="button" class="btn btn-sm btn-secondary" @onclick="Cerrar">Cerrar</button></div>
+    </div>
+</div>
+
+@code {
+    [Parameter] public EventCallback OnCerrar { get; set; }
+    [Parameter] public EventCallback OnCambiado { get; set; }
+
+    private List<CampoEquipo> campos = new();
+    private string nuevaEtiqueta = "";
+    private TipoDatoCampoEnsayo nuevoTipo = TipoDatoCampoEnsayo.Texto;
+    private string error = "";
+    private bool cambio;
+
+    protected override void OnInitialized() => Cargar();
+
+    private void Cargar() => campos = Db.CamposEquipo.AsNoTracking().OrderBy(c => c.Orden).ThenBy(c => c.Id).ToList();
+
+    private async Task Cerrar()
+    {
+        if (cambio) await OnCambiado.InvokeAsync();
+        await OnCerrar.InvokeAsync();
+    }
+
+    private async Task Agregar()
+    {
+        error = "";
+        var etiqueta = nuevaEtiqueta.Trim();
+        var clave = EstadoEquipo.ClaveDesdeEtiqueta(etiqueta);
+        if (Db.CamposEquipo.Any(c => c.Clave == clave)) { error = "Ya existe un campo con ese nombre."; return; }
+        var orden = campos.Count == 0 ? 0 : campos.Max(c => c.Orden) + 1;
+        Db.CamposEquipo.Add(new CampoEquipo { Clave = clave, Etiqueta = etiqueta, TipoDato = nuevoTipo, Orden = orden });
+        await Db.SaveChangesAsync();
+        Db.ChangeTracker.Clear();
+        nuevaEtiqueta = ""; cambio = true; Cargar();
+    }
+
+    private async Task Guardar(CampoEquipo c, Action<CampoEquipo> cambioFn)
+    {
+        var db = await Db.CamposEquipo.FirstOrDefaultAsync(x => x.Id == c.Id);
+        if (db is null) return;
+        cambioFn(db);
+        await Db.SaveChangesAsync();
+        Db.ChangeTracker.Clear();
+        cambio = true; Cargar();
+    }
+
+    private Task Renombrar(CampoEquipo c, string? etiqueta)
+        => string.IsNullOrWhiteSpace(etiqueta) ? Task.CompletedTask : Guardar(c, x => x.Etiqueta = etiqueta.Trim());
+
+    private Task CambiarTipo(CampoEquipo c, string? valor)
+        => Enum.TryParse<TipoDatoCampoEnsayo>(valor, out var t) ? Guardar(c, x => x.TipoDato = t) : Task.CompletedTask;
+
+    // Arrastrar y soltar: el campo queda en la posición del campo destino.
+    private CampoEquipo? arr, sobre;
+
+    private async Task Soltar(CampoEquipo destino)
+    {
+        var c = arr; arr = null; sobre = null;
+        if (c is null || c.Id == destino.Id) return;
+        var ids = campos.Select(x => x.Id).ToList();
+        int i = ids.IndexOf(c.Id), j = ids.IndexOf(destino.Id);
+        if (i < 0 || j < 0) return;
+        ids.RemoveAt(i);
+        ids.Insert(j, c.Id);
+        var todos = await Db.CamposEquipo.ToListAsync();
+        for (var k = 0; k < ids.Count; k++) todos.First(x => x.Id == ids[k]).Orden = k;
+        await Db.SaveChangesAsync();
+        Db.ChangeTracker.Clear();
+        cambio = true; Cargar();
+    }
+
+    private async Task Eliminar(CampoEquipo c)
+    {
+        var db = await Db.CamposEquipo.FirstOrDefaultAsync(x => x.Id == c.Id);
+        if (db is null) return;
+        Db.CamposEquipo.Remove(db);
+        await Db.SaveChangesAsync();
+        Db.ChangeTracker.Clear();
+        cambio = true; Cargar();
+    }
+}

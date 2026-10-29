@@ -1,0 +1,268 @@
+@* Campos de un plan de acción y su tabla de acciones propuestas. Se usa en
+   la página Planes de acción y dentro del formulario de seguimiento de un
+   riesgo. No guarda nada: quien lo usa llama a PlanesAccionServicio.GuardarAsync.
+   Todo lo que muestra llega precargado (el render no consulta la base). *@
+@using SigWeb.Models
+@using SigWeb.Data.Riesgos
+@using SigWeb.Data.Planes
+@inject IWebHostEnvironment Env
+@inject SigWeb.Data.Catalogos.EstilosCatalogo Estilos
+
+@if (SoloAcciones)
+{
+    @* Solo las acciones: el plan en una línea (se edita desde el plan completo). *@
+    <div class="d-flex flex-wrap gap-1 align-items-center small mb-1">
+        <span class="rg-chip">@Modelo.Plan.Fecha.ToString("dd/MM/yyyy")</span>
+        @if (!string.IsNullOrWhiteSpace(Modelo.Plan.OrigenHallazgo)) { <span class="rg-chip">@Modelo.Plan.OrigenHallazgo</span> }
+        @if (!string.IsNullOrWhiteSpace(Modelo.Plan.TipoHallazgo)) { <span class="rg-chip">@Modelo.Plan.TipoHallazgo</span> }
+        @foreach (var rid in Modelo.Riesgos)
+        {
+            <a class="rg-chip text-decoration-none" href="@($"riesgos/{rid}")" title="Abrir riesgo"><Ico Nombre="riesgos" /> @EtiquetaRiesgo(rid)</a>
+        }
+        @if (Origen is not null) { <text>@Origen</text> }
+        <a class="ms-auto small" href="@($"planes-accion/{Modelo.Plan.Id}")">Ver plan completo ▸</a>
+    </div>
+}
+else
+{
+<SeccionFormulario Titulo="Hallazgo">
+    <CampoFormulario Etiqueta="Código" Ancho="col-md-2" Destacado="true">
+        <input class="form-control" @bind="Modelo.Plan.Codigo" />
+    </CampoFormulario>
+    <CampoFormulario Etiqueta="Fecha" Ancho="col-md-2">
+        <input type="date" class="form-control" @bind="Modelo.Plan.Fecha" />
+    </CampoFormulario>
+    <CampoFormulario Etiqueta="Origen del hallazgo" Ancho="col-md-4">
+        <select class="form-select" @bind="Modelo.Plan.OrigenHallazgo">
+            <option value="">—</option>
+            @foreach (var o in ConActual(Origenes, Modelo.Plan.OrigenHallazgo)) { <option value="@o">@o</option> }
+        </select>
+    </CampoFormulario>
+    <CampoFormulario Etiqueta="Tipo de hallazgo" Ancho="col-md-4">
+        <select class="form-select" @bind="Modelo.Plan.TipoHallazgo">
+            <option value="">—</option>
+            @foreach (var o in ConActual(Tipos, Modelo.Plan.TipoHallazgo)) { <option value="@o">@o</option> }
+        </select>
+    </CampoFormulario>
+    <CampoFormulario Etiqueta="Descripción del hallazgo" Ancho="col-md-6" Obligatorio="true">
+        <textarea class="form-control" rows="4" @bind="Modelo.Plan.DescripcionHallazgo"></textarea>
+    </CampoFormulario>
+    <CampoFormulario Etiqueta="Análisis de causa" Ancho="col-md-6">
+        <textarea class="form-control" rows="4" @bind="Modelo.Plan.AnalisisCausa"></textarea>
+    </CampoFormulario>
+</SeccionFormulario>
+
+<SeccionFormulario Titulo="Alcance">
+    <CampoFormulario Etiqueta="Procesos" Ancho="col-md-6">
+        <SelectorMultiple Valores="Modelo.Procesos" Opciones="Procesos" />
+    </CampoFormulario>
+    <CampoFormulario Etiqueta="Lugares" Ancho="col-md-6">
+        <SelectorLugares Lugares="Modelo.Lugares" Torres="Torres" Componentes="Componentes" Localizaciones="Localizaciones" Tiros="Tiros" />
+    </CampoFormulario>
+    <CampoFormulario Etiqueta="Riesgos" Ancho="col-md-12">
+        <div class="rg-multisel">
+            @foreach (var rid in Modelo.Riesgos.ToList())
+            {
+                var r = rid;
+                <span class="rg-chip">
+                    <a class="text-decoration-none" href="@($"riesgos/{r}")" title="Abrir riesgo">@EtiquetaRiesgo(r)</a>
+                    <button type="button" class="rg-chip-x" title="Quitar" @onclick="() => Modelo.Riesgos.Remove(r)">✕</button>
+                </span>
+            }
+            <select @key="vueltaRiesgo" class="form-select form-select-sm" title="Asociar riesgo" @onchange="AgregarRiesgo">
+                <option value="">＋</option>
+                @foreach (var o in RiesgosOpciones.Where(o => !Modelo.Riesgos.Contains(o.Id)))
+                {
+                    <option value="@o.Id">@o.Etiqueta</option>
+                }
+            </select>
+        </div>
+    </CampoFormulario>
+    @if (Origen is not null)
+    {
+        <div class="col-md-12 small d-flex flex-wrap gap-1 align-items-center">@Origen</div>
+    }
+</SeccionFormulario>
+
+<SeccionFormulario Titulo="Reportó">
+    <CampoFormulario Etiqueta="Nombre" Ancho="col-md-4">
+        <input class="form-control" list="dl-pa-nombre" @bind="Modelo.Plan.ReportoNombre" />
+        <datalist id="dl-pa-nombre">@foreach (var o in ReportoNombres) { <option value="@o"></option> }</datalist>
+    </CampoFormulario>
+    <CampoFormulario Etiqueta="Cargo" Ancho="col-md-4">
+        <input class="form-control" list="dl-pa-cargo" @bind="Modelo.Plan.ReportoCargo" />
+        <datalist id="dl-pa-cargo">@foreach (var o in ReportoCargos.Concat(Responsables).Distinct(StringComparer.OrdinalIgnoreCase)) { <option value="@o"></option> }</datalist>
+    </CampoFormulario>
+    <CampoFormulario Etiqueta="Empresa" Ancho="col-md-4">
+        <input class="form-control" list="dl-pa-empresa" @bind="Modelo.Plan.ReportoEmpresa" />
+        <datalist id="dl-pa-empresa">@foreach (var o in ReportoEmpresas) { <option value="@o"></option> }</datalist>
+    </CampoFormulario>
+</SeccionFormulario>
+
+}
+
+<div class="rg-bloque mt-3">
+    <div class="rg-bloque-tit">
+        <span>Acciones propuestas</span><span class="rg-cuenta">@Modelo.Acciones.Count</span>
+        <EstadoAccion Estado="@EscalaAccion.EstadoPlan(Modelo.Acciones.Select(a => a.Accion))" />
+        <button type="button" class="ens-mini ms-auto" title="Agregar acción" @onclick="AgregarAccion"><Ico Nombre="agregar" /></button>
+    </div>
+    @if (Modelo.Acciones.Count == 0)
+    {
+        <div class="text-muted small text-center py-2"><em>Sin acciones.</em></div>
+    }
+    <div class="pa-acc-lista">
+        @for (int k = 0; k < Modelo.Acciones.Count; k++)
+        {
+            var ae = Modelo.Acciones[k];
+            var a = ae.Accion;
+            var n = k + 1;
+            var est = Estilos.Estilo(SembradorCatalogosRiesgo.EstadoAccion, EscalaAccion.Nombre(a.Estado));
+            <div class="pa-acc @(AccionFoco is int f && f == a.Id && a.Id > 0 ? "pa-acc-foco" : "")" id="@(a.Id > 0 ? $"pa-acc-{a.Id}" : null)" @key="ae">
+                <div class="pa-acc-cab">
+                    <span class="pa-acc-num">@n</span>
+                    <select class="form-select form-select-sm pa-acc-tipo" title="Tipo de acción" value="@((int)a.Tipo)" @onchange='e => a.Tipo = (TipoAccionPlan)int.Parse(e.Value?.ToString() ?? "1")'>
+                        <option value="0">Corrección</option>
+                        <option value="1">Acción correctiva</option>
+                        <option value="2">Acción preventiva</option>
+                    </select>
+                    <input type="date" class="form-control form-control-sm pa-acc-fecha" title="Fecha" @bind="a.Fecha" />
+                    <select class="form-select form-select-sm pa-estado pa-acc-estado" title="Estado"
+                            style="background-color:@(est?.ColorFondo ?? EscalaAccion.Color(a.Estado));color:@(est?.ColorTexto ?? EscalaAccion.ColorTexto(a.Estado))"
+                            value="@((int)a.Estado)" @onchange='e => a.Estado = (EstadoAccionPlan)int.Parse(e.Value?.ToString() ?? "0")'>
+                        <option value="0">Abierta</option>
+                        <option value="1">En ejecución</option>
+                        <option value="2">Cerrada</option>
+                    </select>
+                    <button type="button" class="ens-mini ms-auto" title="Eliminar acción" @onclick="() => Quitar(ae)"><Ico Nombre="eliminar" /></button>
+                </div>
+                <div class="row g-2">
+                    <div class="col-lg-7">
+                        <label class="small text-muted">Descripción</label>
+                        <textarea class="form-control form-control-sm pa-acc-desc" rows="4" @bind="a.Descripcion"></textarea>
+                    </div>
+                    <div class="col-lg-5">
+                        <label class="small text-muted">Responsables</label>
+                        <SelectorMultiple Valores="ae.Responsables" Opciones="Responsables" />
+                    </div>
+                </div>
+                <div class="pa-prods">
+                    <div class="d-flex align-items-center gap-2 mb-1">
+                        <span class="small text-muted">Productos</span><span class="rg-cuenta">@ae.Productos.Count</span>
+                        <button type="button" class="ens-mini" title="Agregar producto" @onclick="() => ae.Productos.Add(new PlanesAccionServicio.ProductoEditable())"><Ico Nombre="agregar" /></button>
+                    </div>
+                    @foreach (var pr in ae.Productos)
+                    {
+                        var pe = pr;
+                        <div class="pa-prod" @key="pe">
+                            <div class="d-flex gap-1 align-items-center">
+                                <input class="form-control form-control-sm" placeholder="Producto" @bind="pe.Producto.Descripcion" />
+                                <label class="ens-mini mb-0 pa-adjuntar" title="Adjuntar anexos a este producto"><Ico Nombre="adjuntar" /><InputFile class="d-none" multiple OnChange="e => Subir(pe, e)" /></label>
+                                <button type="button" class="ens-mini" title="Quitar producto" @onclick="() => QuitarProducto(ae, pe)"><Ico Nombre="eliminar" /></button>
+                            </div>
+                            @if (pe.Anexos.Count > 0)
+                            {
+                                <div class="d-flex flex-wrap gap-1 mt-1">
+                                    @foreach (var x in pe.Anexos.ToList())
+                                    {
+                                        var ax = x;
+                                        <span class="rg-chip @(ax.Id == 0 ? "pa-pendiente" : "")" title="@(ax.Id == 0 ? "Se guarda con el plan" : ax.FechaRegistro.ToString("dd/MM/yyyy"))">
+                                            <a href="@ax.RutaArchivo" target="_blank" rel="noopener">@ax.NombreOriginal</a>
+                                            <button type="button" class="rg-chip-x" title="Quitar" @onclick="() => QuitarAnexo(pe, ax)">✕</button>
+                                        </span>
+                                    }
+                                </div>
+                            }
+                        </div>
+                    }
+                </div>
+            </div>
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public PlanesAccionServicio.PlanEditable Modelo { get; set; } = default!;
+    [Parameter] public List<string> Origenes { get; set; } = new();
+    [Parameter] public List<string> Tipos { get; set; } = new();
+    [Parameter] public List<string> Procesos { get; set; } = new();
+    [Parameter] public List<string> Responsables { get; set; } = new();
+    // Sugerencias para "Reportó" (valores ya usados en otros planes).
+    [Parameter] public List<string> ReportoNombres { get; set; } = new();
+    [Parameter] public List<string> ReportoCargos { get; set; } = new();
+    [Parameter] public List<string> ReportoEmpresas { get; set; } = new();
+    [Parameter] public List<ElementoTrazado> Torres { get; set; } = new();
+    [Parameter] public Dictionary<int, Componente> Componentes { get; set; } = new();
+    [Parameter] public List<ItemCatalogo> Localizaciones { get; set; } = new();
+    [Parameter] public List<Tiro> Tiros { get; set; } = new();
+    // Riesgos que se pueden asociar (Id, etiqueta "R-04 (V5) — descripción"). Los ya asociados que no
+    // estén aquí (en Papelera, de otra versión) se muestran con su etiqueta de EtiquetasRiesgo.
+    [Parameter] public List<(int Id, string Etiqueta)> RiesgosOpciones { get; set; } = new();
+    [Parameter] public Dictionary<int, string> EtiquetasRiesgo { get; set; } = new();
+    // Fichas del origen (seguimiento) que muestra la página.
+    [Parameter] public RenderFragment? Origen { get; set; }
+    // Una acción ya guardada se elimina a la Papelera con aviso de impacto: lo decide la página.
+    [Parameter] public EventCallback<PlanesAccionServicio.AccionEditable> OnEliminarGuardada { get; set; }
+    [Parameter] public EventCallback<string> OnError { get; set; }
+    // Vista "Acciones" (clic en una acción de la lista): sin los campos del plan, con la acción elegida resaltada.
+    [Parameter] public bool SoloAcciones { get; set; }
+    [Parameter] public int? AccionFoco { get; set; }
+
+    private static List<string> ConActual(List<string> l, string? actual)
+    {
+        var r = l.ToList();
+        if (!string.IsNullOrWhiteSpace(actual) && !r.Contains(actual, StringComparer.OrdinalIgnoreCase)) r.Insert(0, actual);
+        return r;
+    }
+
+    private int vueltaRiesgo;
+
+    private string EtiquetaRiesgo(int id) =>
+        EtiquetasRiesgo.TryGetValue(id, out var e) ? e : RiesgosOpciones.FirstOrDefault(o => o.Id == id).Etiqueta ?? $"Riesgo #{id}";
+
+    private void AgregarRiesgo(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), out var id) && !Modelo.Riesgos.Contains(id)) Modelo.Riesgos.Add(id);
+        vueltaRiesgo++;
+    }
+
+    private void AgregarAccion() =>
+        Modelo.Acciones.Add(new PlanesAccionServicio.AccionEditable
+        {
+            Accion = new AccionPlan { Fecha = DateTime.Today },
+            Productos = new() { new PlanesAccionServicio.ProductoEditable() }
+        });
+
+    // Un producto quitado se lleva sus anexos ya guardados a la Papelera (al guardar el plan).
+    private void QuitarProducto(PlanesAccionServicio.AccionEditable ae, PlanesAccionServicio.ProductoEditable pe)
+    {
+        ae.Productos.Remove(pe);
+        Modelo.AnexosQuitados.AddRange(pe.Anexos.Where(x => x.Id > 0));
+    }
+
+    private void QuitarAnexo(PlanesAccionServicio.ProductoEditable pe, ArchivoAccionPlan x)
+    {
+        pe.Anexos.Remove(x);
+        if (x.Id > 0) Modelo.AnexosQuitados.Add(x);
+    }
+
+    private async Task Quitar(PlanesAccionServicio.AccionEditable ae)
+    {
+        if (ae.Accion.Id == 0) { Modelo.Acciones.Remove(ae); return; }
+        await OnEliminarGuardada.InvokeAsync(ae);
+    }
+
+    // Los anexos se suben al disco de una vez y se registran al guardar el plan.
+    private async Task Subir(PlanesAccionServicio.ProductoEditable pe, InputFileChangeEventArgs e)
+    {
+        try
+        {
+            foreach (var f in e.GetMultipleFiles(20))
+            {
+                var (nombre, ruta) = await AlmacenAnexos.GuardarAsync(f, Env.WebRootPath, "planes-accion");
+                pe.Anexos.Add(new ArchivoAccionPlan { NombreOriginal = nombre, RutaArchivo = ruta });
+            }
+        }
+        catch (Exception ex) { await OnError.InvokeAsync("No se pudo adjuntar: " + ex.Message); }
+    }
+}

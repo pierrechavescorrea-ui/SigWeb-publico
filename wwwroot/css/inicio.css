@@ -1,0 +1,213 @@
+/* ===== Tablero de inicio (Home.razor) — clases ini-* =====
+   Alto = lo que queda de pantalla (js/inicio.js): indicadores arriba; bandeja y columna lateral reparten el resto. */
+.ini-tablero {
+    --ini-sup: var(--t-superficie, #fff);
+    --ini-sup-2: var(--t-superficie-2, #f5f7fa);
+    --ini-borde: var(--t-borde, #e3e7ee);
+    --ini-texto: var(--t-texto, #1f2a3a);
+    --ini-texto-2: var(--t-texto-2, #6b7686);
+    --ini-radio: var(--t-radio-g, 10px);
+    --ini-sombra: var(--t-sombra, 0 1px 2px rgba(16,24,40,.05), 0 1px 3px rgba(16,24,40,.07));
+    --ini-acento: var(--sig-rojo, #EC1C24);
+    display: flex; flex-direction: column; gap: 10px; min-height: 0;
+}
+.ini-rojo  { --ini-tono: #d93636; --ini-tono-suave: rgba(217,54,54,.11); }
+.ini-ambar { --ini-tono: #c98200; --ini-tono-suave: rgba(232,163,23,.15); }
+.ini-verde { --ini-tono: #2e9d5b; --ini-tono-suave: rgba(46,157,91,.12); }
+.ini-gris  { --ini-tono: #7a8494; --ini-tono-suave: rgba(122,132,148,.13); }
+
+.ini-ajustes { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.ini-ajustes .form-select { max-width: 220px; }
+
+/* ---------- Indicadores ---------- */
+.ini-kpis {
+    display: grid;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: 10px;
+    flex: none;
+}
+@media (max-width: 1100px) { .ini-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 640px)  { .ini-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.ini-kpi {
+    position: relative;
+    display: flex; align-items: flex-start; gap: 10px;
+    padding: 9px 12px 8px;
+    background: var(--ini-sup);
+    border: 1px solid var(--ini-borde);
+    border-radius: var(--ini-radio);
+    box-shadow: var(--ini-sombra);
+    color: var(--ini-texto); text-decoration: none;
+    overflow: hidden;
+    transition: border-color .15s, box-shadow .15s;
+}
+.ini-kpi::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--ini-tono); }
+.ini-kpi:hover { border-color: var(--ini-acento); box-shadow: 0 4px 14px rgba(16,24,40,.10); color: var(--ini-texto); }
+.ini-kpi-ico {
+    flex: 0 0 30px; height: 30px; margin-top: 2px;
+    display: inline-flex; align-items: center; justify-content: center;
+    border-radius: 8px;
+    background: var(--ini-tono-suave); color: var(--ini-tono);
+}
+.ini-kpi-txt { display: flex; flex-direction: column; min-width: 0; line-height: 1.15; }
+.ini-kpi-t { font-size: .7rem; font-weight: 600; letter-spacing: .02em; color: var(--ini-texto-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ini-kpi-n { font-size: 1.45rem; font-weight: 700; color: var(--ini-texto); font-variant-numeric: tabular-nums; }
+.ini-kpi-sub { font-size: .7rem; color: var(--ini-tono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ---------- Cuerpo: bandeja + columna lateral ---------- */
+.ini-cuerpo {
+    display: grid;
+    grid-template-columns: minmax(0, 1.7fr) minmax(300px, 1fr);
+    gap: 10px;
+    flex: 1 1 auto; min-height: 0;
+}
+.ini-cuerpo.ini-sin-lateral { grid-template-columns: minmax(0, 1fr); }
+.ini-lateral { display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+@media (max-width: 1000px) {
+    .ini-cuerpo { grid-template-columns: minmax(0, 1fr); }
+}
+
+.ini-panel {
+    display: flex; flex-direction: column;
+    min-height: 0;
+    background: var(--ini-sup);
+    border: 1px solid var(--ini-borde);
+    border-radius: var(--ini-radio);
+    box-shadow: var(--ini-sombra);
+    overflow: hidden;
+}
+.ini-panel-cab {
+    display: flex; align-items: center; gap: 8px; flex: none;
+    padding: 7px 10px;
+    border-bottom: 1px solid var(--ini-borde);
+}
+.ini-panel-ico { color: var(--ini-acento); display: inline-flex; }
+.ini-panel-tit { flex: 1 1 auto; min-width: 0; margin: 0; font-size: .82rem; font-weight: 600; color: var(--ini-texto); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ini-ir {
+    flex: none;
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 26px; height: 26px; border-radius: 6px;
+    color: var(--ini-texto-2); text-decoration: none;
+}
+.ini-ir:hover { background: var(--ini-sup-2); color: var(--ini-acento); }
+
+/* Pestañas de la bandeja */
+.ini-tabs-cab {
+    display: flex; align-items: center; gap: 4px; flex: none;
+    padding: 0 6px;
+    border-bottom: 1px solid var(--ini-borde);
+}
+.ini-tabs {
+    display: flex; align-items: stretch; gap: 0; flex: 1 1 auto; min-width: 0;
+    overflow-x: auto; scrollbar-width: none;
+}
+.ini-tabs::-webkit-scrollbar { display: none; }
+.ini-tab {
+    display: inline-flex; align-items: center; gap: 6px; flex: none;
+    padding: 8px 10px 7px;
+    border: 0; border-bottom: 2px solid transparent;
+    background: none;
+    font-size: .76rem; font-weight: 600; color: var(--ini-texto-2);
+    cursor: pointer; white-space: nowrap;
+}
+.ini-tab:hover { color: var(--ini-texto); }
+.ini-tab.activa { color: var(--ini-texto); border-bottom-color: var(--ini-acento); }
+.ini-tab.activa svg { color: var(--ini-acento); }
+.ini-tab-n {
+    min-width: 20px; padding: 0 6px;
+    border-radius: 999px;
+    background: var(--ini-tono-suave); color: var(--ini-tono);
+    font-size: .68rem; font-weight: 700; text-align: center; font-variant-numeric: tabular-nums;
+}
+
+/* Listas: los elementos que caben (js/inicio.js) y "+N" al módulo */
+.ini-lista { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; overflow: hidden; }
+.ini-item { flex: none; color: var(--ini-texto); text-decoration: none; }
+.ini-item:hover { background: var(--ini-sup-2); color: var(--ini-texto); }
+.ini-mas {
+    flex: none;
+    padding: 4px 12px;
+    border-top: 1px solid var(--ini-borde);
+    font-size: .74rem; font-weight: 600; text-align: right;
+    color: var(--ini-texto-2); text-decoration: none;
+}
+.ini-mas:hover { color: var(--ini-acento); background: var(--ini-sup-2); }
+.ini-vacio { flex: 1 1 auto; display: flex; align-items: center; justify-content: center; font-size: 1.8rem; color: #2e9d5b; opacity: .5; }
+
+/* Fila de la bandeja: marca de color · elemento · detalle · estado */
+.ini-fila {
+    display: grid;
+    grid-template-columns: minmax(110px, 30%) minmax(0, 1fr) auto;
+    align-items: center; gap: 10px;
+    padding: 6px 12px 6px 14px;
+    border-bottom: 1px solid var(--ini-borde);
+    position: relative;
+}
+.ini-fila::before { content: ""; position: absolute; left: 0; top: 6px; bottom: 6px; width: 3px; border-radius: 0 2px 2px 0; background: var(--ini-tono); }
+.ini-fila:hover::before { background: var(--ini-acento); }
+.ini-fila-tit { font-size: .8rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ini-fila-det { font-size: .76rem; color: var(--ini-texto-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ini-chip {
+    flex: none;
+    padding: 1px 8px; border-radius: 999px;
+    background: var(--ini-tono-suave); color: var(--ini-tono);
+    font-size: .7rem; font-weight: 700; white-space: nowrap; font-variant-numeric: tabular-nums;
+}
+
+/* Matriz PIE */
+.ini-pie { flex: 1 1 auto; min-height: 180px; }
+.ini-pie-resumen {
+    display: flex; align-items: center; gap: 14px; flex: none;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--ini-borde);
+    color: var(--ini-texto); text-decoration: none;
+}
+.ini-pie-resumen:hover { background: var(--ini-sup-2); color: var(--ini-texto); }
+.ini-anillo {
+    --p: 0;
+    flex: 0 0 76px; height: 76px; border-radius: 50%;
+    display: inline-flex; align-items: center; justify-content: center;
+    background: conic-gradient(var(--ini-tono) calc(var(--p) * 1%), var(--ini-sup-2) 0);
+}
+.ini-anillo > span {
+    width: 60px; height: 60px; border-radius: 50%;
+    display: inline-flex; align-items: center; justify-content: center;
+    background: var(--ini-sup);
+    font-weight: 700; font-size: .95rem; color: var(--ini-texto); font-variant-numeric: tabular-nums;
+}
+.ini-pie-datos { display: flex; flex-direction: column; gap: 4px; font-size: .74rem; color: var(--ini-texto-2); }
+.ini-pie-datos b { font-size: .95rem; color: var(--ini-texto); margin-right: 4px; font-variant-numeric: tabular-nums; }
+.ini-barra {
+    display: grid;
+    grid-template-columns: minmax(48px, 22%) minmax(0, 1fr) 44px auto;
+    align-items: center; gap: 8px;
+    padding: 5px 12px;
+}
+.ini-barra-tit { font-size: .76rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ini-barra-pista { height: 6px; border-radius: 999px; background: var(--ini-sup-2); overflow: hidden; }
+.ini-barra-pista > span { display: block; height: 100%; border-radius: 999px; background: var(--ini-tono); }
+.ini-barra-pct { font-size: .72rem; color: var(--ini-texto-2); text-align: right; font-variant-numeric: tabular-nums; }
+
+/* Mapa de calor de riesgos */
+.ini-mapa { flex: none; }
+.ini-rejilla {
+    display: grid;
+    grid-template-columns: 24px repeat(5, minmax(0, 1fr));
+    gap: 3px;
+    padding: 6px 12px 6px 8px;
+}
+.ini-eje { display: flex; align-items: center; justify-content: center; font-size: .62rem; font-weight: 600; color: var(--ini-texto-2); }
+.ini-celda {
+    display: flex; align-items: center; justify-content: center;
+    height: 20px; border-radius: 4px;
+    background: var(--c); color: var(--ct);
+    font-size: .74rem; font-weight: 700; text-decoration: none;
+    font-variant-numeric: tabular-nums;
+}
+.ini-celda.vacia { opacity: .2; }
+.ini-celda:hover { color: var(--ct); outline: 2px solid var(--ini-acento); outline-offset: 1px; opacity: 1; }
+
+/* Los temas pintan todo vínculo con su acento (html[data-tema] a): aquí manda el color del tablero. */
+.ini-tablero a.ini-kpi, .ini-tablero a.ini-item, .ini-tablero a.ini-pie-resumen { color: var(--ini-texto); }
+.ini-tablero a.ini-celda { color: var(--ct); }
+.ini-tablero a.ini-ir, .ini-tablero a.ini-mas { color: var(--ini-texto-2); }
+.ini-tablero a.ini-ir:hover, .ini-tablero a.ini-mas:hover { color: var(--ini-acento); }

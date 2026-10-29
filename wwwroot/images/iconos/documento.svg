@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <!-- Documento / informe (genérico) -->
+  <path d="M8 3 L20 3 L26 9 L26 29 L8 29 Z" fill="#F2F2F2" stroke="#5b5b5b" stroke-width="1.4" stroke-linejoin="round"/>
+  <path d="M20 3 L20 9 L26 9 Z" fill="#D6D6D6" stroke="#5b5b5b" stroke-width="1.2" stroke-linejoin="round"/>
+  <line x1="11.5" y1="15" x2="22.5" y2="15" stroke="#8a8a8a" stroke-width="1.2"/>
+  <line x1="11.5" y1="19" x2="22.5" y2="19" stroke="#8a8a8a" stroke-width="1.2"/>
+  <line x1="11.5" y1="23" x2="18" y2="23" stroke="#8a8a8a" stroke-width="1.2"/>
+</svg>

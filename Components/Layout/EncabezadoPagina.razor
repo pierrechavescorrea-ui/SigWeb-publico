@@ -1,0 +1,98 @@
+@inject SigWeb.Data.Iconos.IconosApp IconosApp
+@inject NavigationManager Nav
+<div class="pg-cab">
+    <div class="pg-titulo">
+        @if (OnAtras.HasDelegate)
+        {
+            <button type="button" class="pg-atras border-0" title="Volver" aria-label="Volver" @onclick="OnAtras">
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>
+            </button>
+        }
+        else if (Atras is not null)
+        {
+            <a href="@Atras" class="pg-atras" title="Volver" aria-label="Volver">
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>
+            </a>
+        }
+        else
+        {
+            <button type="button" class="pg-atras border-0" title="Volver" aria-label="Volver"
+                    onclick="if (history.length > 1) history.back(); else location.href = '/';">
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>
+            </button>
+        }
+        <span class="pg-logo" aria-hidden="true">
+            @if (!string.IsNullOrEmpty(IconoUrl))
+            {
+                <img src="@IconoUrl" alt="" width="24" height="24" style="object-fit:contain;" />
+            }
+            else if (IconosApp.Ruta("cab:" + Icono) is string asignado)
+            {
+                <img src="@asignado" alt="" width="24" height="24" style="object-fit:contain;" />
+            }
+            else
+            {
+                <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">@((MarkupString)Trazos(Icono))</svg>
+            }
+        </span>
+        <div class="pg-textos">
+            @{ var modulo = SigWeb.Data.Navegacion.MapaNavegacion.De(Nav.ToBaseRelativePath(Nav.Uri)); }
+            @if (modulo is not null)
+            {
+                @* Ruta de navegación: grupo › módulo (el módulo lleva a su pantalla principal). *@
+                <nav class="pg-migas" aria-label="Ruta">
+                    <span>@modulo.Grupo</span>
+                    <span class="pg-migas-sep" aria-hidden="true">›</span>
+                    <a href="@modulo.Href" data-modulo>@modulo.Nombre</a>
+                </nav>
+            }
+            <div class="pg-titulo-linea">
+                <h4 class="mb-0">@Titulo</h4>
+                <button type="button" class="pg-fav" title="Agregar a favoritos" aria-label="Favorito">
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3.5 2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z" /></svg>
+                </button>
+            </div>
+            @if (!string.IsNullOrEmpty(Subtitulo)) { <div class="pg-sub">@Subtitulo</div> }
+        </div>
+    </div>
+    @if (Acciones is not null)
+    {
+        <div class="pg-acciones">@Acciones</div>
+    }
+</div>
+
+@code {
+    [Parameter] public string Titulo { get; set; } = "";
+    [Parameter] public string? Subtitulo { get; set; }
+    [Parameter] public string Icono { get; set; } = "cubo";
+    [Parameter] public string? IconoUrl { get; set; }
+    [Parameter] public string? Atras { get; set; }
+    [Parameter] public RenderFragment? Acciones { get; set; }
+    // Si se indica, el botón «volver» ejecuta esto en vez de navegar (vistas internas de una misma página).
+    [Parameter] public EventCallback OnAtras { get; set; }
+
+    public static string Trazos(string clave) => clave switch
+    {
+        "inicio" => "<rect x=\"3.5\" y=\"3.5\" width=\"7\" height=\"9\" rx=\"1.5\"/><rect x=\"13.5\" y=\"3.5\" width=\"7\" height=\"5\" rx=\"1.5\"/><rect x=\"13.5\" y=\"11.5\" width=\"7\" height=\"9\" rx=\"1.5\"/><rect x=\"3.5\" y=\"15.5\" width=\"7\" height=\"5\" rx=\"1.5\"/>",
+        "indicadores" => "<path d=\"M3 3v18h18\"/><path d=\"m7 15 4-4 3 3 5-6\"/><path d=\"M19 8V5h-3\"/>",
+        "riesgos" => "<path d=\"M10.3 3.9 1.9 18.4A2 2 0 0 0 3.6 21.4h16.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z\"/><path d=\"M12 9v4.5M12 17.2v.1\"/>",
+        "plan-accion" => "<rect x=\"5\" y=\"3.5\" width=\"14\" height=\"18\" rx=\"2\"/><path d=\"M9 2.5h6v3H9z\"/><path d=\"m8.5 11.5 1.6 1.6 3.2-3.2M8.5 17h7\"/>",
+        "temas" => "<circle cx=\"12\" cy=\"12\" r=\"9\"/><circle cx=\"8.5\" cy=\"10\" r=\"1.3\"/><circle cx=\"12\" cy=\"7.5\" r=\"1.3\"/><circle cx=\"15.5\" cy=\"10\" r=\"1.3\"/><path d=\"M12 21a2.5 2.5 0 0 1 0-5h2a3 3 0 0 0 3-3\"/>",
+        "ifc" => "<path d=\"M12 2.5 4 7v9l8 4.5 8-4.5V7z\"/><path d=\"M4 7l8 4.5L20 7M12 11.5v9\"/><path d=\"M15.5 13.5l2.5-1.4M15.5 16l2.5-1.4\"/>",
+        "avance-obra" => "<path d=\"M3 21h18\"/><path d=\"M7.5 21 11 3h2l3.5 18\"/><path d=\"M9.2 14h5.6M10.4 8.5h3.2\"/><path d=\"m8.3 21 7.1-7M15.7 21l-7.1-7\"/>",
+        "linea3d" => "<path d=\"M3 20h18M7 20 9 6l2 14M13 20l2-14 2 14\"/><path d=\"M4 9c3 2 6 2 8 0s5-2 8 0\"/>",
+        "matriz" => "<path d=\"M4 4h16v16H4z\"/><path d=\"M4 9.3h16M4 14.7h16M9.3 4v16M14.7 4v16\"/><path d=\"M11 11.5l1.2 1.2 2.3-2.4\"/>",
+        "trazado" => "<path d=\"M12 21s-7-6.2-7-11a7 7 0 0114 0c0 4.8-7 11-7 11z\"/><circle cx=\"12\" cy=\"10\" r=\"2.5\"/>",
+        "papelera" => "<path d=\"M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6\"/>",
+        "materiales" => "<path d=\"M3 8l9-5 9 5v8l-9 5-9-5z\"/><path d=\"M3 8l9 5 9-5M12 13v8\"/>",
+        "catalogos" => "<path d=\"M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3z\"/><path d=\"M5 17a3 3 0 0 1 3-3h11M9 8h6\"/>",
+        "planos" => "<path d=\"M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z\"/><path d=\"M8 14h8\"/>",
+        "comunicados" => "<rect x=\"3\" y=\"5\" width=\"18\" height=\"14\" rx=\"2\"/><path d=\"m3.5 6.5 8.5 6 8.5-6\"/>",
+        "documentos" => "<path d=\"M6 3h8l4 4v14H6z\"/><path d=\"M14 3v4h4M9 12h6M9 16h6\"/>",
+        "actividades" => "<path d=\"M9 6h11M9 12h11M9 18h11\"/><path d=\"M3.5 6l1.2 1.2L7 5M3.5 12l1.2 1.2L7 11M3.5 18l1.2 1.2L7 17\"/>",
+        "equipos" => "<path d=\"M4 15a8 8 0 0 1 16 0\"/><path d=\"M12 15l4-5M4 19h16\"/><path d=\"M6.3 9.8l1 .8M12 7v1.3M17.7 9.8l-1 .8\"/>",
+        "dossier" => "<path d=\"M3.5 4h17v4h-17z\"/><path d=\"M5 8v12h14V8\"/><path d=\"M10 12h4\"/>",
+        "ensayos" => "<path d=\"M9 3h6M10 3v6l-5.5 9.5A2 2 0 0 0 6.2 21h11.6a2 2 0 0 0 1.7-2.5L14 9V3\"/><path d=\"M7.5 15h9\"/>",
+        _ => "<path d=\"M12 2.5 4 7v9l8 4.5 8-4.5V7z\"/><path d=\"M4 7l8 4.5L20 7M12 11.5v9\"/>",
+    };
+}

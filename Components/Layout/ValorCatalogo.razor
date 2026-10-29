@@ -1,0 +1,40 @@
+@* Muestra un valor de catálogo con el formato que su ítem tenga en Catálogos
+   (píldora, celda o texto de color). Sin formato: texto normal, o la
+   píldora por defecto si se indica (FondoDef/TextoDef). *@
+@inject SigWeb.Data.Catalogos.EstilosCatalogo Estilos
+@{
+    var e = Estilos.Estilo(Tipo, Valor);
+}
+@if (string.IsNullOrWhiteSpace(Valor))
+{
+}
+else if (e is not null)
+{
+    var peso = e.Negrita ? "600" : "400";
+    if (e.Forma == "texto")
+    {
+        <span class="@Clase" style="color:@e.ColorTexto;font-weight:@peso">@Valor</span>
+    }
+    else
+    {
+        <span class="@(e.Forma == "celda" ? "vc-celda" : "rg-pill") @Clase" style="background:@e.ColorFondo;color:@e.ColorTexto;font-weight:@peso">@Valor</span>
+    }
+}
+else if (FondoDef is not null)
+{
+    <span class="rg-pill @Clase" style="background:@FondoDef;color:@(TextoDef ?? "#1f2a3a")">@Valor</span>
+}
+else
+{
+    <span class="@(ClaseSinFormato ?? Clase)">@Valor</span>
+}
+
+@code {
+    [Parameter] public string Tipo { get; set; } = "";
+    [Parameter] public string? Valor { get; set; }
+    [Parameter] public string? FondoDef { get; set; }
+    [Parameter] public string? TextoDef { get; set; }
+    [Parameter] public string? Clase { get; set; }
+    // Clase cuando el ítem no tiene formato (p. ej. "rg-chip" para mostrarlo como ficha).
+    [Parameter] public string? ClaseSinFormato { get; set; }
+}

@@ -1,0 +1,1794 @@
+@* Captura manual (o edición) de un resultado de ensayo, a partir de la
+   plantilla de campos del Tipo de Ensayo. Los campos de tipo Fórmula se
+   recalculan solos mientras se escribe; Torre y Elemento se resuelven
+   igual que en la carga por Excel, para que este resultado también
+   aparezca automáticamente en Trazado. *@
+@using System.Globalization
+@using Microsoft.AspNetCore.Components.Forms
+@using Microsoft.EntityFrameworkCore
+@using SigWeb.Data
+@using SigWeb.Data.Ensayos
+@using SigWeb.Models
+@inject AppDbContext Db
+@inject IWebHostEnvironment Env
+
+<div class="modal-backdrop-custom">
+    <div class="modal-box-custom" style="@(cantidadCilindros > 1 ? "max-width: 96vw; width: 96vw;" : "max-width: 900px;")">
+        @if (guardando)
+        {
+            <div class="overlay-procesando">
+                <div class="spinner-border text-primary" role="status"></div>
+                <div>Guardando...</div>
+            </div>
+        }
+
+        <div class="d-flex justify-content-between align-items-center mb-2">
+            <h5 class="mb-0">
+                @(esEdicion
+                    ? (editandoLote ? $"Editar muestra ({cantidadCilindros} {(ClaveCampoCilindro is not null ? "cilindros" : "resultados")})" : "Editar resultado")
+                    : (cantidadCilindros > 1 ? $"Agregar {(ClaveCampoCilindro is not null ? $"muestra ({cantidadCilindros} cilindros)" : $"{cantidadCilindros} resultados")}" : "Agregar resultado"))
+            </h5>
+            <button type="button" class="btn-close" aria-label="Cerrar" @onclick="Cerrar"></button>
+        </div>
+
+        @if (usaTorre)
+        {
+            <div class="row g-2 mb-2">
+                <div class="col-md-4">
+                    <label class="form-label mb-1 small">Torre</label>
+                    <input class="form-control form-control-sm" list="listaTorresDialogo" value="@torreTexto"
+                           @oninput="@(e => { torreTexto = e.Value?.ToString() ?? ""; ActualizarPreviewElemento(); })" placeholder="Código de torre" />
+                    <datalist id="listaTorresDialogo">
+                        @foreach (var t in torresDisponibles)
+                        {
+                            <option value="@t"></option>
+                        }
+                    </datalist>
+                    @if (!string.IsNullOrWhiteSpace(torreTexto) && !torreResuelta)
+                    {
+                        <div class="form-text text-warning">No se encontró esa torre; se guarda sin asociar.</div>
+                    }
+                </div>
+                @if (!ModoLote && mostrarElemento)
+                {
+                    <div class="col-md-4">
+                        <label class="form-label mb-1 small">Elemento (pata)</label>
+                        <input class="form-control form-control-sm" value="@elementoTexto"
+                               @oninput="@(e => { elementoTexto = e.Value?.ToString() ?? ""; ActualizarPreviewElemento(); })" placeholder="Ej: B, BC, B (PED)..." />
+                        <div class="form-text">@previewElemento</div>
+                    </div>
+                }
+                @if (!ModoLote && mostrarInforme)
+                {
+                    <div class="col-md-4">
+                        <label class="form-label mb-1 small">No. Informe</label>
+                        <input class="form-control form-control-sm" @bind="informeNumero" placeholder="Opcional" />
+                    </div>
+                }
+            </div>
+
+            <div class="row g-2 mb-2">
+                @if (mostrarDisenoMezcla)
+                {
+                    <div class="col-md-6">
+                        <label class="form-label mb-1 small">Diseño de mezcla — código</label>
+                        <input class="form-control form-control-sm mb-1" @bind="disenoMezclaCodigo" placeholder="Ej: BO-DP-295-2026" />
+                        <InputFile class="form-control form-control-sm" OnChange="SeleccionarDisenoMezcla" accept=".pdf,image/*" />
+                        @if (!string.IsNullOrWhiteSpace(disenoMezclaArchivoActual))
+                        {
+                            <div class="form-text"><a href="@disenoMezclaArchivoActual" target="_blank" rel="noopener" class="text-decoration-none">📄 Archivo actual</a></div>
+                        }
+                    </div>
+                }
+                @if (!ModoLote && mostrarInforme)
+                {
+                    <div class="col-md-6">
+                        <label class="form-label mb-1 small">Informe — adjuntar PDF(s)</label>
+                        <InputFile class="form-control form-control-sm" OnChange="SeleccionarArchivosInforme" multiple accept=".pdf" />
+                        @if (archivosInformeExistentes.Count > 0)
+                        {
+                            <ul class="small ps-3 mt-1 mb-0">
+                                @foreach (var archivoExistente in archivosInformeExistentes)
+                                {
+                                    <li>
+                                        <a href="@archivoExistente.RutaArchivo" target="_blank" rel="noopener" class="text-decoration-none">📄 @archivoExistente.NombreOriginal</a>
+                                        <button type="button" class="btn btn-link btn-sm text-danger p-0 ms-1" title="Quitar"
+                                                @onclick="() => EliminarArchivoInformeExistente(archivoExistente, archivosInformeExistentes)">✕</button>
+                                    </li>
+                                }
+                            </ul>
+                        }
+                    </div>
+                }
+            </div>
+        }
+        else
+        {
+            <div class="row g-2 mb-2">
+                <div class="col-md-3">
+                    <label class="form-label mb-1 small">Localización</label>
+                    <input class="form-control form-control-sm" list="listaLocalizacionesDialogo" value="@localizacionTexto"
+                           @oninput="@(e => { localizacionTexto = e.Value?.ToString() ?? ""; confirmandoNuevaLocalizacion = false; ActualizarPreviewElemento(); })"
+                           placeholder="Ej: PR12+300, Sitio 3, Vía El Pepino..." />
+                    <datalist id="listaLocalizacionesDialogo">
+                        @foreach (var l in localizacionesDisponibles)
+                        {
+                            <option value="@l"></option>
+                        }
+                    </datalist>
+                </div>
+                @if (!ModoLote && mostrarElemento)
+                {
+                    <div class="col-md-3">
+                        <label class="form-label mb-1 small">Elemento</label>
+                        <input class="form-control form-control-sm" value="@elementoTexto"
+                               @oninput="@(e => { elementoTexto = e.Value?.ToString() ?? ""; ActualizarPreviewElemento(); })" placeholder="Ej: Capa 1, Relleno, A, B, Trincho..." />
+                        <div class="form-text">@previewElemento</div>
+                    </div>
+                }
+                @if (!ModoLote && mostrarInforme)
+                {
+                    <div class="col-md-3">
+                        <label class="form-label mb-1 small">No. Informe</label>
+                        <input class="form-control form-control-sm" @bind="informeNumero" placeholder="Opcional" />
+                    </div>
+                }
+                @if (!ModoLote && mostrarFechaEjecucion)
+                {
+                    <div class="col-md-3">
+                        <label class="form-label mb-1 small">Fecha de ejecución</label>
+                        <input type="date" class="form-control form-control-sm" value="@fechaEjecucionTexto"
+                               @onchange="@(e => fechaEjecucionTexto = e.Value?.ToString() ?? "")" />
+                    </div>
+                }
+            </div>
+
+            @if (confirmandoNuevaLocalizacion)
+            {
+                <div class="alert alert-warning py-2 small d-flex justify-content-between align-items-center flex-wrap gap-2 mb-2">
+                    <span>La localización "<strong>@localizacionPendienteTexto</strong>" no existe en el catálogo. ¿Deseas agregarla y continuar?</span>
+                    <span class="d-flex gap-2">
+                        <button type="button" class="btn btn-sm btn-primary" @onclick="ConfirmarNuevaLocalizacion">Sí, agregar y guardar</button>
+                        <button type="button" class="btn btn-sm btn-secondary" @onclick="CancelarNuevaLocalizacion" title="Cancelar"><Ico Nombre="cancelar" /></button>
+                    </span>
+                </div>
+            }
+
+            @if (!ModoLote && mostrarInforme)
+            {
+                <div class="row g-2 mb-2">
+                    <div class="col-md-6">
+                        <label class="form-label mb-1 small">Informe — adjuntar PDF(s)</label>
+                        <InputFile class="form-control form-control-sm" OnChange="SeleccionarArchivosInforme" multiple accept=".pdf" />
+                        @if (archivosInformeExistentes.Count > 0)
+                        {
+                            <ul class="small ps-3 mt-1 mb-0">
+                                @foreach (var archivoExistente in archivosInformeExistentes)
+                                {
+                                    <li>
+                                        <a href="@archivoExistente.RutaArchivo" target="_blank" rel="noopener" class="text-decoration-none">📄 @archivoExistente.NombreOriginal</a>
+                                        <button type="button" class="btn btn-link btn-sm text-danger p-0 ms-1" title="Quitar"
+                                                @onclick="() => EliminarArchivoInformeExistente(archivoExistente, archivosInformeExistentes)">✕</button>
+                                    </li>
+                                }
+                            </ul>
+                        }
+                    </div>
+                </div>
+            }
+        }
+
+        @if (!esEdicion)
+        {
+            <div class="row g-2 mb-2 align-items-end">
+                <div class="col-md-3">
+                    <label class="form-label mb-1 small">@(ClaveCampoCilindro is not null ? "Cilindros de la muestra" : "Resultados a agregar")</label>
+                    <input type="number" min="1" max="24" class="form-control form-control-sm" value="@cantidadCilindros"
+                           @onchange="@(e => CambiarCantidadCilindros(e.Value?.ToString()))" />
+                </div>
+                @if (cantidadCilindros > 1 && ClaveCampoMuestra is not null)
+                {
+                    <div class="col-md-3">
+                        <label class="form-label mb-1 small">No. Muestra (para los @cantidadCilindros cilindros)</label>
+                        <input class="form-control form-control-sm" value="@ObtenerValor(ClaveCampoMuestra)"
+                               @onchange="@(e => ActualizarMuestraCompartida(e.Value?.ToString() ?? ""))" />
+                    </div>
+                }
+                @if (cantidadCilindros > 1 && ClaveCampoFechaMuestra is not null)
+                {
+                    <div class="col-md-3">
+                        <label class="form-label mb-1 small">Fecha muestra (para los @cantidadCilindros cilindros)</label>
+                        <input type="date" class="form-control form-control-sm" value="@ObtenerValor(ClaveCampoFechaMuestra)"
+                               @onchange="@(e => ActualizarFechaMuestraCompartida(e.Value?.ToString() ?? ""))" />
+                    </div>
+                }
+            </div>
+        }
+        @if (UsaInformePorEdadLote)
+        {
+            <div class="row g-2 mb-2">
+                <div class="col-12">
+                    <label class="form-label mb-1 small">No. de informe por edad de ensayo</label>
+                    <div class="d-flex flex-wrap gap-2">
+                        @foreach (var edad in EdadesUnicasEnLote)
+                        {
+                            <div style="min-width:220px;">
+                                <label class="form-label mb-1 small text-muted">@edad días</label>
+                                <input class="form-control form-control-sm mb-1" placeholder="No. Informe" value="@ObtenerInformeParaEdad(edad)"
+                                       @onchange="@(e => ActualizarInformeParaEdad(edad, e.Value?.ToString() ?? ""))" />
+                                <InputFile class="form-control form-control-sm" multiple accept=".pdf,.xlsx,.xls,.doc,.docx,image/*"
+                                           OnChange="@(e => SeleccionarArchivosEdad(edad, e))" />
+                                @if (archivosExistentesPorEdad.TryGetValue(edad, out var existentesEdad) && existentesEdad.Count > 0)
+                                {
+                                    <ul class="small ps-3 mt-1 mb-0">
+                                        @foreach (var archivoExistente in existentesEdad)
+                                        {
+                                            <li>
+                                                <a href="@archivoExistente.RutaArchivo" target="_blank" rel="noopener" class="text-decoration-none">📄 @archivoExistente.NombreOriginal</a>
+                                                <button type="button" class="btn btn-link btn-sm text-danger p-0 ms-1" title="Quitar"
+                                                        @onclick="() => EliminarArchivoInformeExistente(archivoExistente, existentesEdad)">✕</button>
+                                            </li>
+                                        }
+                                    </ul>
+                                }
+                            </div>
+                        }
+                    </div>
+                </div>
+            </div>
+        }
+
+        @if (!ModoLote && esElementoEspecial)
+        {
+            <div class="row g-2 mb-2">
+                <div class="col-md-4">
+                    <label class="form-label mb-1 small">Nombre para este elemento en Trazado</label>
+                    <input class="form-control form-control-sm" list="listaElementosEspecialesDialogo" @bind="elementoEspecialNombre" />
+                    <datalist id="listaElementosEspecialesDialogo">
+                        @foreach (var n in elementosEspecialesDeTorre)
+                        {
+                            <option value="@n"></option>
+                        }
+                    </datalist>
+                </div>
+            </div>
+        }
+
+        @if (ModoLote)
+        {
+            <div class="d-flex justify-content-end align-items-center gap-2 mb-1">
+                <label class="form-label mb-0 small text-muted">Tamaño de la tabla</label>
+                <input type="range" min="65" max="100" step="5" class="form-range" style="width:120px;" value="@escalaTablaLote"
+                       @oninput="@(e => escalaTablaLote = int.TryParse(e.Value?.ToString(), out var n) ? n : escalaTablaLote)" />
+                <span class="small text-muted" style="width:34px;">@(escalaTablaLote)%</span>
+            </div>
+            <div class="table-responsive mb-2 tabla-lote-cilindros modal-area-flexible" style="zoom:@(escalaTablaLote)%;">
+                <table class="table table-sm table-bordered align-middle mb-0">
+                    <thead>
+                        <tr>
+                            <th class="col-cilindro">@(ClaveCampoCilindro is not null ? "Cilindro" : "#")</th>
+                            <th class="th-campo-diligenciar">@(usaTorre ? "Elemento (pata)" : "Elemento")</th>
+                            @foreach (var campo in CamposTabla)
+                            {
+                                <th class="@(EsCampoResaltable(campo) ? "th-campo-diligenciar" : "")">@campo.Etiqueta@(string.IsNullOrEmpty(campo.Unidad) ? "" : $" ({campo.Unidad})")</th>
+                            }
+                            @if (!usaTorre)
+                            {
+                                <th class="th-campo-diligenciar">Fecha de ejecución</th>
+                            }
+                            @if (UsaInformePorFilaLote)
+                            {
+                                <th>No. Informe</th>
+                                <th>Informe (PDF)</th>
+                            }
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @for (var i = 0; i < filasCilindros.Count; i++)
+                        {
+                            var indice = i;
+                            var fila = filasCilindros[i];
+                            <tr>
+                                <td class="col-cilindro text-muted text-center fw-semibold">@(ClaveCampoCilindro is string cc ? ObtenerValorFila(fila, cc) : (indice + 1).ToString())</td>
+                                <td>
+                                    <input class="form-control form-control-sm" value="@ObtenerValorFila(fila, ClaveElementoFila)"
+                                           placeholder="@elementoTexto"
+                                           @onchange="@(e => ActualizarValorFila(indice, ClaveElementoFila, e.Value?.ToString() ?? ""))" />
+                                </td>
+                                @foreach (var campo in CamposTabla)
+                                {
+                                    <td>
+                                        @if (campo.Clave == ClaveCampoFechaEnsayo)
+                                        {
+                                            <span class="small text-muted" title="Se calcula sola: Fecha muestra + Edad">@ObtenerValorFila(fila, campo.Clave)</span>
+                                        }
+                                        else if (campo.TipoDato == TipoDatoCampoEnsayo.Formula)
+                                        {
+                                            <span class="small text-muted">@ObtenerValorFila(fila, campo.Clave)</span>
+                                        }
+                                        else if (EsCampoDiametro(campo))
+                                        {
+                                            <div class="d-flex gap-1 flex-nowrap">
+                                                <select class="form-select form-select-sm" value="@OpcionDiametro(ObtenerValorFila(fila, campo.Clave))"
+                                                        @onchange="@(e => ActualizarValorFila(indice, campo.Clave, e.Value?.ToString() == "otro" ? "" : e.Value?.ToString() ?? ""))">
+                                                    @foreach (var d in DiametrosPreset)
+                                                    {
+                                                        <option value="@d.Valor">@d.Etiqueta</option>
+                                                    }
+                                                    <option value="otro">Otro</option>
+                                                </select>
+                                                @if (OpcionDiametro(ObtenerValorFila(fila, campo.Clave)) == "otro")
+                                                {
+                                                    <input type="number" step="any" class="form-control form-control-sm" placeholder="mm" value="@ObtenerValorFila(fila, campo.Clave)"
+                                                           @onchange="@(e => ActualizarValorFila(indice, campo.Clave, e.Value?.ToString() ?? ""))" />
+                                                }
+                                            </div>
+                                        }
+                                        else if (campo.TipoDato == TipoDatoCampoEnsayo.Fecha)
+                                        {
+                                            <input type="date" class="form-control form-control-sm" value="@ObtenerValorFila(fila, campo.Clave)"
+                                                   @onchange="@(e => ActualizarValorFila(indice, campo.Clave, e.Value?.ToString() ?? ""))" />
+                                        }
+                                        else if (campo.TipoDato == TipoDatoCampoEnsayo.Numero)
+                                        {
+                                            <input type="number" step="any" class="form-control form-control-sm" value="@ObtenerValorFila(fila, campo.Clave)"
+                                                   @onchange="@(e => ActualizarValorFila(indice, campo.Clave, e.Value?.ToString() ?? ""))" />
+                                        }
+                                        else
+                                        {
+                                            <input class="form-control form-control-sm" value="@ObtenerValorFila(fila, campo.Clave)"
+                                                   @onchange="@(e => ActualizarValorFila(indice, campo.Clave, e.Value?.ToString() ?? ""))" />
+                                        }
+                                    </td>
+                                }
+                                @if (!usaTorre)
+                                {
+                                    <td>
+                                        <input type="date" class="form-control form-control-sm" value="@ObtenerValorFila(fila, ClaveFechaEjecucionFila)"
+                                               @onchange="@(e => ActualizarValorFila(indice, ClaveFechaEjecucionFila, e.Value?.ToString() ?? ""))" />
+                                    </td>
+                                }
+                                @if (UsaInformePorFilaLote)
+                                {
+                                    <td>
+                                        <input class="form-control form-control-sm" placeholder="Opcional" value="@ObtenerInformeParaFila(indice)"
+                                               @onchange="@(e => ActualizarInformeParaFila(indice, e.Value?.ToString() ?? ""))" />
+                                    </td>
+                                    <td>
+                                        <InputFile class="form-control form-control-sm" multiple accept=".pdf" OnChange="@(e => SeleccionarArchivosFila(indice, e))" />
+                                        @if (archivosExistentesPorFila.TryGetValue(indice, out var existentesFila) && existentesFila.Count > 0)
+                                        {
+                                            <ul class="small ps-3 mt-1 mb-0">
+                                                @foreach (var archivoExistente in existentesFila)
+                                                {
+                                                    <li>
+                                                        <a href="@archivoExistente.RutaArchivo" target="_blank" rel="noopener" class="text-decoration-none">📄 @archivoExistente.NombreOriginal</a>
+                                                        <button type="button" class="btn btn-link btn-sm text-danger p-0 ms-1" title="Quitar"
+                                                                @onclick="() => EliminarArchivoInformeExistente(archivoExistente, existentesFila)">✕</button>
+                                                    </li>
+                                                }
+                                            </ul>
+                                        }
+                                    </td>
+                                }
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+        else
+        {
+            <div class="row g-2 mb-2">
+                <div class="row g-2">
+                    @foreach (var campo in campos)
+                    {
+                        <div class="col-md-3">
+                            <label class="form-label mb-1 small @(EsCampoResaltable(campo) ? "label-campo-diligenciar" : "")">@campo.Etiqueta@(string.IsNullOrEmpty(campo.Unidad) ? "" : $" ({campo.Unidad})")</label>
+                            @if (campo.Clave == ClaveCampoFechaEnsayo)
+                            {
+                                <input class="form-control form-control-sm" readonly title="Se calcula sola: Fecha muestra + Edad" value="@ObtenerValor(campo.Clave)" />
+                            }
+                            else if (campo.TipoDato == TipoDatoCampoEnsayo.Formula)
+                            {
+                                <input class="form-control form-control-sm" readonly value="@ObtenerValor(campo.Clave)" />
+                            }
+                            else if (EsCampoDiametro(campo))
+                            {
+                                <select class="form-select form-select-sm" value="@OpcionDiametro(ObtenerValor(campo.Clave))"
+                                        @onchange="@(e => ActualizarValor(campo.Clave, e.Value?.ToString() == "otro" ? "" : e.Value?.ToString() ?? ""))">
+                                    @foreach (var d in DiametrosPreset)
+                                    {
+                                        <option value="@d.Valor">@d.Etiqueta</option>
+                                    }
+                                    <option value="otro">Otro (mm)</option>
+                                </select>
+                                @if (OpcionDiametro(ObtenerValor(campo.Clave)) == "otro")
+                                {
+                                    <input type="number" step="any" class="form-control form-control-sm mt-1" placeholder="mm" value="@ObtenerValor(campo.Clave)"
+                                           @onchange="@(e => ActualizarValor(campo.Clave, e.Value?.ToString() ?? ""))" />
+                                }
+                            }
+                            else if (campo.TipoDato == TipoDatoCampoEnsayo.Fecha)
+                            {
+                                <input type="date" class="form-control form-control-sm" value="@ObtenerValor(campo.Clave)"
+                                       @onchange="@(e => ActualizarValor(campo.Clave, e.Value?.ToString() ?? ""))" />
+                            }
+                            else if (campo.TipoDato == TipoDatoCampoEnsayo.Numero)
+                            {
+                                <input type="number" step="any" class="form-control form-control-sm" value="@ObtenerValor(campo.Clave)"
+                                       @onchange="@(e => ActualizarValor(campo.Clave, e.Value?.ToString() ?? ""))" />
+                            }
+                            else
+                            {
+                                <input class="form-control form-control-sm" value="@ObtenerValor(campo.Clave)"
+                                       @onchange="@(e => ActualizarValor(campo.Clave, e.Value?.ToString() ?? ""))" />
+                            }
+                        </div>
+                    }
+                </div>
+            </div>
+        }
+
+        @if (CamposConAdjunto.Count > 0)
+        {
+            <div class="row g-2 mb-2">
+                @foreach (var campo in CamposConAdjunto)
+                {
+                    <div class="col-md-4">
+                        <label class="form-label mb-1 small">📄 @campo.Etiqueta</label>
+                        <InputFile class="form-control form-control-sm" OnChange="@(e => SeleccionarAdjunto(campo.Clave, e.File))" />
+                        @if (adjuntosPendientes.TryGetValue(campo.Clave, out var pend))
+                        {
+                            <div class="small text-muted text-truncate">@pend.Name</div>
+                        }
+                        else if (adjuntosActuales.TryGetValue(campo.Clave, out var act) && !adjuntosQuitar.Contains(campo.Clave))
+                        {
+                            <div class="small d-flex justify-content-between">
+                                <a href="@act.Ruta" target="_blank" class="text-truncate text-decoration-none">📄 @act.Nombre</a>
+                                <button type="button" class="btn btn-sm btn-link text-danger p-0" title="Quitar adjunto" @onclick="() => adjuntosQuitar.Add(campo.Clave)">✕</button>
+                            </div>
+                        }
+                    </div>
+                }
+            </div>
+        }
+
+        @if (!string.IsNullOrEmpty(mensaje))
+        {
+            <div class="alert alert-warning py-1">@mensaje</div>
+        }
+
+        <div class="d-flex justify-content-end gap-2 mt-2">
+            <button class="btn btn-secondary btn-sm" @onclick="Cerrar" title="Cancelar"><Ico Nombre="cancelar" /></button>
+            <button class="btn btn-primary btn-sm" disabled="@guardando" @onclick="Guardar">@(guardando ? "Guardando..." : "Guardar")</button>
+        </div>
+    </div>
+</div>
+
+@code {
+    [Parameter] public int TipoEnsayoId { get; set; }
+    [Parameter] public int? ResultadoEnsayoId { get; set; }
+    [Parameter] public EventCallback OnCerrar { get; set; }
+    [Parameter] public EventCallback OnGuardado { get; set; }
+
+    private bool esEdicion => ResultadoEnsayoId is not null;
+    private List<CampoEnsayo> campos = new();
+    private List<string> torresDisponibles = new();
+
+    // true (por defecto): formulario ligado a Torre/Elemento(pata) de
+    // Trazado, como Resistencia a la compresión. false: ensayos que no
+    // corresponden a una torre puntual — pide Localización y Fecha de
+    // ejecución en su lugar (ver TipoEnsayo.UsaTorre).
+    private bool usaTorre = true;
+    // Visibilidad de columnas fijas, configurada en ⚙ Campos (ver
+    // TipoEnsayo.MostrarXxx) — oculta estos campos tanto aquí como en
+    // Vista Excel cuando el usuario no los usa para este tipo de ensayo.
+    private bool mostrarElemento = true;
+    private bool mostrarInforme = true;
+    private bool mostrarFechaEjecucion = true;
+    private bool mostrarDisenoMezcla = true;
+    private string localizacionTexto = "";
+    private string fechaEjecucionTexto = "";
+
+    // La Localización se hereda del catálogo "Localización" (el mismo que
+    // usa Materiales, ya sincronizado con las torres del trazado): se
+    // ofrece como autocompletar y, si el usuario escribe una que no
+    // existe, se le pregunta si quiere agregarla antes de guardar.
+    private const string TipoCatalogoLocalizacion = "Localización";
+    private List<string> localizacionesDisponibles = new();
+    private bool confirmandoNuevaLocalizacion = false;
+    private string localizacionPendienteTexto = "";
+
+    private string torreTexto = "";
+    private string elementoTexto = "";
+    private string previewElemento = "";
+    private bool esElementoEspecial = false;
+    private string elementoEspecialNombre = "";
+    private List<string> elementosEspecialesDeTorre = new();
+    private string informeNumero = "";
+    private string disenoMezclaCodigo = "";
+    private string? disenoMezclaArchivoActual;
+    private List<ArchivoInforme> archivosInformeExistentes = new();
+
+    private Dictionary<string, string> valores = new();
+
+    // ---- Adjuntos por campo (CampoEnsayo.LlevaAdjunto): el mismo archivo
+    // (mismo contenido) se guarda una sola vez y lo comparten todos los valores. ----
+    private List<CampoEnsayo> CamposConAdjunto => campos.Where(c => c.LlevaAdjunto).ToList();
+    private Dictionary<string, IBrowserFile> adjuntosPendientes = new();
+    private Dictionary<string, (int Id, string Nombre, string Ruta)> adjuntosActuales = new();
+    private HashSet<string> adjuntosQuitar = new();
+
+    private void SeleccionarAdjunto(string clave, IBrowserFile archivo)
+    {
+        adjuntosPendientes[clave] = archivo;
+        adjuntosQuitar.Remove(clave);
+    }
+
+    private void CargarAdjuntosActuales(IEnumerable<int> idsResultado)
+    {
+        var ids = idsResultado.ToList();
+        var porCampoId = campos.Where(c => c.LlevaAdjunto).ToDictionary(c => c.Id, c => c.Clave);
+        if (porCampoId.Count == 0 || ids.Count == 0) return;
+        var filas = Db.ValoresCampoEnsayo.AsNoTracking()
+            .Where(v => ids.Contains(v.ResultadoEnsayoId) && v.AdjuntoEnsayoId != null).ToList();
+        foreach (var v in filas)
+        {
+            if (!porCampoId.TryGetValue(v.CampoEnsayoId, out var clave) || adjuntosActuales.ContainsKey(clave)) continue;
+            var a = Db.AdjuntosEnsayo.AsNoTracking().FirstOrDefault(x => x.Id == v.AdjuntoEnsayoId);
+            if (a is not null) adjuntosActuales[clave] = (a.Id, a.NombreOriginal, a.Ruta);
+        }
+    }
+
+    private async Task<AdjuntoEnsayo> ResolverAdjuntoAsync(IBrowserFile archivo)
+    {
+        using var memoria = new MemoryStream();
+        await using (var origen = archivo.OpenReadStream(20 * 1024 * 1024)) await origen.CopyToAsync(memoria);
+        memoria.Position = 0;
+        var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(memoria));
+        var existente = await Db.AdjuntosEnsayo.FirstOrDefaultAsync(a => a.Hash == hash);
+        if (existente is not null) return existente;
+
+        var carpeta = Path.Combine(Env.WebRootPath, "uploads", "ensayos");
+        Directory.CreateDirectory(carpeta);
+        var nombreFisico = $"{Guid.NewGuid()}{Path.GetExtension(archivo.Name)}";
+        memoria.Position = 0;
+        await using (var destino = File.Create(Path.Combine(carpeta, nombreFisico))) await memoria.CopyToAsync(destino);
+        var nuevo = new AdjuntoEnsayo { Hash = hash, NombreOriginal = archivo.Name, Ruta = $"/uploads/ensayos/{nombreFisico}" };
+        Db.AdjuntosEnsayo.Add(nuevo);
+        await Db.SaveChangesAsync();
+        return nuevo;
+    }
+    private IBrowserFile? archivoDisenoMezcla;
+    private IReadOnlyList<IBrowserFile> archivosInforme = new List<IBrowserFile>();
+
+    private string mensaje = "";
+    private bool guardando = false;
+
+    // ---------- Lote de cilindros (crear varios resultados de una vez,
+    // compartiendo torre/pata/muestra, con No. de cilindro consecutivo) ----------
+    private int cantidadCilindros = 1;
+    private List<Dictionary<string, string>> filasCilindros = new();
+    private int ultimoCilindroRegistrado = 0;
+
+    // Cuando se edita un resultado que comparte No. Muestra con otros
+    // (una muestra de varios cilindros), se editan todos juntos en la
+    // misma tabla de lote — editandoLote lo marca, e idsFilasCilindros
+    // trae el Id real de cada fila (en el mismo orden que filasCilindros)
+    // para actualizar esos registros en vez de crear nuevos.
+    private bool editandoLote = false;
+    private List<int> idsFilasCilindros = new();
+
+    // Zoom propio de la tabla de cilindros (independiente del de la Vista
+    // Excel): con muchos cilindros y columnas, reducir un poco el tamaño
+    // ayuda a ver más sin tener que desplazarse tanto.
+    private int escalaTablaLote = 100;
+
+    // Está en modo tabla/lote siempre que haya más de un resultado, sea
+    // creando varios de una vez o editando una muestra ya guardada — no
+    // depende de que el Tipo de Ensayo tenga un campo "Cilindro": sirve
+    // igual para cualquier Tipo de Ensayo (ej. 4 patas x 2 profundidades).
+    private bool ModoLote => cantidadCilindros > 1;
+
+    // Clave con la que cada fila del lote guarda su propio "Elemento" (no
+    // es un CampoEnsayo real, es el mismo campo resultado.ElementoTexto
+    // que en modo normal se diligencia una sola vez arriba) — así una
+    // muestra puede variar el Elemento por fila (ej. cada pata de una
+    // torre) en vez de compartir uno solo para todo el lote.
+    private const string ClaveElementoFila = "__ElementoFila";
+
+    // Igual que ClaveElementoFila, pero para la Fecha de ejecución (solo
+    // aplica a Tipos que no usan Torre): cada fila del lote tiene su
+    // propia fecha en vez de compartir una sola para todo el lote.
+    private const string ClaveFechaEjecucionFila = "__FechaEjecucionFila";
+
+    // Detecta genéricamente los campos "No. Muestra" y "No. Cilindro" por su
+    // etiqueta (igual que EnsayosDatos.razor con ClaveCampoMuestra), en vez
+    // de asumir una clave fija: no todos los Tipos de Ensayo tienen cilindros.
+    private string? ClaveCampoCilindro =>
+        campos.FirstOrDefault(c => c.Etiqueta.Contains("cilindro", StringComparison.OrdinalIgnoreCase))?.Clave;
+
+    private string? ClaveCampoMuestra =>
+        campos.FirstOrDefault(c => c.Etiqueta.Contains("muestra", StringComparison.OrdinalIgnoreCase)
+            && !c.Etiqueta.Contains("fecha", StringComparison.OrdinalIgnoreCase))?.Clave;
+
+    // Fecha muestra, Fecha ensayo y Edad: la primera se comparte entre los
+    // cilindros del lote (se vacía el concreto el mismo día para todos),
+    // la segunda se calcula sola (Fecha muestra + Edad) y no se edita.
+    private string? ClaveCampoFechaMuestra =>
+        campos.FirstOrDefault(c => c.Etiqueta.Contains("fecha", StringComparison.OrdinalIgnoreCase)
+            && c.Etiqueta.Contains("muestra", StringComparison.OrdinalIgnoreCase))?.Clave;
+
+    private string? ClaveCampoFechaEnsayo =>
+        campos.FirstOrDefault(c => c.Etiqueta.Contains("fecha", StringComparison.OrdinalIgnoreCase)
+            && c.Etiqueta.Contains("ensayo", StringComparison.OrdinalIgnoreCase))?.Clave;
+
+    private string? ClaveCampoEdad =>
+        campos.FirstOrDefault(c => c.Etiqueta.Contains("edad", StringComparison.OrdinalIgnoreCase))?.Clave;
+
+    // Campos que se diligencian por cilindro en la tabla (todos menos el
+    // No. de cilindro, que va aparte autonumerado, y la Muestra y Fecha de
+    // muestra, que son compartidas y se editan arriba una sola vez).
+    private List<CampoEnsayo> CamposTabla =>
+        campos.Where(c => c.Clave != ClaveCampoCilindro && c.Clave != ClaveCampoMuestra && c.Clave != ClaveCampoFechaMuestra).ToList();
+
+    // Diámetros típicos de cilindro de concreto, en mm (4" y 6"), para que
+    // el usuario elija en vez de escribir el equivalente en milímetros a mano.
+    private static readonly (string Valor, string Etiqueta)[] DiametrosPreset = new[]
+    {
+        ("101.6", "4″ (101.6)"),
+        ("152.4", "6″ (152.4)"),
+    };
+
+    // Un campo "se resalta" cuando el usuario realmente tiene que
+    // diligenciarlo a mano: no aplica a los que se calculan solos
+    // (Fórmula) ni a la Fecha de ensayo (Fecha muestra + Edad).
+    private bool EsCampoResaltable(CampoEnsayo campo) =>
+        campo.Clave != ClaveCampoFechaEnsayo && campo.TipoDato != TipoDatoCampoEnsayo.Formula;
+
+    private static bool EsCampoDiametro(CampoEnsayo campo) =>
+        campo.Etiqueta.Contains("diámetro", StringComparison.OrdinalIgnoreCase)
+        || campo.Etiqueta.Contains("diametro", StringComparison.OrdinalIgnoreCase);
+
+    private static string OpcionDiametro(string valorActual) =>
+        DiametrosPreset.Any(d => d.Valor == valorActual) ? valorActual : "otro";
+
+    // ---------- Informe por edad de ensayo (modo lote) ----------
+    // Si el Tipo de Ensayo tiene "Edad", cada edad distinta usada en el
+    // lote (7, 14, 28 días...) lleva su propio No. de Informe, en vez de
+    // uno solo compartido por todos los cilindros.
+    private bool UsaInformePorEdadLote => ModoLote && ClaveCampoEdad is not null;
+
+    private Dictionary<string, string> informesPorEdad = new(StringComparer.OrdinalIgnoreCase);
+
+    // Archivos (PDF, Excel, etc.) a subir para el informe de cada edad, y
+    // los que ya tenía guardados esa edad al entrar a editar un lote.
+    private Dictionary<string, IReadOnlyList<IBrowserFile>> archivosPorEdad = new(StringComparer.OrdinalIgnoreCase);
+    private Dictionary<string, List<ArchivoInforme>> archivosExistentesPorEdad = new(StringComparer.OrdinalIgnoreCase);
+
+    private void SeleccionarArchivosEdad(string edad, InputFileChangeEventArgs e) => archivosPorEdad[edad] = e.GetMultipleFiles(10);
+
+    private List<string> EdadesUnicasEnLote
+    {
+        get
+        {
+            if (ClaveCampoEdad is not string claveEdad) return new();
+            return filasCilindros
+                .Select(f => f.TryGetValue(claveEdad, out var v) ? v : "")
+                .Where(v => !string.IsNullOrWhiteSpace(v))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(v => int.TryParse(v, out var n) ? n : int.MaxValue)
+                .ToList();
+        }
+    }
+
+    private string ObtenerInformeParaEdad(string edad) => informesPorEdad.TryGetValue(edad, out var v) ? v : "";
+
+    private void ActualizarInformeParaEdad(string edad, string valor) => informesPorEdad[edad] = valor;
+
+    // ---------- Informe por fila (modo lote sin "Edad") ----------
+    // Cuando hay varios resultados en un mismo lote pero el Tipo de
+    // Ensayo no tiene "Edad" (ej. Densidades: 4 patas x 2 profundidades),
+    // cada FILA lleva su propio No. de Informe y sus propios PDF — en vez
+    // de uno solo compartido por todo el lote (así, cada resultado puede
+    // traer el informe/PDF que realmente le corresponde).
+    private bool UsaInformePorFilaLote => ModoLote && !UsaInformePorEdadLote;
+
+    private Dictionary<int, string> informesPorFila = new();
+    private Dictionary<int, IReadOnlyList<IBrowserFile>> archivosPorFila = new();
+    private Dictionary<int, List<ArchivoInforme>> archivosExistentesPorFila = new();
+
+    private string ObtenerInformeParaFila(int indice) => informesPorFila.TryGetValue(indice, out var v) ? v : "";
+
+    private void ActualizarInformeParaFila(int indice, string valor) => informesPorFila[indice] = valor;
+
+    private void SeleccionarArchivosFila(int indice, InputFileChangeEventArgs e) => archivosPorFila[indice] = e.GetMultipleFiles(10);
+
+    // Se actualiza solo dentro de ActualizarPreviewElemento (evento), nunca
+    // se consulta la base de datos directamente desde el marcado: eso
+    // puede disparar "A second operation was started on this context..."
+    // en Blazor Server si el render coincide con otra operación async.
+    private bool torreResuelta = false;
+
+    protected override void OnInitialized()
+    {
+        campos = Db.CamposEnsayo.AsNoTracking().Where(c => c.TipoEnsayoId == TipoEnsayoId && c.Activo).OrderBy(c => c.Orden).ToList();
+        torresDisponibles = Db.ElementosTrazado.AsNoTracking().Where(t => !t.Eliminado).OrderBy(t => t.Codigo).Select(t => t.Codigo).ToList();
+        var tipoEnsayo = Db.TiposEnsayo.AsNoTracking().FirstOrDefault(t => t.Id == TipoEnsayoId);
+        usaTorre = tipoEnsayo?.UsaTorre ?? true;
+        mostrarElemento = tipoEnsayo?.MostrarElemento ?? true;
+        mostrarInforme = tipoEnsayo?.MostrarInforme ?? true;
+        mostrarFechaEjecucion = tipoEnsayo?.MostrarFechaEjecucion ?? true;
+        mostrarDisenoMezcla = tipoEnsayo?.MostrarDisenoMezcla ?? true;
+        localizacionesDisponibles = Db.Catalogos.AsNoTracking()
+            .Where(c => c.Tipo == TipoCatalogoLocalizacion && c.Activo)
+            .OrderBy(c => c.Nombre).Select(c => c.Nombre).ToList();
+
+        if (ResultadoEnsayoId is int id)
+        {
+            var r = Db.ResultadosEnsayo.AsNoTracking().FirstOrDefault(x => x.Id == id);
+            if (r is not null)
+            {
+                elementoTexto = r.ElementoTexto;
+                disenoMezclaCodigo = r.DisenoMezclaCodigo ?? "";
+                disenoMezclaArchivoActual = r.DisenoMezclaArchivo;
+                localizacionTexto = r.Localizacion ?? "";
+                fechaEjecucionTexto = r.FechaEjecucion?.ToString("yyyy-MM-dd") ?? "";
+
+                if (r.ElementoTrazadoId is int idTorre)
+                {
+                    torreTexto = Db.ElementosTrazado.AsNoTracking().FirstOrDefault(t => t.Id == idTorre)?.Codigo ?? "";
+                    // Tipos que piden Localización en vez de Torre: si el resultado no trae texto de localización pero sí la
+                    // torre que se está editando, se propone por defecto la localización del catálogo vinculada a esa torre
+                    // (editable; no se borra nada).
+                    if (!usaTorre && string.IsNullOrWhiteSpace(localizacionTexto))
+                    {
+                        localizacionTexto = Db.Catalogos.AsNoTracking()
+                            .Where(c => c.Tipo == TipoCatalogoLocalizacion && c.Activo && c.ElementoTrazadoId == idTorre)
+                            .OrderBy(c => c.Nombre).Select(c => c.Nombre).FirstOrDefault() ?? "";
+                    }
+                }
+                if (r.InformeId is int idInforme)
+                {
+                    var informe = Db.Informes.AsNoTracking().FirstOrDefault(i => i.Id == idInforme);
+                    informeNumero = informe?.Numero ?? "";
+                    archivosInformeExistentes = Db.ArchivosInforme.AsNoTracking().Where(a => a.InformeId == idInforme).ToList();
+                }
+
+                if (r.SubElemento == SubElementoResultado.Otro)
+                {
+                    var idComponenteExistente = Db.ResultadosEnsayoComponente.AsNoTracking()
+                        .Where(rc => rc.ResultadoEnsayoId == id).Select(rc => rc.ComponenteId).FirstOrDefault();
+                    if (idComponenteExistente != 0)
+                    {
+                        elementoEspecialNombre = Db.Componentes.AsNoTracking()
+                            .FirstOrDefault(c => c.Id == idComponenteExistente)?.Nombre ?? "";
+                    }
+                }
+
+                var camposPorId = campos.ToDictionary(c => c.Id, c => c.Clave);
+                foreach (var v in Db.ValoresCampoEnsayo.AsNoTracking().Where(v => v.ResultadoEnsayoId == id))
+                {
+                    if (camposPorId.TryGetValue(v.CampoEnsayoId, out var clave)) valores[clave] = v.Valor;
+                }
+
+                // Si este resultado comparte No. Muestra con otros (una
+                // muestra de varios cilindros), se editan todos juntos en
+                // la tabla de lote, en vez de editar solo este uno.
+                if (ClaveCampoMuestra is string claveMuestraEdit
+                    && valores.TryGetValue(claveMuestraEdit, out var muestraEdit)
+                    && !string.IsNullOrWhiteSpace(muestraEdit))
+                {
+                    var campoMuestraId = campos.FirstOrDefault(c => c.Clave == claveMuestraEdit)?.Id;
+                    if (campoMuestraId is int idCampoMuestra)
+                    {
+                        var idsActivos = Db.ResultadosEnsayo.AsNoTracking()
+                            .Where(x => x.TipoEnsayoId == TipoEnsayoId && !x.Eliminado)
+                            .Select(x => x.Id).ToHashSet();
+
+                        var idsDelGrupo = Db.ValoresCampoEnsayo.AsNoTracking()
+                            .Where(v => v.CampoEnsayoId == idCampoMuestra && v.Valor == muestraEdit)
+                            .Select(v => v.ResultadoEnsayoId)
+                            .Distinct()
+                            .Where(x => idsActivos.Contains(x))
+                            .OrderBy(x => x)
+                            .ToList();
+
+                        if (idsDelGrupo.Count > 1)
+                        {
+                            CargarLoteParaEdicion(idsDelGrupo);
+                        }
+                    }
+                }
+            }
+        }
+
+        if (ResultadoEnsayoId is int idAdj) CargarAdjuntosActuales(idsFilasCilindros.Count > 0 ? idsFilasCilindros : new List<int> { idAdj });
+
+        ActualizarPreviewElemento();
+        RecalcularFormulas();
+        CalcularUltimoCilindroRegistrado();
+    }
+
+    // Carga N resultados existentes (los de una misma muestra) en
+    // filasCilindros/idsFilasCilindros, para editarlos juntos con la misma
+    // tabla que usa el lote al crear uno nuevo.
+    private void CargarLoteParaEdicion(List<int> ids)
+    {
+        idsFilasCilindros = ids;
+        cantidadCilindros = ids.Count;
+        filasCilindros = new();
+
+        var camposPorId = campos.ToDictionary(c => c.Id, c => c.Clave);
+        var resultadosDelGrupo = Db.ResultadosEnsayo.AsNoTracking()
+            .Where(r => ids.Contains(r.Id)).ToDictionary(r => r.Id, r => r);
+        foreach (var idResultado in ids)
+        {
+            var fila = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var v in Db.ValoresCampoEnsayo.AsNoTracking().Where(v => v.ResultadoEnsayoId == idResultado))
+            {
+                if (camposPorId.TryGetValue(v.CampoEnsayoId, out var clave)) fila[clave] = v.Valor;
+            }
+            var resultadoActual = resultadosDelGrupo.TryGetValue(idResultado, out var rr) ? rr : null;
+            fila[ClaveElementoFila] = resultadoActual?.ElementoTexto ?? "";
+            fila[ClaveFechaEjecucionFila] = resultadoActual?.FechaEjecucion?.ToString("yyyy-MM-dd") ?? "";
+            filasCilindros.Add(fila);
+        }
+
+        // Precarga el informe (y sus archivos ya subidos) con lo que ya
+        // tenía guardado cada resultado — por edad si el Tipo de Ensayo
+        // tiene "Edad" (concreto), o por fila si no (ej. Densidades).
+        for (var i = 0; i < ids.Count; i++)
+        {
+            var r = resultadosDelGrupo.TryGetValue(ids[i], out var rr2) ? rr2 : null;
+            if (r?.InformeId is not int idInf) continue;
+            var numero = Db.Informes.AsNoTracking().FirstOrDefault(inf => inf.Id == idInf)?.Numero;
+            var archivosDelInforme = Db.ArchivosInforme.AsNoTracking().Where(a => a.InformeId == idInf).ToList();
+
+            if (ClaveCampoEdad is string claveEdad
+                && filasCilindros[i].TryGetValue(claveEdad, out var edad) && !string.IsNullOrWhiteSpace(edad))
+            {
+                if (!informesPorEdad.ContainsKey(edad))
+                {
+                    if (!string.IsNullOrWhiteSpace(numero)) informesPorEdad[edad] = numero!;
+                    archivosExistentesPorEdad[edad] = archivosDelInforme;
+                }
+            }
+            else
+            {
+                if (!string.IsNullOrWhiteSpace(numero)) informesPorFila[i] = numero!;
+                archivosExistentesPorFila[i] = archivosDelInforme;
+            }
+        }
+
+        editandoLote = true;
+        RecalcularFormulasFilas();
+    }
+
+    private string ObtenerValor(string clave) => valores.TryGetValue(clave, out var v) ? v : "";
+
+    private void ActualizarValor(string clave, string valor)
+    {
+        valores[clave] = valor;
+        RecalcularFormulas();
+    }
+
+    private void RecalcularFormulas()
+    {
+        foreach (var campo in campos.Where(c => c.TipoDato == TipoDatoCampoEnsayo.Formula && !string.IsNullOrWhiteSpace(c.Formula)))
+        {
+            try { valores[campo.Clave] = EvaluadorFormulas.Evaluar(campo.Formula!, valores!); }
+            catch { valores[campo.Clave] = ""; }
+        }
+        CalcularFechaEnsayo(valores);
+    }
+
+    // Fecha de ensayo = Fecha de muestra + Edad (días). Se calcula sola,
+    // no se escribe a mano. Si falta la fecha de muestra o la edad (o no
+    // son válidas), simplemente no toca el campo.
+    private void CalcularFechaEnsayo(Dictionary<string, string> destino)
+    {
+        if (ClaveCampoFechaMuestra is not string claveFM) return;
+        if (ClaveCampoEdad is not string claveEdad) return;
+        if (ClaveCampoFechaEnsayo is not string claveFE) return;
+
+        var fechaTxt = destino.TryGetValue(claveFM, out var fm) ? fm : "";
+        var edadTxt = destino.TryGetValue(claveEdad, out var ed) ? ed : "";
+        if (DateTime.TryParse(fechaTxt, out var fecha) && int.TryParse(edadTxt, out var edad))
+        {
+            destino[claveFE] = fecha.AddDays(edad).ToString("yyyy-MM-dd");
+        }
+    }
+
+    // Busca el No. de cilindro más alto ya guardado para este Tipo de
+    // Ensayo, para que el lote nuevo continúe la numeración donde quedó la
+    // última muestra (en vez de reiniciar en 1 cada vez).
+    private void CalcularUltimoCilindroRegistrado()
+    {
+        ultimoCilindroRegistrado = 0;
+        var claveCilindro = ClaveCampoCilindro;
+        if (claveCilindro is null) return;
+        var campoId = campos.FirstOrDefault(c => c.Clave == claveCilindro)?.Id;
+        if (campoId is null) return;
+
+        var valoresExistentes = Db.ValoresCampoEnsayo.AsNoTracking()
+            .Where(v => v.CampoEnsayoId == campoId)
+            .Select(v => v.Valor)
+            .ToList();
+        foreach (var v in valoresExistentes)
+        {
+            if (int.TryParse(v, out var n) && n > ultimoCilindroRegistrado) ultimoCilindroRegistrado = n;
+        }
+    }
+
+    private void CambiarCantidadCilindros(string? texto)
+    {
+        if (!int.TryParse(texto, out var n) || n < 1) n = 1;
+        if (n > 24) n = 24; // límite razonable para no crear cientos de filas por error
+        cantidadCilindros = n;
+        AjustarFilasCilindros();
+    }
+
+    // Ajusta filasCilindros al tamaño pedido, reasignando el No. de
+    // cilindro consecutivo en cada fila, y precargando cada fila nueva con
+    // lo que ya se había escrito en el formulario normal (ej. f'c diseño),
+    // para que el usuario solo tenga que corregir lo que cambia por cilindro.
+    private void AjustarFilasCilindros()
+    {
+        var claveCilindro = ClaveCampoCilindro;
+        var claveMuestra = ClaveCampoMuestra;
+
+        while (filasCilindros.Count < cantidadCilindros)
+        {
+            var nuevaFila = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var (k, v) in valores)
+            {
+                if (k == claveCilindro || k == claveMuestra) continue;
+                nuevaFila[k] = v;
+            }
+            nuevaFila[ClaveElementoFila] = elementoTexto;
+            nuevaFila[ClaveFechaEjecucionFila] = fechaEjecucionTexto;
+            filasCilindros.Add(nuevaFila);
+        }
+        while (filasCilindros.Count > cantidadCilindros)
+        {
+            filasCilindros.RemoveAt(filasCilindros.Count - 1);
+        }
+
+        if (claveCilindro is not null)
+        {
+            for (var i = 0; i < filasCilindros.Count; i++)
+            {
+                filasCilindros[i][claveCilindro] = (ultimoCilindroRegistrado + i + 1).ToString();
+            }
+        }
+
+        RecalcularFormulasFilas();
+    }
+
+    private string ObtenerValorFila(Dictionary<string, string> fila, string clave) =>
+        fila.TryGetValue(clave, out var v) ? v : "";
+
+    // Campos que, al cambiarlos en un cilindro, se propagan automáticamente
+    // a los demás cilindros de la muestra — a menos que esa otra fila ya
+    // tenga un valor distinto (se asume que lo cambiaron a mano a propósito).
+    private static bool EsCampoPropagable(CampoEnsayo campo) =>
+        EsCampoDiametro(campo)
+        || campo.Etiqueta.Contains("diseño", StringComparison.OrdinalIgnoreCase)
+        || campo.Etiqueta.Contains("observaciones", StringComparison.OrdinalIgnoreCase);
+
+    private void ActualizarValorFila(int indice, string clave, string valor)
+    {
+        if (indice < 0 || indice >= filasCilindros.Count) return;
+
+        var campo = CamposTabla.FirstOrDefault(c => c.Clave == clave);
+        var anterior = ObtenerValorFila(filasCilindros[indice], clave);
+        filasCilindros[indice][clave] = valor;
+
+        if (campo is not null && EsCampoPropagable(campo) && filasCilindros.Count > 1)
+        {
+            for (var i = 0; i < filasCilindros.Count; i++)
+            {
+                if (i == indice) continue;
+                if (ObtenerValorFila(filasCilindros[i], clave) == anterior)
+                {
+                    filasCilindros[i][clave] = valor;
+                }
+            }
+        }
+
+        RecalcularFormulasFilas();
+    }
+
+    private void ActualizarMuestraCompartida(string valor)
+    {
+        if (ClaveCampoMuestra is string clave) ActualizarValor(clave, valor);
+    }
+
+    private void ActualizarFechaMuestraCompartida(string valor)
+    {
+        if (ClaveCampoFechaMuestra is not string clave) return;
+        ActualizarValor(clave, valor); // también recalcula Fecha ensayo del formulario normal
+        RecalcularFormulasFilas(); // y la de cada fila del lote, si hay
+    }
+
+    // Recalcula las fórmulas de cada fila del lote, combinando los campos
+    // compartidos (valores) con los propios de esa fila — así una fórmula
+    // que use un campo compartido (ej. f'c diseño, o Fecha muestra para
+    // calcular la Fecha de ensayo) también calcula bien.
+    private void RecalcularFormulasFilas()
+    {
+        foreach (var fila in filasCilindros)
+        {
+            var combinados = new Dictionary<string, string>(valores, StringComparer.OrdinalIgnoreCase);
+            foreach (var (k, v) in fila) combinados[k] = v;
+
+            CalcularFechaEnsayo(combinados);
+            if (ClaveCampoFechaEnsayo is string claveFE && combinados.TryGetValue(claveFE, out var fechaCalculada))
+            {
+                fila[claveFE] = fechaCalculada;
+            }
+
+            foreach (var campo in campos.Where(c => c.TipoDato == TipoDatoCampoEnsayo.Formula && !string.IsNullOrWhiteSpace(c.Formula)))
+            {
+                try { fila[campo.Clave] = EvaluadorFormulas.Evaluar(campo.Formula!, combinados!); }
+                catch { fila[campo.Clave] = ""; }
+                combinados[campo.Clave] = fila[campo.Clave];
+            }
+        }
+    }
+
+    private void ActualizarPreviewElemento()
+    {
+        List<string>? patasValidas = null;
+        SigWeb.Models.ElementoTrazado? torre = null;
+
+        if (usaTorre)
+        {
+            var texto = torreTexto.Trim();
+            torre = Db.ElementosTrazado.AsNoTracking().FirstOrDefault(t => !t.Eliminado && t.Codigo.ToLower() == texto.ToLower());
+            if (torre is null)
+            {
+                // El texto puede ser un alias ya aprendido (ej. de una carga
+                // por Excel de Ensayos donde el usuario confirmó a qué torre
+                // corresponde un texto que no coincidía exactamente).
+                var idAlias = Db.AliasTorres.AsNoTracking().FirstOrDefault(a => a.Texto.ToLower() == texto.ToLower())?.ElementoTrazadoId;
+                if (idAlias is int idT) torre = Db.ElementosTrazado.AsNoTracking().FirstOrDefault(t => t.Id == idT && !t.Eliminado);
+            }
+            torreResuelta = torre is not null;
+        }
+        else
+        {
+            // Sin Torre propia (Localización en su lugar): la Torre, si la
+            // hay, se deduce de a cuál está vinculada esa Localización en
+            // el catálogo (ver SincronizadorCatalogoLocalizacion) — así el
+            // Elemento también se puede comparar contra las patas reales.
+            var textoLoc = localizacionTexto.Trim();
+            var idTorreDeLocalizacion = Db.Catalogos.AsNoTracking()
+                .Where(c => c.Tipo == TipoCatalogoLocalizacion && c.Nombre.ToLower() == textoLoc.ToLower())
+                .Select(c => c.ElementoTrazadoId).FirstOrDefault();
+            if (idTorreDeLocalizacion is int idTL)
+            {
+                torre = Db.ElementosTrazado.AsNoTracking().FirstOrDefault(t => t.Id == idTL && !t.Eliminado);
+            }
+        }
+
+        if (torre is not null)
+        {
+            patasValidas = Db.Componentes.AsNoTracking()
+                .Where(c => c.ElementoTrazadoId == torre.Id && c.EsPredeterminado && !c.EsHojaDeVida && !c.Eliminado)
+                .Select(c => c.Nombre).ToList()
+                .Select(ParserElementoEnsayo.ObtenerCodigoPata).ToList();
+        }
+
+        var parseo = ParserElementoEnsayo.Parsear(elementoTexto, patasValidas);
+        previewElemento = string.IsNullOrWhiteSpace(elementoTexto) ? ""
+            : parseo.SubElemento == SubElementoResultado.Otro
+                ? "No se asocia a ninguna pata."
+                : $"Patas: {string.Join(", ", parseo.Patas)}" + (parseo.SubElemento == SubElementoResultado.Ninguno ? "" : $" — {parseo.SubElemento}");
+
+        esElementoEspecial = !string.IsNullOrWhiteSpace(elementoTexto) && parseo.SubElemento == SubElementoResultado.Otro;
+        if (esElementoEspecial)
+        {
+            if (string.IsNullOrWhiteSpace(elementoEspecialNombre))
+                elementoEspecialNombre = ParserElementoEnsayo.ProponerNombreElemento(elementoTexto);
+            elementosEspecialesDeTorre = torre is null ? new()
+                : Db.Componentes.AsNoTracking()
+                    .Where(c => c.ElementoTrazadoId == torre.Id && !c.EsPredeterminado && !c.EsHojaDeVida && !c.Eliminado)
+                    .Select(c => c.Nombre).ToList();
+        }
+        else
+        {
+            elementosEspecialesDeTorre = new();
+        }
+    }
+
+    private void SeleccionarDisenoMezcla(InputFileChangeEventArgs e) => archivoDisenoMezcla = e.File;
+    private void SeleccionarArchivosInforme(InputFileChangeEventArgs e) => archivosInforme = e.GetMultipleFiles(10);
+
+    // Valida que el No. de Muestra y el/los No. de Cilindro que se van a
+    // guardar no choquen con un registro ya existente (ni, en el caso de
+    // los cilindros, entre sí dentro del mismo lote). Devuelve el mensaje
+    // de error a mostrar, o null si todo está bien.
+    private async Task<string?> ValidarDuplicados()
+    {
+        var claveMuestra = ClaveCampoMuestra;
+        var claveCilindro = ClaveCampoCilindro;
+
+        var idsPropios = editandoLote ? idsFilasCilindros
+            : (esEdicion && ResultadoEnsayoId is int idPropioUnico ? new List<int> { idPropioUnico } : new List<int>());
+
+        // ---- No. Muestra: no debe coincidir con la de otro registro ----
+        if (claveMuestra is not null)
+        {
+            var muestraTxt = ObtenerValor(claveMuestra);
+            if (!string.IsNullOrWhiteSpace(muestraTxt))
+            {
+                var campoMuestraId = campos.FirstOrDefault(c => c.Clave == claveMuestra)?.Id;
+                if (campoMuestraId is int idCM)
+                {
+                    var choque = await Db.ValoresCampoEnsayo
+                        .Where(v => v.CampoEnsayoId == idCM && v.Valor == muestraTxt && !idsPropios.Contains(v.ResultadoEnsayoId))
+                        .Select(v => v.ResultadoEnsayoId)
+                        .FirstOrDefaultAsync();
+                    if (choque != 0 && await Db.ResultadosEnsayo.AnyAsync(r => r.Id == choque && r.TipoEnsayoId == TipoEnsayoId && !r.Eliminado))
+                    {
+                        return $"El No. de Muestra \"{muestraTxt}\" ya está en uso por otro registro. Usa un número distinto.";
+                    }
+                }
+            }
+        }
+
+        // ---- No. Cilindro: ni repetido dentro del propio lote, ni con otro ya guardado ----
+        if (claveCilindro is not null)
+        {
+            var valoresCilindro = new List<(string Valor, int? IdPropio)>();
+            if (ModoLote)
+            {
+                for (var i = 0; i < filasCilindros.Count; i++)
+                {
+                    var v = ObtenerValorFila(filasCilindros[i], claveCilindro);
+                    var idPropio = editandoLote && i < idsFilasCilindros.Count ? idsFilasCilindros[i] : (int?)null;
+                    valoresCilindro.Add((v, idPropio));
+                }
+            }
+            else
+            {
+                valoresCilindro.Add((ObtenerValor(claveCilindro), esEdicion ? ResultadoEnsayoId : null));
+            }
+
+            var repetidoEnLote = valoresCilindro.Where(x => !string.IsNullOrWhiteSpace(x.Valor))
+                .GroupBy(x => x.Valor).FirstOrDefault(g => g.Count() > 1);
+            if (repetidoEnLote is not null)
+            {
+                return $"El No. de Cilindro \"{repetidoEnLote.Key}\" está repetido en esta muestra.";
+            }
+
+            var campoCilindroId = campos.FirstOrDefault(c => c.Clave == claveCilindro)?.Id;
+            if (campoCilindroId is int idCC)
+            {
+                foreach (var (valorCil, idPropio) in valoresCilindro)
+                {
+                    if (string.IsNullOrWhiteSpace(valorCil)) continue;
+                    var choque = await Db.ValoresCampoEnsayo
+                        .Where(v => v.CampoEnsayoId == idCC && v.Valor == valorCil && v.ResultadoEnsayoId != (idPropio ?? -1))
+                        .Select(v => v.ResultadoEnsayoId)
+                        .FirstOrDefaultAsync();
+                    if (choque != 0 && await Db.ResultadosEnsayo.AnyAsync(r => r.Id == choque && r.TipoEnsayoId == TipoEnsayoId && !r.Eliminado))
+                    {
+                        return $"El No. de Cilindro \"{valorCil}\" ya está en uso por otro registro.";
+                    }
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private async Task<string> GuardarArchivo(IBrowserFile archivo, long maxBytes)
+    {
+        var carpeta = Path.Combine(Env.WebRootPath, "uploads", "ensayos");
+        Directory.CreateDirectory(carpeta);
+        var nombreArchivo = $"{Guid.NewGuid()}{Path.GetExtension(archivo.Name)}";
+        var rutaFisica = Path.Combine(carpeta, nombreArchivo);
+        await using var stream = archivo.OpenReadStream(maxBytes);
+        await using var destino = File.Create(rutaFisica);
+        await stream.CopyToAsync(destino);
+        return $"/uploads/ensayos/{nombreArchivo}";
+    }
+
+    // Igual que GuardarArchivo, pero deduplicando por contenido: si el
+    // mismo archivo (mismo hash SHA-256) ya se guardó antes — en esta
+    // misma pasada (cacheLocal) o en una subida anterior cualquiera (se
+    // busca en ArchivosInforme) — no se vuelve a escribir en disco, se
+    // reutiliza la misma ruta física. Así, subir el mismo PDF en 2
+    // resultados distintos de un lote solo ocupa espacio una vez.
+    private async Task<(string Ruta, string Hash)> GuardarArchivoConHash(IBrowserFile archivo, long maxBytes, Dictionary<string, string> cacheLocal)
+    {
+        using var sha256 = System.Security.Cryptography.SHA256.Create();
+        using var memoria = new MemoryStream();
+        await using (var origen = archivo.OpenReadStream(maxBytes))
+        {
+            await origen.CopyToAsync(memoria);
+        }
+        memoria.Position = 0;
+        var hash = Convert.ToHexString(sha256.ComputeHash(memoria));
+
+        if (cacheLocal.TryGetValue(hash, out var rutaCacheada))
+        {
+            return (rutaCacheada, hash);
+        }
+
+        var rutaExistente = await Db.ArchivosInforme.AsNoTracking()
+            .Where(a => a.Hash == hash).Select(a => a.RutaArchivo).FirstOrDefaultAsync();
+        if (rutaExistente is not null)
+        {
+            cacheLocal[hash] = rutaExistente;
+            return (rutaExistente, hash);
+        }
+
+        var carpeta = Path.Combine(Env.WebRootPath, "uploads", "ensayos");
+        Directory.CreateDirectory(carpeta);
+        var nombreArchivo = $"{Guid.NewGuid()}{Path.GetExtension(archivo.Name)}";
+        var rutaFisica = Path.Combine(carpeta, nombreArchivo);
+        memoria.Position = 0;
+        await using (var destino = File.Create(rutaFisica))
+        {
+            await memoria.CopyToAsync(destino);
+        }
+
+        var ruta = $"/uploads/ensayos/{nombreArchivo}";
+        cacheLocal[hash] = ruta;
+        return (ruta, hash);
+    }
+
+    // Quita un PDF ya adjunto a un informe (botón "✕" junto a "Ya
+    // tiene: ..."). Si ese mismo archivo físico está referenciado por
+    // otro ArchivoInforme (por el deduplicado al subir el mismo PDF dos
+    // veces), solo se borra esta referencia — el archivo en disco se
+    // conserva mientras alguna otra fila lo siga usando.
+    private async Task EliminarArchivoInformeExistente(ArchivoInforme archivo, List<ArchivoInforme> listaLocal)
+    {
+        var otraReferencia = await Db.ArchivosInforme.AsNoTracking()
+            .AnyAsync(a => a.Id != archivo.Id && a.RutaArchivo == archivo.RutaArchivo);
+
+        var entidad = await Db.ArchivosInforme.FirstOrDefaultAsync(a => a.Id == archivo.Id);
+        if (entidad is not null)
+        {
+            Db.ArchivosInforme.Remove(entidad);
+            await Db.SaveChangesAsync();
+            Db.ChangeTracker.Clear();
+        }
+
+        if (!otraReferencia)
+        {
+            try
+            {
+                var rutaRelativa = archivo.RutaArchivo.TrimStart('/').Replace('/', Path.DirectorySeparatorChar);
+                var rutaFisica = Path.Combine(Env.WebRootPath, rutaRelativa);
+                if (File.Exists(rutaFisica)) File.Delete(rutaFisica);
+            }
+            catch
+            {
+                // No bloquear la operación por un archivo que no se pudo
+                // borrar físicamente (ej. permisos) — la referencia en la
+                // base de datos ya se quitó, que es lo que ve el usuario.
+            }
+        }
+
+        listaLocal.Remove(archivo);
+    }
+
+    // El usuario confirmó que sí quiere agregar la Localización escrita al
+    // catálogo "Localización" (el mismo de Materiales, ya sincronizado con
+    // las torres del trazado) — se crea y se reintenta el guardado, que
+    // esta vez ya la encuentra y sigue normal.
+    private async Task ConfirmarNuevaLocalizacion()
+    {
+        var texto = localizacionPendienteTexto.Trim();
+        if (string.IsNullOrWhiteSpace(texto)) return;
+
+        Db.Catalogos.Add(new ItemCatalogo
+        {
+            Tipo = TipoCatalogoLocalizacion,
+            Nombre = texto,
+            Descripcion = "Agregado desde Ensayos",
+            Activo = true
+        });
+        await Db.SaveChangesAsync();
+        Db.ChangeTracker.Clear();
+
+        if (!localizacionesDisponibles.Any(l => l.Equals(texto, StringComparison.OrdinalIgnoreCase)))
+        {
+            localizacionesDisponibles.Add(texto);
+        }
+
+        confirmandoNuevaLocalizacion = false;
+        await Guardar();
+    }
+
+    private void CancelarNuevaLocalizacion()
+    {
+        confirmandoNuevaLocalizacion = false;
+        localizacionPendienteTexto = "";
+    }
+
+    private async Task Guardar()
+    {
+        mensaje = "";
+
+        if (usaTorre)
+        {
+            if (string.IsNullOrWhiteSpace(torreTexto))
+            {
+                mensaje = "Debes indicar el No. de Torre antes de guardar.";
+                return;
+            }
+            // En lote, cada fila trae su propio Elemento (columna de la
+            // tabla); fuera de lote, es el campo de arriba.
+            var faltaElemento = ModoLote
+                ? filasCilindros.Any(f => string.IsNullOrWhiteSpace(ObtenerValorFila(f, ClaveElementoFila)))
+                : string.IsNullOrWhiteSpace(elementoTexto);
+            if (faltaElemento)
+            {
+                mensaje = ModoLote
+                    ? "Debes indicar el Elemento (pata) de cada fila antes de guardar."
+                    : "Debes indicar el Elemento (pata) antes de guardar.";
+                return;
+            }
+        }
+        else if (string.IsNullOrWhiteSpace(localizacionTexto))
+        {
+            mensaje = "Debes indicar la Localización antes de guardar.";
+            return;
+        }
+
+        // ---- Localización: se hereda del catálogo "Localización". Si lo
+        // que se escribió no existe ahí (ni con otra mayúscula/minúscula),
+        // se pausa el guardado y se pregunta si se quiere agregar — una
+        // vez confirmado, ConfirmarNuevaLocalizacion() la crea y vuelve a
+        // llamar Guardar(), que esta vez sí la encuentra y sigue normal. ----
+        if (!usaTorre && !confirmandoNuevaLocalizacion)
+        {
+            var textoLocCheck = localizacionTexto.Trim();
+            var existeLocalizacion = await Db.Catalogos.AsNoTracking()
+                .AnyAsync(c => c.Tipo == TipoCatalogoLocalizacion && c.Nombre.ToLower() == textoLocCheck.ToLower());
+            if (!existeLocalizacion)
+            {
+                confirmandoNuevaLocalizacion = true;
+                localizacionPendienteTexto = textoLocCheck;
+                return;
+            }
+        }
+
+        var errorDuplicado = await ValidarDuplicados();
+        if (errorDuplicado is not null)
+        {
+            mensaje = errorDuplicado;
+            return;
+        }
+
+        guardando = true;
+        StateHasChanged();
+        await Task.Yield();
+
+        // ---- Torre y patas válidas: se resuelven una sola vez, son
+        // iguales para todos los resultados del lote (o para el único
+        // resultado normal) — lo que SÍ puede variar por fila es el
+        // Elemento/pata en sí (parseoFila, más abajo, por resultado).
+        //
+        // Para Tipos que usan Torre, se resuelve desde el texto de Torre
+        // escrito arriba. Para los que no (Localización en su lugar), se
+        // resuelve desde el catálogo "Localización": si la Localización
+        // escogida está vinculada a una Torre del trazado
+        // (ElementoTrazadoId — ver SincronizadorCatalogoLocalizacion), el
+        // resultado también queda asociado a esa Torre, igual que
+        // Resistencia a la compresión — así, un ensayo de Densidades con
+        // Localización "102NNN" y Elemento "A" (o "Trincho") también
+        // aparece en Trazado para la torre 102NNN. Si la Localización no
+        // corresponde a ninguna Torre (ej. "PR12+300"), no hay Torre que
+        // asociar y el resultado queda solo con su Localización. ----
+        int? elementoTrazadoId = null;
+        List<string>? patasValidas = null;
+
+        // La Localización ya existe en el catálogo a esta altura (si no
+        // existía, Guardar() se detuvo antes a preguntar) — se guarda con
+        // la grafía exacta tal como está en el catálogo, no la que haya
+        // tecleado el usuario (evita duplicados por mayúsculas/espacios).
+        string? localizacionResuelta = null;
+        if (!usaTorre)
+        {
+            var textoLoc = localizacionTexto.Trim();
+            var itemLocalizacion = await Db.Catalogos.AsNoTracking()
+                .Where(c => c.Tipo == TipoCatalogoLocalizacion && c.Nombre.ToLower() == textoLoc.ToLower())
+                .Select(c => new { c.Nombre, c.ElementoTrazadoId })
+                .FirstOrDefaultAsync();
+            localizacionResuelta = itemLocalizacion?.Nombre ?? textoLoc;
+            elementoTrazadoId = itemLocalizacion?.ElementoTrazadoId;
+        }
+
+        if (usaTorre && !string.IsNullOrWhiteSpace(torreTexto))
+        {
+            var textoTorre = torreTexto.Trim();
+            var torre = await Db.ElementosTrazado.FirstOrDefaultAsync(t => !t.Eliminado && t.Codigo.ToLower() == textoTorre.ToLower());
+            elementoTrazadoId = torre?.Id;
+            if (elementoTrazadoId is null)
+            {
+                elementoTrazadoId = await Db.AliasTorres.Where(a => a.Texto.ToLower() == textoTorre.ToLower())
+                    .Select(a => (int?)a.ElementoTrazadoId).FirstOrDefaultAsync();
+            }
+        }
+
+        if (elementoTrazadoId is int idTorreValida)
+        {
+            var nombresPatas = await Db.Componentes.Where(c => c.ElementoTrazadoId == idTorreValida && c.EsPredeterminado && !c.EsHojaDeVida && !c.Eliminado)
+                .Select(c => c.Nombre).ToListAsync();
+            patasValidas = nombresPatas.Select(ParserElementoEnsayo.ObtenerCodigoPata).ToList();
+        }
+
+        // ---- Informe(s): fuera de lote (o lote sin "Edad" detectada), uno
+        // solo compartido (informeNumero). En lote con "Edad", uno distinto
+        // por cada edad de ensayo (informesPorEdad) — se cachea por número
+        // para no crear duplicados ni volver a consultar la BD de más ----
+        var cacheInformes = new Dictionary<string, Informe>(StringComparer.OrdinalIgnoreCase);
+        var informePorEdadResuelto = new Dictionary<string, Informe>(StringComparer.OrdinalIgnoreCase);
+
+        // Si no se indicó No. de Informe pero sí se adjuntaron PDF(s), de
+        // todos modos hay que crear un Informe (sin número) para poder
+        // guardar esos archivos en algún lado — si no, se suben pero no
+        // quedan asociados a ningún resultado y no se vuelven a encontrar.
+        // forzarCrear hace que, en ese caso, también se cree con blanco;
+        // el índice único de Informe ya no choca entre varios en blanco.
+        async Task<Informe?> ResolverInforme(string numero, bool forzarCrear = false)
+        {
+            var limpio = (numero ?? "").Trim();
+            if (string.IsNullOrWhiteSpace(limpio) && !forzarCrear) return null;
+            if (cacheInformes.TryGetValue(limpio, out var yaResuelto)) return yaResuelto;
+
+            Informe? existente = null;
+            if (!string.IsNullOrWhiteSpace(limpio))
+            {
+                existente = await Db.Informes.FirstOrDefaultAsync(i => i.TipoEnsayoId == TipoEnsayoId && i.Numero == limpio);
+            }
+            if (existente is null)
+            {
+                existente = new Informe { TipoEnsayoId = TipoEnsayoId, Numero = limpio };
+                Db.Informes.Add(existente);
+                await Db.SaveChangesAsync();
+            }
+            cacheInformes[limpio] = existente;
+            return existente;
+        }
+
+        // Variante de ResolverInforme para "informe por fila": si la fila
+        // trae un número, se resuelve/comparte igual que arriba (dos filas
+        // con el mismo número terminan en el mismo Informe). Si no trae
+        // número pero sí archivos, se crea un Informe propio para ESA fila
+        // (no se comparte el cache[""] entre filas en blanco: cada una es
+        // un informe distinto, aunque todos queden con Numero = "").
+        async Task<Informe?> ResolverInformeFila(string numero, bool forzarCrear)
+        {
+            var limpio = (numero ?? "").Trim();
+            if (!string.IsNullOrWhiteSpace(limpio)) return await ResolverInforme(limpio);
+            if (!forzarCrear) return null;
+
+            var nuevo = new Informe { TipoEnsayoId = TipoEnsayoId, Numero = "" };
+            Db.Informes.Add(nuevo);
+            await Db.SaveChangesAsync();
+            return nuevo;
+        }
+
+        // ---- Archivos (informe, diseño de mezcla): si el mismo archivo se
+        // sube más de una vez en el mismo guardado (ej. el mismo PDF en 2
+        // filas distintas), o ya existe en la base de datos de una subida
+        // anterior, solo se guarda una copia física — las demás filas
+        // quedan referenciadas a esa misma ruta (ver GuardarArchivoConHash). ----
+        var hashARuta = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        // ---- Archivo de diseño de mezcla: se sube una sola vez y se
+        // reutiliza su ruta en cada resultado del lote ----
+        string? disenoMezclaArchivoNuevo = null;
+        if (archivoDisenoMezcla is not null)
+        {
+            disenoMezclaArchivoNuevo = await GuardarArchivo(archivoDisenoMezcla, 20 * 1024 * 1024);
+        }
+
+        // ---- Qué juego(s) de valores guardar, con qué edad (para elegir
+        // el informe correspondiente) y con qué Elemento: uno (normal o
+        // edición), o uno por cada fila del lote (valores compartidos +
+        // los propios de esa fila, que pisan a los compartidos si
+        // coinciden; el Elemento de la fila, o el de arriba si la fila no
+        // trae el suyo propio) ----
+        var listaDeValores = new List<(Dictionary<string, string> Valores, string? Edad, string ElementoTexto, string? FechaTexto)>();
+        if (ModoLote)
+        {
+            var claveEdad = ClaveCampoEdad;
+            foreach (var fila in filasCilindros)
+            {
+                var combinados = new Dictionary<string, string>(valores, StringComparer.OrdinalIgnoreCase);
+                foreach (var (k, v) in fila)
+                {
+                    if (k == ClaveElementoFila || k == ClaveFechaEjecucionFila) continue;
+                    combinados[k] = v;
+                }
+                var edad = claveEdad is not null && fila.TryGetValue(claveEdad, out var ed) ? ed : null;
+                var elementoFila = fila.TryGetValue(ClaveElementoFila, out var elFila) && !string.IsNullOrWhiteSpace(elFila)
+                    ? elFila : elementoTexto;
+                var fechaFila = fila.TryGetValue(ClaveFechaEjecucionFila, out var feFila) && !string.IsNullOrWhiteSpace(feFila)
+                    ? feFila : fechaEjecucionTexto;
+                listaDeValores.Add((combinados, edad, elementoFila, fechaFila));
+            }
+        }
+        else
+        {
+            listaDeValores.Add((valores, null, elementoTexto, fechaEjecucionTexto));
+        }
+
+        // En edición de lote, cada fila de listaDeValores corresponde (en el
+        // mismo orden) a un resultado ya existente en idsFilasCilindros.
+        var esLoteDeEdicion = esEdicion && editandoLote && idsFilasCilindros.Count == listaDeValores.Count;
+
+        var camposPorClave = campos.ToDictionary(c => c.Clave, StringComparer.OrdinalIgnoreCase);
+
+        // Si hay PDF(s) nuevos para el cuadro único (fuera de modo lote),
+        // hay que crear el Informe aunque el No. quede en blanco, para no
+        // perder esos archivos (ver ResolverInforme arriba).
+        var forzarInformeEnBlanco = !ModoLote && archivosInforme.Count > 0;
+
+        var informePorFilaResuelto = new Dictionary<int, Informe>();
+
+        // Adjuntos: los nuevos se resuelven una sola vez (mismo contenido = mismo registro);
+        // los ya existentes se conservan por resultado salvo que se reemplacen o quiten.
+        var adjuntoNuevoPorClave = new Dictionary<string, AdjuntoEnsayo>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (claveAdj, archivoAdj) in adjuntosPendientes)
+            adjuntoNuevoPorClave[claveAdj] = await ResolverAdjuntoAsync(archivoAdj);
+        var idsAdjPrevios = (idsFilasCilindros.Count > 0 ? idsFilasCilindros : new List<int>()).ToList();
+        if (ResultadoEnsayoId is int idEdAdj) idsAdjPrevios.Add(idEdAdj);
+        var adjuntosPrevios = idsAdjPrevios.Count == 0 ? new Dictionary<(int, int), int>() :
+            Db.ValoresCampoEnsayo.AsNoTracking()
+              .Where(v => idsAdjPrevios.Contains(v.ResultadoEnsayoId) && v.AdjuntoEnsayoId != null)
+              .ToDictionary(v => (v.ResultadoEnsayoId, v.CampoEnsayoId), v => v.AdjuntoEnsayoId!.Value);
+        var nombrePorAdjunto = Db.AdjuntosEnsayo.AsNoTracking().ToDictionary(a => a.Id, a => a.NombreOriginal);
+
+        for (var indiceFila = 0; indiceFila < listaDeValores.Count; indiceFila++)
+        {
+            var (valoresDelResultado, edadDelResultado, elementoTextoFila, fechaTextoFila) = listaDeValores[indiceFila];
+            elementoTextoFila = (elementoTextoFila ?? "").Trim();
+            // Solo tiene sentido interpretar el Elemento contra patas si
+            // hay una Torre resuelta a la cual compararlo (usaTorre, o
+            // !usaTorre con Localización vinculada a una Torre); sin
+            // Torre, se guarda el texto tal cual, sin pata asociada.
+            var parseoFila = elementoTrazadoId is not null
+                ? ParserElementoEnsayo.Parsear(elementoTextoFila, patasValidas)
+                : new ParserElementoEnsayo.ResultadoParseo();
+            DateTime? fechaEjecucionFilaValor = DateTime.TryParse(fechaTextoFila, out var feFilaVal) ? feFilaVal : (DateTime?)null;
+
+            Informe? informe;
+            if (UsaInformePorEdadLote && edadDelResultado is not null && informesPorEdad.TryGetValue(edadDelResultado, out var numeroInformeEdad))
+            {
+                informe = await ResolverInforme(numeroInformeEdad);
+                if (informe is not null) informePorEdadResuelto[edadDelResultado] = informe;
+            }
+            else if (UsaInformePorFilaLote)
+            {
+                var numeroFila = ObtenerInformeParaFila(indiceFila);
+                var hayArchivosFila = archivosPorFila.TryGetValue(indiceFila, out var archivosDeEstaFila) && archivosDeEstaFila.Count > 0;
+                informe = await ResolverInformeFila(numeroFila, hayArchivosFila);
+                if (informe is not null) informePorFilaResuelto[indiceFila] = informe;
+            }
+            else
+            {
+                informe = await ResolverInforme(informeNumero, forzarInformeEnBlanco);
+            }
+
+            ResultadoEnsayo resultado;
+            if (esLoteDeEdicion)
+            {
+                resultado = await Db.ResultadosEnsayo.FirstAsync(r => r.Id == idsFilasCilindros[indiceFila]);
+            }
+            else if (esEdicion)
+            {
+                resultado = await Db.ResultadosEnsayo.FirstAsync(r => r.Id == ResultadoEnsayoId);
+            }
+            else
+            {
+                resultado = new ResultadoEnsayo { TipoEnsayoId = TipoEnsayoId, Origen = "Manual" };
+                Db.ResultadosEnsayo.Add(resultado);
+            }
+
+            resultado.ElementoTrazadoId = elementoTrazadoId;
+            resultado.ElementoTexto = elementoTextoFila;
+            resultado.SubElemento = parseoFila.SubElemento;
+            // Si se resolvió un informe (número nuevo, o PDF nuevo sin
+            // número), se asocia. Si no se resolvió ninguno y es una
+            // edición, se deja el que ya tenía (no perder el vínculo con
+            // sus archivos solo porque esta vez no se tocó ese campo).
+            if (informe is not null)
+            {
+                resultado.InformeId = informe.Id;
+            }
+            else if (!esEdicion)
+            {
+                resultado.InformeId = null;
+            }
+            if (usaTorre)
+            {
+                resultado.DisenoMezclaCodigo = string.IsNullOrWhiteSpace(disenoMezclaCodigo) ? null : disenoMezclaCodigo.Trim();
+                if (disenoMezclaArchivoNuevo is not null) resultado.DisenoMezclaArchivo = disenoMezclaArchivoNuevo;
+                resultado.Localizacion = null;
+                resultado.FechaEjecucion = null;
+            }
+            else
+            {
+                resultado.Localizacion = localizacionResuelta;
+                resultado.FechaEjecucion = fechaEjecucionFilaValor;
+            }
+
+            await Db.SaveChangesAsync();
+
+            if (esEdicion)
+            {
+                var viejos = Db.ResultadosEnsayoComponente.Where(rc => rc.ResultadoEnsayoId == resultado.Id);
+                Db.ResultadosEnsayoComponente.RemoveRange(viejos);
+                var viejosValores = Db.ValoresCampoEnsayo.Where(v => v.ResultadoEnsayoId == resultado.Id);
+                Db.ValoresCampoEnsayo.RemoveRange(viejosValores);
+                await Db.SaveChangesAsync();
+            }
+
+            if (elementoTrazadoId is int idTorre2)
+            {
+                if (parseoFila.Patas.Count > 0)
+                {
+                    var patasDeTorre2 = await Db.Componentes
+                        .Where(c => c.ElementoTrazadoId == idTorre2 && c.EsPredeterminado && !c.EsHojaDeVida && !c.Eliminado)
+                        .ToListAsync();
+                    var componentesPata = patasDeTorre2
+                        .Where(c => parseoFila.Patas.Contains(ParserElementoEnsayo.ObtenerCodigoPata(c.Nombre), StringComparer.OrdinalIgnoreCase))
+                        .ToList();
+                    foreach (var comp in componentesPata)
+                    {
+                        Db.ResultadosEnsayoComponente.Add(new ResultadoEnsayoComponente { ResultadoEnsayoId = resultado.Id, ComponenteId = comp.Id });
+                    }
+                }
+                else if (parseoFila.SubElemento == SubElementoResultado.Otro)
+                {
+                    // Fuera de lote, se usa el nombre que el usuario
+                    // confirmó/editó arriba (elementoEspecialNombre). En
+                    // lote, cada fila puede traer su propio elemento
+                    // especial (ej. "Trincho"), así que el nombre se
+                    // propone solo a partir de su propio texto.
+                    var nombreFinal = (ModoLote
+                        ? ParserElementoEnsayo.ProponerNombreElemento(elementoTextoFila)
+                        : elementoEspecialNombre).Trim();
+
+                    if (!string.IsNullOrWhiteSpace(nombreFinal))
+                    {
+                        // Igual que en la carga por Excel: si ese nombre en
+                        // realidad coincide con una pata real de la torre, se
+                        // asocia a la pata real en vez de crear un duplicado
+                        // suelto (ej. "A" junto a "Pata A").
+                        var patasDeTorreReal = await Db.Componentes
+                            .Where(c => c.ElementoTrazadoId == idTorre2 && c.EsPredeterminado && !c.EsHojaDeVida && !c.Eliminado)
+                            .ToListAsync();
+                        var pataRealCoincidente = patasDeTorreReal.FirstOrDefault(c =>
+                            string.Equals(ParserElementoEnsayo.ObtenerCodigoPata(c.Nombre), nombreFinal, StringComparison.OrdinalIgnoreCase));
+
+                        if (pataRealCoincidente is not null)
+                        {
+                            Db.ResultadosEnsayoComponente.Add(new ResultadoEnsayoComponente { ResultadoEnsayoId = resultado.Id, ComponenteId = pataRealCoincidente.Id });
+                        }
+                        else
+                        {
+                            var compEspecial = await Db.Componentes.FirstOrDefaultAsync(c =>
+                                c.ElementoTrazadoId == idTorre2 && !c.EsPredeterminado && !c.Eliminado && c.Nombre.ToLower() == nombreFinal.ToLower());
+                            if (compEspecial is null)
+                            {
+                                compEspecial = new Componente { ElementoTrazadoId = idTorre2, Nombre = nombreFinal, EsPredeterminado = false, EsHojaDeVida = false };
+                                Db.Componentes.Add(compEspecial);
+                                await Db.SaveChangesAsync();
+                            }
+                            Db.ResultadosEnsayoComponente.Add(new ResultadoEnsayoComponente { ResultadoEnsayoId = resultado.Id, ComponenteId = compEspecial.Id });
+                        }
+                    }
+                }
+            }
+
+            foreach (var (clave, valorOriginal) in valoresDelResultado)
+            {
+                var valor = valorOriginal;
+                if (!camposPorClave.TryGetValue(clave, out var campo)) continue;
+                int? adjId = null;
+                if (campo.LlevaAdjunto)
+                {
+                    if (adjuntoNuevoPorClave.TryGetValue(clave, out var nuevoAdj)) { adjId = nuevoAdj.Id; nombrePorAdjunto[nuevoAdj.Id] = nuevoAdj.NombreOriginal; }
+                    else if (!adjuntosQuitar.Contains(clave) && adjuntosPrevios.TryGetValue((resultado.Id, campo.Id), out var previoId)) adjId = previoId;
+                }
+                if (string.IsNullOrWhiteSpace(valor))
+                {
+                    if (adjId is null) continue;
+                    valor = nombrePorAdjunto.GetValueOrDefault(adjId.Value, "adjunto");
+                }
+                Db.ValoresCampoEnsayo.Add(new ValorCampoEnsayo { ResultadoEnsayoId = resultado.Id, CampoEnsayoId = campo.Id, Valor = valor, AdjuntoEnsayoId = adjId });
+            }
+
+            // Campos con adjunto que no traían texto: el valor es el nombre del archivo.
+            foreach (var campoAdj in campos.Where(c => c.LlevaAdjunto && !valoresDelResultado.Any(kv => string.Equals(kv.Key, c.Clave, StringComparison.OrdinalIgnoreCase))))
+            {
+                int? adjId2 = null;
+                if (adjuntoNuevoPorClave.TryGetValue(campoAdj.Clave, out var nuevo2)) { adjId2 = nuevo2.Id; nombrePorAdjunto[nuevo2.Id] = nuevo2.NombreOriginal; }
+                else if (!adjuntosQuitar.Contains(campoAdj.Clave) && adjuntosPrevios.TryGetValue((resultado.Id, campoAdj.Id), out var previo2)) adjId2 = previo2;
+                if (adjId2 is null) continue;
+                Db.ValoresCampoEnsayo.Add(new ValorCampoEnsayo { ResultadoEnsayoId = resultado.Id, CampoEnsayoId = campoAdj.Id, Valor = nombrePorAdjunto.GetValueOrDefault(adjId2.Value, "adjunto"), AdjuntoEnsayoId = adjId2 });
+            }
+
+            await Db.SaveChangesAsync();
+        }
+
+        // ---- Archivos del informe: en modo "informe por edad" cada edad
+        // tiene su propio informe y sus propios archivos; en modo "informe
+        // por fila" cada fila tiene el suyo; fuera de lote, los archivos
+        // subidos en el cuadro único se adjuntan a cada informe distinto
+        // que haya quedado resuelto en este guardado. En los tres casos,
+        // si el mismo archivo (mismo contenido) ya se subió antes — en
+        // esta misma operación o en una anterior — no se vuelve a guardar
+        // en disco: se referencia la copia existente (ver hashARuta y
+        // GuardarArchivoConHash). ----
+        if (UsaInformePorEdadLote)
+        {
+            foreach (var (edad, archivosEdad) in archivosPorEdad)
+            {
+                if (archivosEdad.Count == 0) continue;
+                if (!informePorEdadResuelto.TryGetValue(edad, out var informeEdad)) continue;
+                foreach (var archivo in archivosEdad)
+                {
+                    var (ruta, hash) = await GuardarArchivoConHash(archivo, 20 * 1024 * 1024, hashARuta);
+                    Db.ArchivosInforme.Add(new ArchivoInforme { InformeId = informeEdad.Id, NombreOriginal = archivo.Name, RutaArchivo = ruta, Hash = hash });
+                }
+            }
+            await Db.SaveChangesAsync();
+        }
+        else if (UsaInformePorFilaLote)
+        {
+            foreach (var (indiceFilaArchivo, archivosFila) in archivosPorFila)
+            {
+                if (archivosFila.Count == 0) continue;
+                if (!informePorFilaResuelto.TryGetValue(indiceFilaArchivo, out var informeFila)) continue;
+                foreach (var archivo in archivosFila)
+                {
+                    var (ruta, hash) = await GuardarArchivoConHash(archivo, 20 * 1024 * 1024, hashARuta);
+                    Db.ArchivosInforme.Add(new ArchivoInforme { InformeId = informeFila.Id, NombreOriginal = archivo.Name, RutaArchivo = ruta, Hash = hash });
+                }
+            }
+            await Db.SaveChangesAsync();
+        }
+        else if (archivosInforme.Count > 0 && cacheInformes.Count > 0)
+        {
+            var rutasSubidas = new List<(string NombreOriginal, string Ruta, string Hash)>();
+            foreach (var archivo in archivosInforme)
+            {
+                var (ruta, hash) = await GuardarArchivoConHash(archivo, 20 * 1024 * 1024, hashARuta);
+                rutasSubidas.Add((archivo.Name, ruta, hash));
+            }
+            foreach (var inf in cacheInformes.Values)
+            {
+                foreach (var (nombre, ruta, hash) in rutasSubidas)
+                {
+                    Db.ArchivosInforme.Add(new ArchivoInforme { InformeId = inf.Id, NombreOriginal = nombre, RutaArchivo = ruta, Hash = hash });
+                }
+            }
+            await Db.SaveChangesAsync();
+        }
+
+        Db.ChangeTracker.Clear();
+
+        guardando = false;
+        await OnGuardado.InvokeAsync();
+        await OnCerrar.InvokeAsync();
+    }
+
+    private async Task Cerrar()
+    {
+        await OnCerrar.InvokeAsync();
+    }
+}

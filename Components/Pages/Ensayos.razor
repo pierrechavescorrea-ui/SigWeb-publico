@@ -1,0 +1,435 @@
+@page "/ensayos"
+@rendermode InteractiveServer
+@using Microsoft.EntityFrameworkCore
+@using SigWeb.Data
+@using SigWeb.Models
+@inject AppDbContext Db
+@inject NavigationManager Nav
+@inject SigWeb.Data.Impacto.AnalizadorImpacto Analizador
+
+<EncabezadoPagina Titulo="Ensayos" Icono="ensayos">
+    <Acciones>
+        <button type="button" class="pg-btn pg-btn-primario @(mostrarFormGrupo ? "activo" : "")" title="Nuevo grupo de ensayos" @onclick="AlternarFormGrupo"><Ico Nombre="agregar" /></button>
+    </Acciones>
+</EncabezadoPagina>
+
+<div class="ens-barra mb-3">
+    <input class="form-control form-control-sm" style="max-width:260px;" placeholder="Buscar grupo..." @bind="filtroGrupos" @bind:event="oninput" />
+</div>
+
+@if (mostrarFormGrupo)
+{
+    <div class="mb-3">
+        <div>
+            <EditForm Model="grupoActual" OnValidSubmit="GuardarGrupo" FormName="GrupoEnsayoForm">
+                <div class="frm-linea mb-0">
+                    <button type="button" class="frm-icono-btn" title="Elegir ícono" @onclick="@(() => mostrarSelectorIconoGrupo = !mostrarSelectorIconoGrupo)">
+                        <img src="@RutaIcono(grupoActual.IconoCatalogoId)" alt="" />
+                    </button>
+                    <CampoFormulario Etiqueta="@(modoEdicionGrupo ? "Editar grupo" : "Nuevo grupo")" Ancho="" Obligatorio="true" Destacado="true">
+                        <InputText class="form-control" @bind-Value="grupoActual.Nombre" placeholder="Concretos" />
+                    </CampoFormulario>
+                    <div class="frm-linea-btns">
+                        <button class="btn btn-secondary btn-sm" type="button" @onclick="CerrarFormGrupo" title="Cancelar"><Ico Nombre="cancelar" /></button>
+                        <button class="btn btn-primary btn-sm" type="submit" title="@(modoEdicionGrupo ? "Guardar" : "Agregar")"><Ico Nombre="@(modoEdicionGrupo ? "guardar" : "agregar")" /></button>
+                    </div>
+                </div>
+            </EditForm>
+            @if (mostrarSelectorIconoGrupo)
+            {
+                <SelectorIconos Iconos="iconosDisponibles" IconoSeleccionadoId="grupoActual.IconoCatalogoId"
+                                 PermitirNinguno="false"
+                                 OnSeleccionar="@(id => { grupoActual.IconoCatalogoId = id; mostrarSelectorIconoGrupo = false; })" />
+            }
+            @if (!string.IsNullOrEmpty(mensajeGrupo))
+            {
+                <div class="alert alert-warning py-1 mt-2 mb-0">@mensajeGrupo</div>
+            }
+        </div>
+    </div>
+}
+
+@if (elimGrupo is not null || elimTipo is not null)
+{
+    <div class="card panel-formulario mb-3 border-danger">
+        <div class="card-body">
+            <div class="mb-2">🗑 <strong>@(elimGrupo is not null ? elimGrupo.Nombre : elimTipo!.Nombre)</strong></div>
+            <PanelImpacto Informe="impacto" OnEntendido="@(v => impactoOk = v)" />
+            <div class="d-flex gap-2">
+                <button class="btn btn-secondary btn-sm" type="button" title="Cancelar" @onclick="CancelarEliminar">✕</button>
+                <button class="btn btn-danger btn-sm" type="button" title="Eliminar (va a la Papelera)" disabled="@BloqueadoPorImpacto" @onclick="ConfirmarEliminar"><Ico Nombre="eliminar" /></button>
+            </div>
+        </div>
+    </div>
+}
+
+<div class="ens-grid mb-3">
+    @foreach (var g in GruposMostrados)
+    {
+        <div class="ens-cuadro @(grupoSeleccionado?.Id == g.Id ? "activo" : "") @(!g.Activo ? "inactivo" : "")" role="button"
+             title="@NombreGrupo(g)" @onclick="() => SeleccionarGrupo(g)">
+            <div class="ens-acc">
+                <button type="button" class="ens-mini" title="Editar grupo" @onclick:stopPropagation="true" @onclick="() => EditarGrupo(g)"><Ico Nombre="editar" /></button>
+                <button type="button" class="ens-mini" title="@(g.Activo ? "Desactivar" : "Activar")" @onclick:stopPropagation="true" @onclick="() => CambiarEstadoGrupo(g)"><span class="@(g.Activo ? "" : "ico-apagado")"><Ico Nombre="activar" /></span></button>
+                <button type="button" class="ens-mini" title="Eliminar grupo" @onclick:stopPropagation="true" @onclick="() => PedirEliminarGrupo(g)"><Ico Nombre="eliminar" /></button>
+            </div>
+            <img src="@RutaIcono(g.IconoCatalogoId)" alt="" />
+            <div class="ens-nombre">@g.Nombre</div>
+            <div class="ens-cuenta">@(conteoTipos.TryGetValue(g.Id, out var n) ? n : 0)</div>
+        </div>
+    }
+    @if (!GruposMostrados.Any())
+    {
+        <div class="text-muted small"><em>Sin resultados.</em></div>
+    }
+</div>
+
+@if (grupoSeleccionado is not null)
+{
+    <div class="card panel-formulario">
+        <div class="card-header d-flex align-items-center gap-2">
+            <img src="@RutaIcono(grupoSeleccionado.IconoCatalogoId)" alt="" width="24" height="24" style="object-fit:contain;" />
+            <span>@grupoSeleccionado.Nombre</span>
+            <input class="form-control form-control-sm ms-3" style="max-width:240px;" placeholder="Buscar tipo de ensayo..." @bind="filtroTipos" @bind:event="oninput" />
+            <button type="button" class="btn btn-sm @(mostrarFormTipo ? "btn-dark" : "btn-primary")" title="Nuevo tipo de ensayo" @onclick="AlternarFormTipo"><Ico Nombre="agregar" /></button>
+        </div>
+        <div class="card-body">
+            @if (mostrarFormTipo)
+            {
+                <EditForm Model="tipoActual" OnValidSubmit="GuardarTipo" FormName="TipoEnsayoForm">
+                    <div class="frm-linea">
+                        <button type="button" class="frm-icono-btn" title="Elegir ícono (o dejar el del grupo)" @onclick="@(() => mostrarSelectorIconoTipo = !mostrarSelectorIconoTipo)">
+                            <img src="@RutaIcono(tipoActual.IconoCatalogoId ?? grupoSeleccionado.IconoCatalogoId)" alt="" />
+                        </button>
+                        <CampoFormulario Etiqueta="@(modoEdicionTipo ? "Editar tipo de ensayo" : "Nuevo tipo de ensayo")" Ancho="" Obligatorio="true" Destacado="true">
+                            <InputText class="form-control" @bind-Value="tipoActual.Nombre" placeholder="Slump" />
+                        </CampoFormulario>
+                        <div class="form-check form-switch mb-2">
+                            <input class="form-check-input" type="checkbox" role="switch" id="usaTorreCheck" @bind="tipoActual.UsaTorre" />
+                            <label class="form-check-label small" for="usaTorreCheck">Se asocia a Torres del trazado</label>
+                        </div>
+                        <div class="frm-linea-btns">
+                            <button class="btn btn-secondary btn-sm" type="button" @onclick="CerrarFormTipo" title="Cancelar"><Ico Nombre="cancelar" /></button>
+                            <button class="btn btn-primary btn-sm" type="submit" title="@(modoEdicionTipo ? "Guardar" : "Agregar")"><Ico Nombre="@(modoEdicionTipo ? "guardar" : "agregar")" /></button>
+                        </div>
+                    </div>
+                </EditForm>
+
+                @if (mostrarSelectorIconoTipo)
+                {
+                    <SelectorIconos Iconos="iconosDisponibles" IconoSeleccionadoId="tipoActual.IconoCatalogoId"
+                                     PermitirNinguno="true"
+                                     TextoNinguno="Usar el ícono del grupo"
+                                     OnSeleccionar="@(id => { tipoActual.IconoCatalogoId = id; mostrarSelectorIconoTipo = false; })" />
+                }
+                @if (!string.IsNullOrEmpty(mensajeTipo))
+                {
+                    <div class="alert alert-warning py-1">@mensajeTipo</div>
+                }
+            }
+
+            <div class="ens-grid ens-grid-sub">
+                @foreach (var t in TiposMostrados)
+                {
+                    <div class="ens-cuadro ens-sub @(!t.Activo ? "inactivo" : "")" role="button" title="@NombreTipo(t)"
+                         @onclick="() => AbrirTipo(t)">
+                        <div class="ens-acc">
+                            <button type="button" class="ens-mini" title="Editar tipo de ensayo" @onclick:stopPropagation="true" @onclick="() => EditarTipo(t)"><Ico Nombre="editar" /></button>
+                            <button type="button" class="ens-mini" title="@(t.Activo ? "Desactivar" : "Activar")" @onclick:stopPropagation="true" @onclick="() => CambiarEstadoTipo(t)"><span class="@(t.Activo ? "" : "ico-apagado")"><Ico Nombre="activar" /></span></button>
+                            <button type="button" class="ens-mini" title="Eliminar tipo de ensayo" @onclick:stopPropagation="true" @onclick="() => PedirEliminarTipo(t)"><Ico Nombre="eliminar" /></button>
+                        </div>
+                        <img src="@RutaIcono(t.IconoCatalogoId ?? grupoSeleccionado.IconoCatalogoId)" alt="" />
+                        <div class="ens-nombre">@t.Nombre</div>
+                    </div>
+                }
+                @if (!TiposMostrados.Any())
+                {
+                    <div class="text-muted small"><em>Sin tipos de ensayo.</em></div>
+                }
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private List<IconoCatalogo> iconosDisponibles = new();
+    private List<GrupoEnsayo> grupos = new();
+    private GrupoEnsayo? grupoSeleccionado;
+    private GrupoEnsayo grupoActual = new();
+    private bool modoEdicionGrupo = false;
+    private string mensajeGrupo = "";
+    private bool mostrarSelectorIconoGrupo = false;
+
+    private List<TipoEnsayo> tipos = new();
+    private TipoEnsayo tipoActual = new();
+    private bool modoEdicionTipo = false;
+    private string mensajeTipo = "";
+    private bool mostrarSelectorIconoTipo = false;
+
+    // ---------- Búsqueda (grupos, sobre la lista ya cargada) ----------
+    private string filtroGrupos = "";
+
+    private IEnumerable<GrupoEnsayo> GruposMostrados =>
+        string.IsNullOrWhiteSpace(filtroGrupos)
+            ? grupos
+            : grupos.Where(g => g.Nombre.Contains(filtroGrupos, StringComparison.OrdinalIgnoreCase));
+
+    // ---------- Búsqueda y orden (tabla de tipos de ensayo) ----------
+    private string filtroTipos = "";
+    private string columnaOrdenTipos = "Nombre";
+    private bool ordenAscendenteTipos = true;
+
+    private IEnumerable<TipoEnsayo> TiposMostrados
+    {
+        get
+        {
+            var query = tipos.AsEnumerable();
+            if (!string.IsNullOrWhiteSpace(filtroTipos))
+            {
+                query = query.Where(t => t.Nombre.Contains(filtroTipos, StringComparison.OrdinalIgnoreCase));
+            }
+            query = columnaOrdenTipos switch
+            {
+                "Nombre" => ordenAscendenteTipos ? query.OrderBy(t => t.Nombre) : query.OrderByDescending(t => t.Nombre),
+                "Estado" => ordenAscendenteTipos ? query.OrderBy(t => t.Activo) : query.OrderByDescending(t => t.Activo),
+                _ => query
+            };
+            return query;
+        }
+    }
+
+    private void OrdenarTiposPor(string columna)
+    {
+        if (columnaOrdenTipos == columna) ordenAscendenteTipos = !ordenAscendenteTipos;
+        else { columnaOrdenTipos = columna; ordenAscendenteTipos = true; }
+    }
+
+    private string FlechaTipos(string columna) => columnaOrdenTipos != columna ? "" : (ordenAscendenteTipos ? " ▲" : " ▼");
+
+    protected override void OnInitialized()
+    {
+        iconosDisponibles = Db.IconosCatalogo.AsNoTracking().Where(i => i.Activo).OrderBy(i => i.Categoria).ThenBy(i => i.Nombre).ToList();
+        CargarGrupos();
+    }
+
+    private string RutaIcono(int? iconoCatalogoId)
+    {
+        if (iconoCatalogoId is null) return "images/iconos/documento.svg";
+        return iconosDisponibles.FirstOrDefault(i => i.Id == iconoCatalogoId)?.RutaArchivo ?? "images/iconos/documento.svg";
+    }
+
+    private void CargarGrupos()
+    {
+        grupos = Db.GruposEnsayo.AsNoTracking().OrderBy(g => g.Orden).ThenBy(g => g.Nombre).ToList();
+        conteoTipos = Db.TiposEnsayo.AsNoTracking().GroupBy(t => t.GrupoEnsayoId).Select(x => new { x.Key, N = x.Count() }).ToDictionary(x => x.Key, x => x.N);
+    }
+
+    private static string NombreGrupo(GrupoEnsayo g) => g.Activo ? g.Nombre : g.Nombre + " (inactivo)";
+
+    private static string NombreTipo(TipoEnsayo t) => t.Activo ? t.Nombre : t.Nombre + " (inactivo)";
+
+    private void AbrirTipo(TipoEnsayo t) => Nav.NavigateTo("ensayos/" + t.Id);
+
+    private bool mostrarFormTipo = false;
+
+    private void AlternarFormTipo()
+    {
+        if (mostrarFormTipo) CerrarFormTipo();
+        else { CancelarEdicionTipo(); mostrarFormTipo = true; }
+    }
+
+    private void CerrarFormTipo() { CancelarEdicionTipo(); mostrarFormTipo = false; }
+
+    private bool mostrarFormGrupo = false;
+    private Dictionary<int, int> conteoTipos = new();
+
+    private void AlternarFormGrupo()
+    {
+        if (mostrarFormGrupo) CerrarFormGrupo();
+        else { CancelarEdicionGrupo(); mostrarFormGrupo = true; }
+    }
+
+    private void CerrarFormGrupo() { CancelarEdicionGrupo(); mostrarFormGrupo = false; }
+
+    private void SeleccionarGrupo(GrupoEnsayo g)
+    {
+        if (grupoSeleccionado?.Id == g.Id) { grupoSeleccionado = null; tipos = new(); return; }   // segundo clic: plegar
+        grupoSeleccionado = g;
+        CerrarFormTipo();
+        CargarTipos();
+    }
+
+    private void CargarTipos()
+    {
+        if (grupoSeleccionado is null) { tipos = new(); return; }
+        tipos = Db.TiposEnsayo.AsNoTracking()
+            .Where(t => t.GrupoEnsayoId == grupoSeleccionado.Id)
+            .OrderBy(t => t.Orden).ThenBy(t => t.Nombre)
+            .ToList();
+    }
+
+    private async Task GuardarGrupo()
+    {
+        mensajeGrupo = "";
+        var nombre = (grupoActual.Nombre ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(nombre)) { mensajeGrupo = "El nombre es obligatorio."; return; }
+
+        bool duplicado = Db.GruposEnsayo.IgnoreQueryFilters().AsNoTracking().Any(g => g.Nombre.ToLower() == nombre.ToLower() && g.Id != grupoActual.Id);
+        if (duplicado) { mensajeGrupo = $"Ya existe un grupo \"{nombre}\" (puede estar en la Papelera)."; return; }
+
+        grupoActual.Nombre = nombre;
+        if (modoEdicionGrupo) Db.GruposEnsayo.Update(grupoActual);
+        else Db.GruposEnsayo.Add(grupoActual);
+
+        await Db.SaveChangesAsync();
+        Db.ChangeTracker.Clear();
+        var idGuardado = grupoActual.Id;
+        CerrarFormGrupo();
+        CargarGrupos();
+
+        if (grupoSeleccionado is not null && grupoSeleccionado.Id == idGuardado)
+        {
+            grupoSeleccionado = grupos.FirstOrDefault(g => g.Id == idGuardado);
+        }
+    }
+
+    private void EditarGrupo(GrupoEnsayo g)
+    {
+        grupoActual = new GrupoEnsayo { Id = g.Id, Nombre = g.Nombre, IconoCatalogoId = g.IconoCatalogoId, Orden = g.Orden, Activo = g.Activo };
+        modoEdicionGrupo = true;
+        mostrarFormGrupo = true;
+        mostrarSelectorIconoGrupo = false;
+    }
+
+    private void CancelarEdicionGrupo()
+    {
+        grupoActual = new();
+        modoEdicionGrupo = false;
+        mensajeGrupo = "";
+        mostrarSelectorIconoGrupo = false;
+    }
+
+    private async Task CambiarEstadoGrupo(GrupoEnsayo g)
+    {
+        var item = await Db.GruposEnsayo.FindAsync(g.Id);
+        if (item is not null) { item.Activo = !item.Activo; await Db.SaveChangesAsync(); }
+        Db.ChangeTracker.Clear();
+        CargarGrupos();
+    }
+
+    private async Task GuardarTipo()
+    {
+        mensajeTipo = "";
+        if (grupoSeleccionado is null) return;
+        var nombre = (tipoActual.Nombre ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(nombre)) { mensajeTipo = "El nombre es obligatorio."; return; }
+
+        bool duplicado = Db.TiposEnsayo.IgnoreQueryFilters().AsNoTracking().Any(t =>
+            t.GrupoEnsayoId == grupoSeleccionado.Id && t.Nombre.ToLower() == nombre.ToLower() && t.Id != tipoActual.Id);
+        if (duplicado) { mensajeTipo = $"\"{nombre}\" ya existe en este grupo."; return; }
+
+        tipoActual.Nombre = nombre;
+        tipoActual.GrupoEnsayoId = grupoSeleccionado.Id;
+        if (modoEdicionTipo) Db.TiposEnsayo.Update(tipoActual);
+        else Db.TiposEnsayo.Add(tipoActual);
+
+        await Db.SaveChangesAsync();
+        Db.ChangeTracker.Clear();
+        // Crea o mantiene al día la Actividad de Trazado enlazada a este
+        // Tipo de Ensayo (tanto al crearlo como al renombrarlo).
+        SigWeb.Data.Trazado.SincronizadorActividadesEnsayo.Sincronizar(Db, tipoActual);
+        CerrarFormTipo();
+        CargarTipos();
+        CargarGrupos();
+    }
+
+    private void EditarTipo(TipoEnsayo t)
+    {
+        tipoActual = new TipoEnsayo { Id = t.Id, GrupoEnsayoId = t.GrupoEnsayoId, Nombre = t.Nombre, IconoCatalogoId = t.IconoCatalogoId, Orden = t.Orden, Activo = t.Activo, UsaTorre = t.UsaTorre };
+        modoEdicionTipo = true;
+        mostrarFormTipo = true;
+        mostrarSelectorIconoTipo = false;
+    }
+
+    private void CancelarEdicionTipo()
+    {
+        tipoActual = new();
+        modoEdicionTipo = false;
+        mensajeTipo = "";
+        mostrarSelectorIconoTipo = false;
+    }
+
+    private async Task CambiarEstadoTipo(TipoEnsayo t)
+    {
+        var item = await Db.TiposEnsayo.FindAsync(t.Id);
+        if (item is not null) { item.Activo = !item.Activo; await Db.SaveChangesAsync(); }
+        Db.ChangeTracker.Clear();
+        CargarTipos();
+    }
+
+    // ---------- Eliminar (con análisis de impacto) ----------
+    private GrupoEnsayo? elimGrupo;
+    private TipoEnsayo? elimTipo;
+    private SigWeb.Data.Impacto.InformeImpacto? impacto;
+    private bool impactoOk;
+    private bool BloqueadoPorImpacto => impacto is null || (impacto.RequiereEntender && !impactoOk);
+
+    private async Task CalcularImpacto(Func<Task<SigWeb.Data.Impacto.InformeImpacto>> f)
+    {
+        impacto = null; impactoOk = false;
+        try { impacto = await f(); } catch { impacto = new SigWeb.Data.Impacto.InformeImpacto { Elemento = "No se pudo calcular el impacto" }; }
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private void PedirEliminarGrupo(GrupoEnsayo g)
+    {
+        elimTipo = null; elimGrupo = g;
+        _ = CalcularImpacto(() => Analizador.GrupoEnsayo(g.Id));
+    }
+
+    private void PedirEliminarTipo(TipoEnsayo t)
+    {
+        elimGrupo = null; elimTipo = t;
+        _ = CalcularImpacto(() => Analizador.TipoEnsayo(t.Id));
+    }
+
+    private void CancelarEliminar() { elimGrupo = null; elimTipo = null; impacto = null; impactoOk = false; }
+
+    private async Task ConfirmarEliminar()
+    {
+        if (BloqueadoPorImpacto) return;
+        var ahora = DateTime.Now;
+        if (elimGrupo is not null)
+        {
+            var id = elimGrupo.Id;
+            var g = await Db.GruposEnsayo.FirstOrDefaultAsync(x => x.Id == id);
+            if (g is not null)
+            {
+                g.Eliminado = true; g.FechaEliminacion = ahora;
+                var tiposG = await Db.TiposEnsayo.Where(t => t.GrupoEnsayoId == id).ToListAsync();
+                foreach (var t in tiposG)
+                {
+                    t.Eliminado = true; t.FechaEliminacion = ahora;
+                    foreach (var a in await Db.Actividades.Where(a => a.TipoEnsayoId == t.Id).ToListAsync()) a.Activo = false;
+                }
+                await Db.SaveChangesAsync();
+            }
+            if (grupoSeleccionado?.Id == id) { grupoSeleccionado = null; tipos = new(); }
+        }
+        else if (elimTipo is not null)
+        {
+            var id = elimTipo.Id;
+            var t = await Db.TiposEnsayo.FirstOrDefaultAsync(x => x.Id == id);
+            if (t is not null)
+            {
+                t.Eliminado = true; t.FechaEliminacion = ahora;
+                foreach (var a in await Db.Actividades.Where(a => a.TipoEnsayoId == id).ToListAsync()) a.Activo = false;
+                await Db.SaveChangesAsync();
+            }
+        }
+        Db.ChangeTracker.Clear();
+        CancelarEliminar();
+        CargarGrupos();
+        CargarTipos();
+    }
+}

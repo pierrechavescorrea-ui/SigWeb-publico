@@ -1,0 +1,177 @@
+[
+ {
+  "archivo": "torre-bp1.ifc",
+  "nombre": "BP1",
+  "descripcion": "Torre tipo BP, cuerpo BP1",
+  "familia": "BP",
+  "miniatura": "torre-bp1.png"
+ },
+ {
+  "archivo": "torre-bp2.ifc",
+  "nombre": "BP2",
+  "descripcion": "Torre tipo BP, cuerpo BP2",
+  "familia": "BP",
+  "miniatura": "torre-bp2.png"
+ },
+ {
+  "archivo": "torre-bp3.ifc",
+  "nombre": "BP3",
+  "descripcion": "Torre tipo BP, cuerpo BP3",
+  "familia": "BP",
+  "miniatura": "torre-bp3.png"
+ },
+ {
+  "archivo": "torre-bp4.ifc",
+  "nombre": "BP4",
+  "descripcion": "Torre tipo BP, cuerpo BP4",
+  "familia": "BP",
+  "miniatura": "torre-bp4.png"
+ },
+ {
+  "archivo": "torre-bp5.ifc",
+  "nombre": "BP5",
+  "descripcion": "Torre de suspensión tipo BP5 (delta)",
+  "familia": "BP",
+  "miniatura": "torre-bp5.png"
+ },
+ {
+  "archivo": "torre-bp6.ifc",
+  "nombre": "BP6",
+  "descripcion": "Torre de suspensión tipo BP6 (delta)",
+  "familia": "BP",
+  "miniatura": "torre-bp6.png"
+ },
+ {
+  "archivo": "torre-be.ifc",
+  "nombre": "BE",
+  "descripcion": "Torre especial de retención tipo BE",
+  "familia": "BE",
+  "miniatura": "torre-be.png"
+ },
+ {
+  "archivo": "torre-aae1.ifc",
+  "nombre": "AAE1",
+  "descripcion": "Torre AAE1",
+  "familia": "AAE",
+  "miniatura": "torre-aae1.png"
+ },
+ {
+  "archivo": "torre-aae2.ifc",
+  "nombre": "AAE2",
+  "descripcion": "Torre AAE2",
+  "familia": "AAE",
+  "miniatura": "torre-aae2.png"
+ },
+ {
+  "archivo": "torre-aae3.ifc",
+  "nombre": "AAE3",
+  "descripcion": "Torre AAE3",
+  "familia": "AAE",
+  "miniatura": "torre-aae3.png"
+ },
+ {
+  "archivo": "torre-aae4.ifc",
+  "nombre": "AAE4",
+  "descripcion": "Torre AAE4",
+  "familia": "AAE",
+  "miniatura": "torre-aae4.png"
+ },
+ {
+  "archivo": "torre-aae5.ifc",
+  "nombre": "AAE5",
+  "descripcion": "Torre AAE5",
+  "familia": "AAE",
+  "miniatura": "torre-aae5.png"
+ },
+ {
+  "archivo": "torre-ap1.ifc",
+  "nombre": "AP1",
+  "descripcion": "Torre AP1",
+  "familia": "AP",
+  "miniatura": "torre-ap1.png"
+ },
+ {
+  "archivo": "torre-ap2.ifc",
+  "nombre": "AP2",
+  "descripcion": "Torre AP2",
+  "familia": "AP",
+  "miniatura": "torre-ap2.png"
+ },
+ {
+  "archivo": "torre-ap3.ifc",
+  "nombre": "AP3",
+  "descripcion": "Torre AP3",
+  "familia": "AP",
+  "miniatura": "torre-ap3.png"
+ },
+ {
+  "archivo": "torre-ap4.ifc",
+  "nombre": "AP4",
+  "descripcion": "Torre AP4",
+  "familia": "AP",
+  "miniatura": "torre-ap4.png"
+ },
+ {
+  "archivo": "torre-ap5.ifc",
+  "nombre": "AP5",
+  "descripcion": "Torre AP5",
+  "familia": "AP",
+  "miniatura": "torre-ap5.png"
+ },
+ {
+  "archivo": "torre-ap6.ifc",
+  "nombre": "AP6",
+  "descripcion": "Torre AP6",
+  "familia": "AP",
+  "miniatura": "torre-ap6.png"
+ },
+ {
+  "archivo": "torre-ap7.ifc",
+  "nombre": "AP7",
+  "descripcion": "Torre AP7",
+  "familia": "AP",
+  "miniatura": "torre-ap7.png"
+ },
+ {
+  "archivo": "torre-c1.ifc",
+  "nombre": "C1",
+  "descripcion": "Torre C1",
+  "familia": "C",
+  "miniatura": "torre-c1.png"
+ },
+ {
+  "archivo": "torre-c2.ifc",
+  "nombre": "C2",
+  "descripcion": "Torre C2",
+  "familia": "C",
+  "miniatura": "torre-c2.png"
+ },
+ {
+  "archivo": "torre-c3.ifc",
+  "nombre": "C3",
+  "descripcion": "Torre C3",
+  "familia": "C",
+  "miniatura": "torre-c3.png"
+ },
+ {
+  "archivo": "torre-c4.ifc",
+  "nombre": "C4",
+  "descripcion": "Torre C4",
+  "familia": "C",
+  "miniatura": "torre-c4.png"
+ },
+ {
+  "archivo": "torre-c5.ifc",
+  "nombre": "C5",
+  "descripcion": "Torre C5",
+  "familia": "C",
+  "miniatura": "torre-c5.png"
+ },
+ {
+  "archivo": "torre-c6.ifc",
+  "nombre": "C6",
+  "descripcion": "Torre C6",
+  "familia": "C",
+  "miniatura": "torre-c6.png"
+ }
+]

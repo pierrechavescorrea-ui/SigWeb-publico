@@ -1,0 +1,111 @@
+@* Celda de una tabla con "Campos": muestra el valor (nativo, digitado o calculado),
+   aplica el formato condicional y permite editar en línea los campos digitados. *@
+@using SigWeb.Data
+@using SigWeb.Data.Tablas
+@using SigWeb.Models
+@inject AppDbContext Db
+
+@{
+    var texto = Motor.Texto(Fila, Campo, out var error);
+    var est = error is null ? Motor.Estilo(Fila, Campo) : null;
+    var formula = Motor.FormulaDe(Fila, Campo);
+    var editable = !SoloLectura && Campo.Origen != OrigenCampoTabla.Nativo && formula is null;
+}
+<td class="small cc @Clase @(editable ? "cc-editable" : "") @(error is not null ? "cc-error" : "")" data-col="@Col"
+    style="@Unir(Estilo, EstiloTd(est))" title="@(error ?? (formula is null ? null : "ƒ " + formula))" @onclick="Editar">
+    @if (editando)
+    {
+        switch (Campo.Tipo)
+        {
+            case TipoCampoTabla.Numero:
+                <input @ref="entrada" type="number" step="any" class="form-control form-control-sm cc-input" value="@ValorCrudo" @onchange="Guardar" @onblur="Cancelar" />
+                break;
+            case TipoCampoTabla.Fecha:
+                <input @ref="entrada" type="date" class="form-control form-control-sm cc-input" value="@ValorCrudo" @onchange="Guardar" @onblur="Cancelar" />
+                break;
+            case TipoCampoTabla.Lista:
+                <select @ref="entrada" class="form-select form-select-sm cc-input" value="@ValorCrudo" @onchange="Guardar" @onblur="Cancelar">
+                    <option value=""></option>
+                    @foreach (var o in Motor.OpcionesDe(Campo)) { <option value="@o">@o</option> }
+                </select>
+                break;
+            case TipoCampoTabla.SiNo:
+                <input @ref="entrada" type="checkbox" class="form-check-input" checked="@(ValorCrudo == "1")" @onchange="GuardarSiNo" @onblur="Cancelar" />
+                break;
+            default:
+                <input @ref="entrada" type="text" class="form-control form-control-sm cc-input" value="@ValorCrudo" @onchange="Guardar" @onblur="Cancelar" />
+                break;
+        }
+    }
+    else if (est is not null && est.Forma == "pildora" && texto.Length > 0)
+    {
+        <span class="cc-pildora" style="background:@est.ColorFondo;color:@est.ColorTexto;font-weight:@(est.Negrita ? 600 : 400)">@texto</span>
+    }
+    else if (est is not null && est.Forma == "texto")
+    {
+        <span style="color:@est.ColorTexto;font-weight:@(est.Negrita ? 600 : 400)">@texto</span>
+    }
+    else
+    {
+        @texto
+    }
+    @if (!editando && Motor.FormulaDeCelda(Fila, Campo))
+    {
+        <span class="cc-fx" title="Fórmula solo en esta celda">ƒ</span>
+    }
+</td>
+
+@code {
+    [Parameter, EditorRequired] public MotorTabla Motor { get; set; } = default!;
+    [Parameter, EditorRequired] public CampoTabla Campo { get; set; } = default!;
+    [Parameter] public int Fila { get; set; }
+    [Parameter] public string? Clase { get; set; }
+    // Estilo y data-col de la página (columnas fijas, franjas…), para que la celda se integre a su tabla.
+    [Parameter] public string? Estilo { get; set; }
+    [Parameter] public string? Col { get; set; }
+
+    private static string? Unir(string? a, string? b) => string.IsNullOrEmpty(a) ? b : string.IsNullOrEmpty(b) ? a : a + ";" + b;
+    [Parameter] public EventCallback OnCambio { get; set; }
+    // true = solo muestra (la página decide cuándo se edita, ej. Listado maestro de documentos).
+    [Parameter] public bool SoloLectura { get; set; }
+
+    private bool editando, enfocar;
+    private ElementReference entrada;
+
+    private string? ValorCrudo => Motor.Registro(Fila, Campo)?.Valor;
+
+    private static string? EstiloTd(EstiloCelda? e) =>
+        e is not null && e.Forma == "celda" ? $"background:{e.ColorFondo} !important;color:{e.ColorTexto};font-weight:{(e.Negrita ? 600 : 400)}" : null;
+
+    private void Editar()
+    {
+        if (SoloLectura || editando || Campo.Origen == OrigenCampoTabla.Nativo || Motor.FormulaDe(Fila, Campo) is not null) return;
+        editando = true; enfocar = true;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!enfocar) return;
+        enfocar = false;
+        try { await entrada.FocusAsync(); } catch { }
+    }
+
+    private async Task Guardar(ChangeEventArgs e)
+    {
+        var v = e.Value?.ToString();
+        if (Campo.Tipo == TipoCampoTabla.Numero && !string.IsNullOrWhiteSpace(v))
+            v = v.Replace(',', '.');
+        await Motor.GuardarValorAsync(Db, Fila, Campo, v);
+        editando = false;
+        await OnCambio.InvokeAsync();
+    }
+
+    private async Task GuardarSiNo(ChangeEventArgs e)
+    {
+        await Motor.GuardarValorAsync(Db, Fila, Campo, e.Value is true ? "1" : "0");
+        editando = false;
+        await OnCambio.InvokeAsync();
+    }
+
+    private void Cancelar() => editando = false;
+}

@@ -1,0 +1,1336 @@
+@page "/avance-obra"
+@rendermode InteractiveServer
+@implements IAsyncDisposable
+@using System.Globalization
+@using Microsoft.EntityFrameworkCore
+@using SigWeb.Data
+@using SigWeb.Data.AvanceObra
+@using SigWeb.Models
+@inject AppDbContext Db
+@inject IWebHostEnvironment Env
+@inject IJSRuntime JS
+@inject NavigationManager Nav
+
+<PageTitle>Avance de obra</PageTitle>
+
+<EncabezadoPagina Titulo="Avance de obra" Icono="avance-obra" OnAtras="Atras">
+    <Acciones>
+        <span class="pg-btn" title="Avance ponderado del proyecto a la fecha de corte" style="cursor:default;">@FormatoPct(s?.PctProyecto(corte))</span>
+        <button type="button" class="pg-btn @(vista == "mapa" ? "activo" : "")" title="Mapa de calor (torres × actividades)" @onclick='() => VerVista("mapa")'><Ico Nombre="tablero" /></button>
+        <button type="button" class="pg-btn @(vista == "torre" ? "activo" : "")" title="Torre por torre (visor 3D)" @onclick='() => VerVista("torre")'><Ico Nombre="torre" /></button>
+        <button type="button" class="pg-btn @(vista == "matriz" ? "activo" : "")" title="Avance acumulado (matriz)" @onclick='() => VerVista("matriz")'><Ico Nombre="listado" /></button>
+        <button type="button" class="pg-btn @(vista == "informe" ? "activo" : "")" title="Informes diarios" @onclick='() => VerVista("informe")'><Ico Nombre="documento" /></button>
+        <button type="button" class="pg-btn @(vista == "ajustes" ? "activo" : "")" title="Actividades, pesos y cotas" @onclick='() => VerVista("ajustes")'><Ico Nombre="catalogos" /></button>
+        <button type="button" class="pg-btn" title="Recargar" @onclick="Recargar">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 1 1-2.6-5.9M20 4v5h-5"/></svg>
+        </button>
+        <span class="pg-sep"></span>
+        <button type="button" class="pg-btn @(verImportar ? "activo" : "")" title="Importar informe diario GEB F-054 (Excel)" @onclick="() => { verImportar = !verImportar; importe = null; }"><Ico Nombre="cargar-excel" /></button>
+        @if (vista is "mapa" or "matriz")
+        {
+            <BotonExportar Titulo="Avance de obra" Selector="@(vista == "mapa" ? "table.pm-mapa" : "table.av-matriz")" />
+        }
+        <span class="pg-sep"></span>
+        @if (vista == "informe" && inf is not null)
+        {
+            @if (inf.Id > 0)
+            {
+                <button type="button" class="pg-btn" title="Eliminar informe" @onclick="() => confirmarInforme = true"><Ico Nombre="eliminar" /></button>
+            }
+            <button type="button" class="pg-btn" title="Cerrar sin guardar" @onclick="CerrarInforme"><Ico Nombre="cancelar" /></button>
+            <button type="button" class="pg-btn pg-btn-primario" title="Guardar informe" disabled="@guardando" @onclick="GuardarInforme"><Ico Nombre="guardar" /></button>
+        }
+        else if (vista == "ajustes")
+        {
+            <button type="button" class="pg-btn pg-btn-primario" title="Guardar ajustes" disabled="@guardando" @onclick="GuardarAjustes"><Ico Nombre="guardar" /></button>
+        }
+        else
+        {
+            <button type="button" class="pg-btn pg-btn-primario" title="Nuevo informe del día" @onclick="() => AbrirInforme(DateTime.Today)"><Ico Nombre="agregar" /></button>
+        }
+    </Acciones>
+</EncabezadoPagina>
+
+@if (!string.IsNullOrEmpty(error))
+{
+    <div class="alert alert-warning py-1 small">@error <button type="button" class="btn-close btn-sm float-end" @onclick="() => error = null"></button></div>
+}
+@if (!string.IsNullOrEmpty(aviso))
+{
+    <div class="alert alert-success py-1 small">@aviso <button type="button" class="btn-close btn-sm float-end" @onclick="() => aviso = null"></button></div>
+}
+
+@if (verImportar)
+{
+    <div class="panel-formulario av-importar">
+        <label class="av-imp-archivo" title="Elegir el Excel del F-054">
+            <Ico Nombre="cargar-excel" />
+            <InputFile class="form-control form-control-sm" accept=".xlsx,.xlsm" OnChange="ImportarF054" disabled="@importando" />
+        </label>
+        @if (importando)
+        {
+            <span class="av-sub"><span class="spinner-border spinner-border-sm"></span> Leyendo el libro…</span>
+        }
+        @if (importe is { } r)
+        {
+            <div class="av-imp-res">
+                <div><b>@Fecha(r.FechaReporte)</b> · @r.TorresCasadas / @r.TorresLeidas torres · @r.Nuevos nuevos · @r.Actualizados actualizados · @r.InformesCreados informes creados@(r.Encabezado ? " · encabezado y actividades complementarias del día" : "")</div>
+                @if (r.TorresSinCasar.Count > 0)
+                {
+                    <details><summary>@r.TorresSinCasar.Count torre(s) sin casar con el Trazado</summary><div class="av-imp-lista">@string.Join(", ", r.TorresSinCasar)</div></details>
+                }
+                @if (r.Aproximadas.Count > 0)
+                {
+                    <details><summary>@r.Aproximadas.Count casada(s) sin la N final</summary><div class="av-imp-lista">@string.Join(", ", r.Aproximadas)</div></details>
+                }
+                @if (r.TorresSinPatas.Count > 0)
+                {
+                    <details><summary>@r.TorresSinPatas.Count torre(s) sin Pata A–D en el Trazado (obra civil omitida)</summary><div class="av-imp-lista">@string.Join(", ", r.TorresSinPatas)</div></details>
+                }
+                @if (r.ActividadesSinColumna.Count > 0)
+                {
+                    <div class="av-sub">Sin columna en el libro: @string.Join(", ", r.ActividadesSinColumna)</div>
+                }
+                @if (r.FechasInvalidas > 0)
+                {
+                    <div class="av-sub">@r.FechasInvalidas fecha(s) no legibles o fuera de rango (se tomó la del reporte)</div>
+                }
+            </div>
+        }
+    </div>
+}
+
+@if (s is null)
+{
+    <div class="text-muted small p-3">Cargando…</div>
+}
+else
+{
+    @if (vista is "mapa" or "torre" or "matriz")
+    {
+        <div class="av-filtros">
+            <label class="av-filtro" title="Fecha de corte">
+                <Ico Nombre="filtro" />
+                <input type="date" class="form-control form-control-sm" value="@corte.ToString("yyyy-MM-dd")" @onchange="CambiarCorte" />
+            </label>
+            <input class="form-control form-control-sm av-buscar" placeholder="Torre…" title="Filtrar torres" @bind="buscar" @bind:event="oninput" />
+            <span class="av-filtro-dato">@TorresMostradas().Count / @s.Torres.Count torres</span>
+        </div>
+    }
+    @switch (vista)
+    {
+        case "torre": @VistaTorre() break;
+        case "matriz": @VistaMatriz() break;
+        case "informe": @VistaInforme() break;
+        case "ajustes": @VistaAjustes() break;
+        default: @VistaMapa() break;
+    }
+}
+
+@code {
+    private InstantaneaAvance? s;
+    private string vista = "mapa";   // mapa | torre | matriz | informe | ajustes
+    private DateTime corte = DateTime.Today;
+    private string buscar = "";
+    private string? error, aviso;
+    private bool guardando;
+
+    private static readonly CultureInfo Es = CultureInfo.GetCultureInfo("es-CO");
+    private static string FormatoPct(decimal? v) => v is decimal x ? x.ToString("0.#", Es) + " %" : "—";
+    private static string Pct0(decimal? v) => v is decimal x ? x.ToString("0", CultureInfo.InvariantCulture) : "";
+    private static string Fecha(DateTime? f) => f is DateTime x ? x.ToString("dd/MM/yyyy") : "";
+    private static string EstiloPct(decimal? v)
+    {
+        if (v is not decimal x) return "";
+        var h = (int)Math.Round(Math.Clamp(x, 0, 100) * 1.2m);
+        return $"background:hsl({h} 62% 46%);color:#fff;";
+    }
+
+    protected override void OnInitialized() => Cargar();
+
+    private void Cargar()
+    {
+        try
+        {
+            s = ServicioAvanceObra.Cargar(Db, Env.WebRootPath);
+            CargarInformes();
+            if (vista == "ajustes") PrepararAjustes();
+        }
+        catch (Exception ex) { error = "No se pudo cargar el avance de obra: " + ex.Message; }
+    }
+
+    private void Recargar() { Cargar(); visorTorre = null; }
+
+    // Importar el F-054 (hoja "Avance acumulado" + encabezado del Reporte Diario).
+    private bool verImportar, importando;
+    private ResultadoF054? importe;
+    private async Task ImportarF054(InputFileChangeEventArgs e)
+    {
+        error = null; importe = null; importando = true;
+        StateHasChanged();
+        try
+        {
+            using var ms = new MemoryStream();
+            await using (var st = e.File.OpenReadStream(60L * 1024 * 1024)) await st.CopyToAsync(ms);
+            ms.Position = 0;
+            importe = await Task.Run(() => ImportadorF054.Importar(Db, ms));
+            Cargar(); visorTorre = null;
+        }
+        catch (Exception ex) { Db.ChangeTracker.Clear(); error = "No se pudo importar el F-054: " + (ex.InnerException?.Message ?? ex.Message); }
+        finally { importando = false; }
+    }
+
+    private void VerVista(string v)
+    {
+        vista = v;
+        if (v == "ajustes") PrepararAjustes();
+        if (v != "torre") Parar();
+    }
+
+    private EventCallback Atras => EventCallback.Factory.Create(this, () =>
+    {
+        if (vista == "informe" && inf is not null) { inf = null; return; }
+        if (vista != "mapa") { VerVista("mapa"); return; }
+        Nav.NavigateTo("");
+    });
+
+    private void CambiarCorte(ChangeEventArgs e)
+    {
+        if (DateTime.TryParse(e.Value?.ToString(), CultureInfo.InvariantCulture, DateTimeStyles.None, out var f)) corte = f.Date;
+        idxT = null;
+    }
+
+    private List<TorreAvance> TorresMostradas()
+    {
+        if (s is null) return new();
+        var q = buscar.Trim();
+        return q.Length == 0 ? s.Torres : s.Torres.Where(t => t.Nombre.Contains(q, StringComparison.OrdinalIgnoreCase) || (t.TipoTexto ?? "").Contains(q, StringComparison.OrdinalIgnoreCase)).ToList();
+    }
+
+    private List<IGrouping<string, ActividadObra>> Grupos() => s!.Actividades.GroupBy(a => a.Grupo).ToList();
+
+    // ================= Mapa de calor =================
+    private RenderFragment VistaMapa() => __builder =>
+    {
+        var torres = TorresMostradas();
+        var grupos = Grupos();
+        <div class="pm-mapa-marco">
+            <table class="pm-mapa av-mapa">
+                <thead>
+                    <tr>
+                        <th class="pm-esq" rowspan="2">Torre</th>
+                        <th class="pm-tot-th" rowspan="2" title="Avance ponderado de la torre">%</th>
+                        @foreach (var g in grupos)
+                        {
+                            <th class="av-grupo-th" colspan="@g.Count()">@g.Key</th>
+                        }
+                    </tr>
+                    <tr>
+                        @foreach (var a in s!.Actividades)
+                        {
+                            <th class="pm-act" title="@($"{a.Nombre} · {a.Grupo} · peso {a.Peso * 100:0.#} %")"><span class="pm-act-txt">@a.Nombre</span></th>
+                        }
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var t0 in torres)
+                    {
+                        var t = t0;
+                        var pt = s.PctTorre(t, corte);
+                        <tr>
+                            <th class="pm-torre" @onclick="() => EnfocarTorre(t)" title="Ver torre">
+                                <span class="pm-torre-nom">@t.Nombre</span>
+                                @if (!string.IsNullOrEmpty(t.TipoTexto)) { <span class="pm-torre-tiro">@t.TipoTexto</span> }
+                            </th>
+                            <td class="pm-tot">
+                                <span class="pm-tot-barra"><span style="width:@Pct0(pt ?? 0)%;@EstiloPct(pt)"></span></span>
+                                <span class="pm-tot-num">@FormatoPct(pt)</span>
+                            </td>
+                            @foreach (var a0 in s.Actividades)
+                            {
+                                var a = a0;
+                                var v = s.PctActividad(t, a, corte);
+                                <td class="pm-cel @(v is null ? "pm-sin" : "")" style="@EstiloPct(v)" title="@($"{t.Nombre} · {a.Nombre}: {FormatoPct(v)}")" @onclick="() => EnfocarTorre(t)">@Pct0(v)</td>
+                            }
+                        </tr>
+                    }
+                    @if (torres.Count == 0)
+                    {
+                        <tr><td colspan="@(s.Actividades.Count + 2)" class="text-muted small text-center py-3">Sin torres.</td></tr>
+                    }
+                </tbody>
+                <tfoot>
+                    <tr>
+                        <th class="pm-esq">Proyecto</th>
+                        <td class="pm-tot"><span class="pm-tot-num fw-bold">@FormatoPct(s.PctProyecto(corte))</span></td>
+                        @foreach (var a in s.Actividades)
+                        {
+                            var vals = torres.Select(t => s.PctActividad(t, a, corte)).Where(v => v is not null).Select(v => v!.Value).ToList();
+                            decimal? v = vals.Count == 0 ? null : vals.Average();
+                            <td class="pm-cel pm-pie @(v is null ? "pm-sin" : "")" style="@EstiloPct(v)" title="@($"{a.Nombre}: {FormatoPct(v)}")">@Pct0(v)</td>
+                        }
+                    </tr>
+                </tfoot>
+            </table>
+        </div>
+        <div class="pm-escala"><span>0 %</span><span class="pm-escala-barra"></span><span>100 %</span><span class="pm-escala-sin"></span><span>No aplica</span></div>
+    };
+
+    // ================= Torre por torre =================
+    private int? torreFoco;
+    private int? idxT;                 // posición en la línea de tiempo de la torre (null = la fecha de corte)
+    private bool transparente, girando, reproduciendo;
+    private CancellationTokenSource? ctsPlay;
+
+    private void EnfocarTorre(TorreAvance t) { torreFoco = t.Id; idxT = null; vista = "torre"; }
+
+    private TorreAvance? Foco()
+    {
+        var l = TorresMostradas();
+        return l.FirstOrDefault(t => t.Id == torreFoco) ?? l.FirstOrDefault();
+    }
+
+    // Fechas de la línea de tiempo de la torre (las de sus registros hasta la fecha de corte).
+    private List<DateTime> FechasTorre(TorreAvance t)
+    {
+        var l = s!.FechasDe(t).Where(d => d <= corte).ToList();
+        return l;
+    }
+
+    private DateTime HastaDe(TorreAvance t, List<DateTime> fechas)
+    {
+        if (fechas.Count == 0) return corte;
+        var i = Math.Clamp(idxT ?? fechas.Count - 1, 0, fechas.Count - 1);
+        return idxT is null ? corte : fechas[i];
+    }
+
+    private DateTime PreviaDe(List<DateTime> fechas, DateTime hasta)
+    {
+        var ant = fechas.Where(d => d < hasta.Date).ToList();
+        return ant.Count > 0 ? ant[^1] : hasta.Date.AddDays(-1);
+    }
+
+    private void IrA(TorreAvance t, int pos) { torreFoco = t.Id; idxT = pos; }
+
+    private RenderFragment VistaTorre() => __builder =>
+    {
+        var torres = TorresMostradas();
+        var foco = Foco();
+        <div class="ind-foco">
+            <nav class="ind-rail">
+                @foreach (var t0 in torres)
+                {
+                    var t = t0;
+                    var pt = s!.PctTorre(t, corte);
+                    <button type="button" class="ind-rail-item @(foco?.Id == t.Id ? "activo" : "")" @onclick="() => { torreFoco = t.Id; idxT = null; Parar(); }">
+                        <span class="pv-rail-cab">
+                            <span class="pv-cod">@t.Nombre</span>
+                            @if (!string.IsNullOrEmpty(t.TipoTexto)) { <span class="pv-fecha">@t.TipoTexto</span> }
+                            <span class="pm-rail-pct" style="@EstiloPct(pt)">@FormatoPct(pt)</span>
+                        </span>
+                        <span class="pv-avance"><span style="width:@Pct0(pt ?? 0)%;@EstiloPct(pt)"></span></span>
+                    </button>
+                }
+                @if (torres.Count == 0) { <span class="text-muted small p-2">Sin torres.</span> }
+            </nav>
+            @if (foco is not null)
+            {
+                var t = foco;
+                var pos = torres.FindIndex(x => x.Id == t.Id);
+                var fechas = FechasTorre(t);
+                var hasta = HastaDe(t, fechas);
+                var previa = PreviaDe(fechas, hasta);
+                var pt = s!.PctTorre(t, hasta);
+                var idx = fechas.Count == 0 ? 0 : Math.Clamp(idxT ?? fechas.Count - 1, 0, fechas.Count - 1);
+                var genericas = (t.Patas.Count > 0 ? t.Patas.SelectMany(p => p.Cotas.Genericas) : t.Cotas.Genericas).Distinct().ToList();
+                <section class="ind-det">
+                    <div class="ind-det-cab">
+                        <button type="button" class="ind-nav" title="Anterior" disabled="@(pos <= 0)" @onclick="() => { torreFoco = torres[pos - 1].Id; idxT = null; Parar(); }">‹</button>
+                        <div class="ind-det-tits">
+                            <h2 class="ind-det-nom">Torre @t.Nombre</h2>
+                            <div class="ind-chips">
+                                @if (!string.IsNullOrEmpty(t.TipoTexto)) { <span class="ind-chip">@t.TipoTexto</span> }
+                                <span class="ind-chip" title="@(t.ModeloUrl is null ? "Sin modelo vinculado en Modelos 3D: geometría por familia y cuerpo, igual que en Línea 3D." : "Modelo de planos (Modelos 3D), el mismo de Línea 3D")">@(t.ModeloCodigo is null ? (string.IsNullOrEmpty(t.Familia) ? "Sin tipo" : $"Paramétrica {t.Familia}{(t.Cuerpo > 0 ? t.Cuerpo.ToString() : "")}") : "Modelo " + t.ModeloCodigo)</span>
+                                @foreach (var g in CimentacionesDe(t))
+                                {
+                                    <span class="ind-chip @(g.Aviso ? "av-chip-aviso" : "")" title="@g.Titulo">@g.Texto</span>
+                                }
+                                @if (genericas.Count > 0) { <span class="ind-chip av-chip-aviso" title="@("Sin dato en la tabla de torres (se usa la cota genérica): " + string.Join(", ", genericas))">Cotas genéricas</span> }
+                                <a class="ind-chip pv-riesgo" href="@($"trazado?torre={t.Id}")" title="Abrir la hoja de vida en Trazado">Hoja de vida ›</a>
+                            </div>
+                        </div>
+                        <span class="ind-det-pos">@(pos + 1) / @torres.Count</span>
+                        <button type="button" class="ind-nav" title="Siguiente" disabled="@(pos >= torres.Count - 1)" @onclick="() => { torreFoco = torres[pos + 1].Id; idxT = null; Parar(); }">›</button>
+                    </div>
+
+                    <div class="av3d" @ref="marco">
+                        <div class="av3d-lienzo" @ref="lienzo"></div>
+                        <div class="av3d-herr">
+                            <button type="button" class="av3d-btn @(!mano ? "activo" : "")" title="Girar con el mouse (clic derecho: mover)" aria-pressed="@(!mano)" @onclick="() => Modo(false)">
+                                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="12" rx="9" ry="4"/><path d="M12 3v18"/><path d="M18.5 9.5 21 12l-2.5 2.5"/></svg>
+                            </button>
+                            <button type="button" class="av3d-btn @(mano ? "activo" : "")" title="Mano: mover la vista (clic derecho: girar)" aria-pressed="@mano" @onclick="() => Modo(true)">
+                                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 13V5.5a1.5 1.5 0 0 1 3 0V12"/><path d="M11 11.5v-7a1.5 1.5 0 0 1 3 0V12"/><path d="M14 11.5V6.5a1.5 1.5 0 0 1 3 0V13"/><path d="M17 9.5a1.5 1.5 0 0 1 3 0V15a6 6 0 0 1-6 6h-1.5a6 6 0 0 1-4.6-2.2L4.3 15a1.6 1.6 0 0 1 2.4-2.1L8 14.5"/></svg>
+                            </button>
+                            <button type="button" class="av3d-btn" title="Recentrar la vista" @onclick='() => Llamar("recentrar")'>
+                                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></svg>
+                            </button>
+                            <span class="av3d-sep"></span>
+                            <button type="button" class="av3d-btn" title="Ver cimentación" @onclick='() => Llamar("vista", "cimentacion")'><Ico Nombre="pata" /></button>
+                            <button type="button" class="av3d-btn" title="Ver torre completa" @onclick='() => Llamar("vista", "torre")'><Ico Nombre="torre" /></button>
+                            <button type="button" class="av3d-btn @(transparente ? "activo" : "")" title="Suelo transparente" aria-pressed="@transparente" @onclick="AlternarTransparente">
+                                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10h18"/><path d="M3 10v9h18v-9" stroke-dasharray="2 2.5"/><path d="M9 14h6v5H9z"/></svg>
+                            </button>
+                            <button type="button" class="av3d-btn @(girando ? "activo" : "")" title="Girar" aria-pressed="@girando" @onclick="AlternarGiro">
+                                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 1 1-2.6-5.9M20 4v5h-5"/></svg>
+                            </button>
+                            <span class="av3d-sep"></span>
+                            <button type="button" class="av3d-btn" title="Pantalla completa" @onclick="PantallaCompleta"><Ico Nombre="pantalla-completa" /></button>
+                        </div>
+
+                        @* Solo en pantalla completa (CSS): navegación entre torres, buscador y avance por actividad. *@
+                        <div class="av3d-pc av3d-pc-nav">
+                            <button type="button" class="av3d-pc-flecha" title="Torre anterior" disabled="@(pos <= 0)" @onclick="() => { torreFoco = torres[pos - 1].Id; idxT = null; Parar(); }">‹</button>
+                            <div class="av3d-pc-tit">
+                                <span class="av3d-pc-nom">Torre @t.Nombre</span>
+                                <span class="av3d-pc-sub">@(pos + 1) / @torres.Count@(string.IsNullOrEmpty(t.TipoTexto) ? "" : " · " + t.TipoTexto) · @Fecha(hasta)</span>
+                            </div>
+                            <button type="button" class="av3d-pc-flecha" title="Torre siguiente" disabled="@(pos >= torres.Count - 1)" @onclick="() => { torreFoco = torres[pos + 1].Id; idxT = null; Parar(); }">›</button>
+                            <input class="av3d-pc-buscar" list="av3d-torres" placeholder="Ir a torre…" title="Ir a torre" value="@irA" @onchange="IrATorre" />
+                            <datalist id="av3d-torres">
+                                @foreach (var x in s.Torres) { <option value="@x.Nombre"></option> }
+                            </datalist>
+                        </div>
+                        <div class="av3d-pc av3d-pc-acts">
+                            <div class="av3d-pc-card av3d-pc-total">
+                                <span>Avance</span><b>@FormatoPct(pt)</b>
+                                <span class="av3d-pc-barra"><span style="width:@Pct0(pt ?? 0)%;@EstiloPct(pt)"></span></span>
+                            </div>
+                            @foreach (var a in s.Actividades)
+                            {
+                                var v = s.PctActividad(t, a, hasta);
+                                if (v is null) continue;
+                                var v0 = s.PctActividad(t, a, previa);
+                                <div class="av3d-pc-card @(v == 0 ? "av3d-pc-cero" : "")" title="@a.Grupo">
+                                    <span class="av3d-pc-act">@a.Nombre</span>
+                                    <b>@FormatoPct(v)@if (v is decimal x1 && v0 is decimal x0 && x1 > x0) { <em>+@((x1 - x0).ToString("0.#", Es))</em> }</b>
+                                    <span class="av3d-pc-barra"><span style="width:@Pct0(v)%;@EstiloPct(v)"></span></span>
+                                </div>
+                            }
+                        </div>
+                        <div class="av3d-pc av3d-pc-tl">
+                            <button type="button" class="av-play" title="@(reproduciendo ? "Pausar" : "Reproducir el avance")" disabled="@(fechas.Count < 2)" @onclick="() => AlternarPlay(t)">
+                                @if (reproduciendo)
+                                {
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M6 4h4v16H6zM14 4h4v16h-4z"/></svg>
+                                }
+                                else
+                                {
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M6 4l14 8-14 8z"/></svg>
+                                }
+                            </button>
+                            @if (fechas.Count > 0)
+                            {
+                                <input type="range" min="0" max="@(fechas.Count - 1)" step="1" value="@idx" aria-label="Fecha"
+                                       @oninput="@(e => { Parar(); if (int.TryParse(e.Value?.ToString(), out var i)) IrA(t, i); })" />
+                            }
+                        </div>
+
+                        <div class="av3d-ley">
+                            <span><i style="background:#c9c5bd"></i>Concreto</span>
+                            <span><i style="background:#9c4a2c"></i>Acero</span>
+                            <span><i style="background:#9aa3ad"></i>Torre / parrilla</span>
+                            <span><i style="background:#ec1c24"></i>Ejecutado el día</span>
+                            <span><i style="background:#b08a5a"></i>Relleno</span>
+                        </div>
+                    </div>
+
+                    <div class="av-tl">
+                        <button type="button" class="av-play" title="@(reproduciendo ? "Pausar" : "Reproducir el avance")" disabled="@(fechas.Count < 2)" @onclick="() => AlternarPlay(t)">
+                            @if (reproduciendo)
+                            {
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M6 4h4v16H6zM14 4h4v16h-4z"/></svg>
+                            }
+                            else
+                            {
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M6 4l14 8-14 8z"/></svg>
+                            }
+                        </button>
+                        <span class="av-tl-fecha">@Fecha(hasta)</span>
+                        @if (fechas.Count > 0)
+                        {
+                            <div class="av-tl-rango">
+                                <input type="range" min="0" max="@(fechas.Count - 1)" step="1" value="@idx" aria-label="Fecha"
+                                       @oninput="@(e => { Parar(); if (int.TryParse(e.Value?.ToString(), out var i)) IrA(t, i); })" />
+                                <div class="av-tl-marcas"><span>@Fecha(fechas[0])</span><span>@Fecha(fechas[^1])</span></div>
+                            </div>
+                            <span class="av-tl-n" title="Días con registros">@(idx + 1) / @fechas.Count</span>
+                        }
+                        else
+                        {
+                            <span class="text-muted small">Sin registros de avance.</span>
+                        }
+                    </div>
+
+                    <div class="ind-kpis">
+                        <div class="ind-kpi pv-kpi-anillo">
+                            <span class="pv-anillo" style="--pct:@Pct0(pt ?? 0);"><span>@FormatoPct(pt)</span></span>
+                            <span class="pv-anillo-txt"><span class="ind-kpi-tit">Avance</span><span class="ind-kpi-sub">ponderado de la torre</span></span>
+                        </div>
+                        @foreach (var g in Grupos())
+                        {
+                            var vg = s.PctGrupo(t, g.Key, hasta);
+                            var v0 = s.PctGrupo(t, g.Key, previa);
+                            <div class="ind-kpi">
+                                <span class="ind-kpi-tit">@g.Key</span>
+                                <span class="ind-kpi-val">@FormatoPct(vg)</span>
+                                <span class="ind-kpi-sub">@(vg is decimal a && v0 is decimal b && a > b ? $"+{(a - b).ToString("0.#", Es)} % el día" : "peso " + (g.Sum(x => x.Peso) * 100).ToString("0.#", Es) + " %")</span>
+                            </div>
+                        }
+                    </div>
+
+                    <div class="pm-acts">
+                        @foreach (var a0 in s.Actividades)
+                        {
+                            var a = a0;
+                            var v = s.PctActividad(t, a, hasta);
+                            var v0 = s.PctActividad(t, a, previa);
+                            var (ini, fin) = s.InicioFin(t, a);
+                            <div class="pm-act-tarjeta @(v is null ? "av-na" : "")">
+                                <div class="pm-act-cab">
+                                    <div class="pm-act-tits"><span class="pm-act-nom">@a.Nombre</span><span class="pm-act-amb">@a.Grupo · @(a.Ambito == AmbitoAvance.Pata ? "por pata" : "torre")</span></div>
+                                    @if (v is decimal x1 && v0 is decimal x0 && x1 > x0) { <span class="av-hoy">+@((x1 - x0).ToString("0.#", Es)) %</span> }
+                                    <span class="pm-rail-pct ms-auto" style="@EstiloPct(v)">@FormatoPct(v)</span>
+                                </div>
+                                <span class="pv-avance"><span style="width:@Pct0(v ?? 0)%;@EstiloPct(v)"></span></span>
+                                @if (a.Ambito == AmbitoAvance.Pata && t.Patas.Count > 0)
+                                {
+                                    <div class="av-patas">
+                                        @foreach (var p in t.Patas)
+                                        {
+                                            var vp = s.PctPata(t, p, a, hasta);
+                                            <div class="@(vp is null ? "av-na" : "")" title="@($"Pata {p.Letra}: {(vp is null ? "N/A" : FormatoPct(vp))}")">
+                                                <span class="av-pata-l">@p.Letra · @(vp is null ? "N/A" : Pct0(vp) + " %")</span>
+                                                <span class="pv-avance"><span style="width:@Pct0(vp ?? 0)%;@EstiloPct(vp)"></span></span>
+                                            </div>
+                                        }
+                                    </div>
+                                }
+                                @if (a.Efecto == EfectoAvance3D.Montaje && t.PesoModeloKg is double kg && v is decimal vm)
+                                {
+                                    <span class="av-sub">@((kg * (double)vm / 100000).ToString("0.00", Es)) t de @((kg / 1000).ToString("0.00", Es)) t del modelo</span>
+                                }
+                                @if (ini is not null)
+                                {
+                                    <span class="av-sub">Inicio @Fecha(ini)@(fin is not null ? " · fin " + Fecha(fin) : "")</span>
+                                }
+                            </div>
+                        }
+                    </div>
+                </section>
+            }
+        </div>
+    };
+
+    // ---------- Visor 3D (JS) ----------
+    private ElementReference lienzo;
+    private IJSObjectReference? modulo, visor;
+    private int? visorTorre;
+    private string? visorClave;
+    private bool iniciando;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (vista != "torre" || s is null || Foco() is not { } t)
+        {
+            if (visor is not null) await LiberarVisor();
+            return;
+        }
+        if (iniciando) return;
+        try
+        {
+            iniciando = true;
+            if (visor is null)
+            {
+                modulo ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/avance3d.js");
+                visor = await modulo.InvokeAsync<IJSObjectReference>("crear", lienzo);
+                visorTorre = null;
+                if (transparente) await visor.InvokeVoidAsync("transparente", true);
+                if (girando) await visor.InvokeVoidAsync("girar", true);
+                if (mano) await visor.InvokeVoidAsync("modo", "mano");
+            }
+            var fechas = FechasTorre(t);
+            var hasta = HastaDe(t, fechas);
+            var previa = PreviaDe(fechas, hasta);
+            var clave = $"{t.Id}|{hasta:yyyyMMdd}";
+            if (visorTorre != t.Id)
+            {
+                visorTorre = t.Id; visorClave = clave;
+                var datos = new
+                {
+                    nombre = t.Nombre, modeloUrl = t.ModeloUrl, familia = t.Familia, cuerpo = t.Cuerpo,
+                    patas = t.Patas.Select(p => new { letra = p.Letra, cotas = p.Cotas }), cotas = t.Cotas
+                };
+                await visor.InvokeVoidAsync("cargarTorre", datos, s.Cuadro(t, hasta), s.Cuadro(t, previa));
+            }
+            else if (visorClave != clave)
+            {
+                visorClave = clave;
+                await visor.InvokeVoidAsync("actualizar", s.Cuadro(t, hasta), s.Cuadro(t, previa));
+            }
+        }
+        catch (JSDisconnectedException) { }
+        catch (Exception ex) { error = "No se pudo iniciar el visor 3D: " + ex.Message; StateHasChanged(); }
+        finally { iniciando = false; }
+    }
+
+    private async Task LiberarVisor()
+    {
+        var v = visor; visor = null; visorTorre = null; visorClave = null;
+        try { if (v is not null) { await v.InvokeVoidAsync("liberar"); await v.DisposeAsync(); } }
+        catch (JSDisconnectedException) { }
+        catch (JSException) { }
+    }
+
+    private async Task Llamar(string metodo, params object[] args)
+    {
+        if (visor is null) return;
+        try { await visor.InvokeVoidAsync(metodo, args); } catch (JSException) { } catch (JSDisconnectedException) { }
+    }
+
+    // Tipos de cimentación de una torre agrupados por patas (chips del visor).
+    private record ChipCim(string Texto, string Titulo, bool Aviso);
+    private static List<ChipCim> CimentacionesDe(TorreAvance t)
+    {
+        static string Nombre(CotasPata c) => c.Pesada ? "Parrilla pesada" : c.Parrilla ? "Parrilla" : c.Pila ? "Pila" : c.CimentacionSinDetalle ? "Mixta (sin tipo por pata)"
+            : string.IsNullOrEmpty(c.Cimentacion) || c.Cimentacion.Contains("zapata", StringComparison.OrdinalIgnoreCase) ? "Zapata" : c.Cimentacion + " (dibujada como zapata)";
+        if (t.Patas.Count == 0)
+            return new() { new ChipCim(Nombre(t.Cotas), string.IsNullOrEmpty(t.Cotas.Cimentacion) ? "Sin tipo de cimentación en la tabla de torres: se dibuja zapata." : "Tabla de torres: " + t.Cotas.Cimentacion, string.IsNullOrEmpty(t.Cotas.Cimentacion) || t.Cotas.CimentacionSinDetalle) };
+        return t.Patas.GroupBy(p => Nombre(p.Cotas)).Select(g =>
+        {
+            var letras = string.Join(", ", g.Select(p => p.Letra));
+            var sinDato = g.All(p => string.IsNullOrEmpty(p.Cotas.Cimentacion));
+            var aviso = sinDato || g.Key.Contains("(");
+            var txt = t.Patas.Count == g.Count() ? g.Key : $"{g.Key}: {letras}";
+            var tit = sinDato ? "Sin tipo de cimentación en la tabla de torres: se dibuja zapata." : "Tabla de torres: " + string.Join(" · ", g.Select(p => $"{p.Letra} = {p.Cotas.Cimentacion}"));
+            return new ChipCim(txt, tit, aviso);
+        }).ToList();
+    }
+
+    private (int Exactos, int Siluetas, int SinTipo, string Cim) Diagnostico()
+    {
+        var ts = s!.Torres;
+        var cim = ts.SelectMany(t => t.Patas.Count > 0 ? t.Patas.Select(p => p.Cotas) : new[] { t.Cotas })
+            .GroupBy(c => c.Pesada ? "parrilla pesada" : c.Parrilla ? "parrilla" : c.Pila ? "pila" : c.CimentacionSinDetalle ? "mixta sin detalle" : string.IsNullOrEmpty(c.Cimentacion) ? "sin dato" : "zapata")
+            .OrderByDescending(g => g.Count()).Select(g => $"{g.Count()} patas {g.Key}");
+        return (ts.Count(t => t.ModeloUrl is not null), ts.Count(t => t.ModeloUrl is null),
+            ts.Count(t => string.IsNullOrEmpty(t.TipoTexto)), string.Join(", ", cim));
+    }
+
+    private ElementReference marco;
+    private bool mano;
+    private string irA = "";
+    private async Task Modo(bool m) { mano = m; await Llamar("modo", m ? "mano" : "girar"); }
+    private async Task PantallaCompleta()
+    {
+        if (modulo is null) return;
+        try { await modulo.InvokeAsync<bool>("pantallaCompleta", marco); } catch (JSException) { } catch (JSDisconnectedException) { }
+    }
+    private void IrATorre(ChangeEventArgs e)
+    {
+        var txt = e.Value?.ToString()?.Trim() ?? "";
+        irA = "";
+        if (txt.Length == 0 || s is null) return;
+        var t = s.Torres.FirstOrDefault(x => string.Equals(x.Nombre, txt, StringComparison.OrdinalIgnoreCase))
+            ?? s.Torres.FirstOrDefault(x => x.Nombre.Contains(txt, StringComparison.OrdinalIgnoreCase));
+        if (t is null) { irA = txt; return; }
+        if (!TorresMostradas().Any(x => x.Id == t.Id)) buscar = "";
+        torreFoco = t.Id; idxT = null; Parar();
+    }
+
+    private async Task AlternarTransparente() { transparente = !transparente; await Llamar("transparente", transparente); }
+    private async Task AlternarGiro() { girando = !girando; await Llamar("girar", girando); }
+
+    private void Parar()
+    {
+        reproduciendo = false;
+        ctsPlay?.Cancel(); ctsPlay = null;
+    }
+
+    private async Task AlternarPlay(TorreAvance t)
+    {
+        if (reproduciendo) { Parar(); return; }
+        var fechas = FechasTorre(t);
+        if (fechas.Count < 2) return;
+        reproduciendo = true;
+        var cts = ctsPlay = new CancellationTokenSource();
+        var i = idxT ?? fechas.Count - 1;
+        if (i >= fechas.Count - 1) i = -1;
+        try
+        {
+            while (!cts.IsCancellationRequested && i < fechas.Count - 1)
+            {
+                i++;
+                idxT = i;
+                StateHasChanged();
+                await Task.Delay(1100, cts.Token);
+            }
+        }
+        catch (TaskCanceledException) { }
+        if (ctsPlay == cts) { reproduciendo = false; ctsPlay = null; StateHasChanged(); }
+    }
+
+    // ================= Matriz de avance acumulado =================
+    private RenderFragment VistaMatriz() => __builder =>
+    {
+        var torres = TorresMostradas();
+        var acts = s!.Actividades;
+        <div class="tabla-scroll tabla-auto av-matriz-marco">
+            <table class="table table-sm av-matriz">
+                <thead>
+                    <tr>
+                        <th rowspan="2" class="av-fija">Torre</th>
+                        <th rowspan="2">Tipo</th>
+                        <th rowspan="2">Pata</th>
+                        <th rowspan="2" title="Avance ponderado">%</th>
+                        @foreach (var a in acts)
+                        {
+                            <th colspan="3" class="av-mx-act" title="@($"{a.Grupo} · peso {a.Peso * 100:0.#} %")">@a.Nombre</th>
+                        }
+                    </tr>
+                    <tr>
+                        @foreach (var a in acts)
+                        {
+                            <th class="av-mx-sub">Inicio</th><th class="av-mx-sub">Avance</th><th class="av-mx-sub">Fin</th>
+                        }
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var t in torres)
+                    {
+                        var pt = s.PctTorre(t, corte);
+                        <tr class="av-mx-torre">
+                            <th class="av-fija"><a href="" @onclick="() => EnfocarTorre(t)" @onclick:preventDefault>@t.Nombre</a></th>
+                            <td>@t.TipoTexto</td>
+                            <td></td>
+                            <td class="av-mx-num" style="@EstiloPct(pt)">@FormatoPct(pt)</td>
+                            @foreach (var a in acts)
+                            {
+                                var v = s.PctActividad(t, a, corte);
+                                var (ini, fin) = s.InicioFin(t, a);
+                                <td class="av-mx-f">@Fecha(ini)</td>
+                                <td class="av-mx-num" style="@EstiloPct(v)">@(v is null ? "N/A" : FormatoPct(v))</td>
+                                <td class="av-mx-f">@Fecha(fin)</td>
+                            }
+                        </tr>
+                        @foreach (var p in t.Patas)
+                        {
+                            <tr class="av-mx-pata">
+                                <th class="av-fija"><span class="av-mx-sangria">@t.Nombre</span></th>
+                                <td></td>
+                                <td>@p.Letra@(p.Cotas.Parrilla ? " · parrilla" : "")</td>
+                                <td></td>
+                                @foreach (var a in acts)
+                                {
+                                    if (a.Ambito != AmbitoAvance.Pata)
+                                    {
+                                        <td></td><td></td><td></td>
+                                        continue;
+                                    }
+                                    var v = s.PctPata(t, p, a, corte);
+                                    var (ini, fin) = s.InicioFin(t, a, p);
+                                    <td class="av-mx-f">@Fecha(ini)</td>
+                                    <td class="av-mx-num">@(v is null ? "N/A" : FormatoPct(v))</td>
+                                    <td class="av-mx-f">@Fecha(fin)</td>
+                                }
+                            </tr>
+                        }
+                    }
+                </tbody>
+            </table>
+        </div>
+    };
+
+    // ================= Informes diarios =================
+    private record FilaInforme(int Id, DateTime Fecha, int Registros, int Fotos);
+    private List<FilaInforme> informes = new();
+    private InformeDiario? inf;                  // copia en edición (nada se guarda hasta Guardar)
+    private List<FilaReg> filas = new();
+    private List<NotaInformeArea> notas = new();
+    private List<FotoAvance> fotos = new();
+    private FilaReg nueva = new();
+    private string nuevaTorre = "";
+    private bool confirmarInforme;
+    private int? fotoElim;
+    private List<(int Torre, int Act, DateTime Fecha, decimal Cantidad, int Informe)> cantidades = new();
+    private const long MaxFoto = 25 * 1024 * 1024;
+
+    private static readonly string[] Areas = ServicioAvanceObra.AreasInforme;
+
+    private class FilaReg
+    {
+        public int Id { get; set; }
+        public int TorreId { get; set; }
+        public int? ComponenteId { get; set; }
+        public int ActividadId { get; set; }
+        public decimal? Cantidad { get; set; }
+        public decimal? Avance { get; set; }
+        public bool NoAplica { get; set; }
+        public bool Programado { get; set; }
+        public string? Observaciones { get; set; }
+        public bool Quitar { get; set; }
+    }
+
+    private void CargarInformes()
+    {
+        var regs = Db.RegistrosAvance.AsNoTracking().GroupBy(r => r.InformeDiarioId).Select(g => new { g.Key, N = g.Count() }).ToDictionary(x => x.Key, x => x.N);
+        var fts = Db.FotosAvance.AsNoTracking().GroupBy(r => r.InformeDiarioId).Select(g => new { g.Key, N = g.Count() }).ToDictionary(x => x.Key, x => x.N);
+        informes = Db.InformesDiarios.AsNoTracking().OrderByDescending(i => i.Fecha).ToList()
+            .Select(i => new FilaInforme(i.Id, i.Fecha, regs.TryGetValue(i.Id, out var n) ? n : 0, fts.TryGetValue(i.Id, out var f) ? f : 0)).ToList();
+        cantidades = Db.RegistrosAvance.AsNoTracking().Where(r => !r.Programado && r.Cantidad != null)
+            .Select(r => new { r.ElementoTrazadoId, r.ActividadObraId, r.Fecha, r.Cantidad, r.InformeDiarioId }).ToList()
+            .Select(r => (r.ElementoTrazadoId, r.ActividadObraId, r.Fecha, r.Cantidad!.Value, r.InformeDiarioId)).ToList();
+    }
+
+    private void AbrirInforme(DateTime fecha)
+    {
+        Parar();
+        vista = "informe"; confirmarInforme = false; fotoElim = null;
+        var existente = informes.FirstOrDefault(i => i.Fecha.Date == fecha.Date);
+        if (existente is not null) { AbrirInformeId(existente.Id); return; }
+        inf = new InformeDiario { Fecha = fecha.Date };
+        filas = new(); fotos = new();
+        notas = Areas.Select((a, k) => new NotaInformeArea { Area = a, Orden = k }).ToList();
+        nueva = new(); nuevaTorre = "";
+    }
+
+    private void AbrirInformeId(int id)
+    {
+        Parar();
+        vista = "informe"; confirmarInforme = false; fotoElim = null;
+        inf = Db.InformesDiarios.AsNoTracking().FirstOrDefault(i => i.Id == id);
+        if (inf is null) return;
+        filas = Db.RegistrosAvance.AsNoTracking().Where(r => r.InformeDiarioId == id).OrderBy(r => r.Id).ToList()
+            .Select(r => new FilaReg
+            {
+                Id = r.Id, TorreId = r.ElementoTrazadoId, ComponenteId = r.ComponenteId, ActividadId = r.ActividadObraId,
+                Cantidad = r.Cantidad, Avance = r.AvanceAcumulado, NoAplica = r.NoAplica, Programado = r.Programado, Observaciones = r.Observaciones
+            }).ToList();
+        var guardadas = Db.NotasInformeArea.AsNoTracking().Where(n => n.InformeDiarioId == id).OrderBy(n => n.Orden).ToList();
+        notas = Areas.Select((a, k) => guardadas.FirstOrDefault(n => n.Area == a) ?? new NotaInformeArea { Area = a, Orden = k })
+            .Concat(guardadas.Where(n => !Areas.Contains(n.Area))).ToList();
+        fotos = Db.FotosAvance.AsNoTracking().Where(f => f.InformeDiarioId == id).OrderBy(f => f.Id).ToList();
+        nueva = new(); nuevaTorre = "";
+    }
+
+    private void CerrarInforme() { inf = null; confirmarInforme = false; }
+
+    private TorreAvance? TorrePorNombre(string? n) =>
+        string.IsNullOrWhiteSpace(n) ? null : s!.Torres.FirstOrDefault(t => string.Equals(t.Nombre, n.Trim(), StringComparison.OrdinalIgnoreCase));
+
+    private ActividadObra? Act(int id) => s!.Actividades.FirstOrDefault(a => a.Id == id);
+    private TorreAvance? Torre(int id) => s!.Torres.FirstOrDefault(t => t.Id == id);
+
+    // % acumulado antes del día del informe (lo que ya estaba guardado).
+    private decimal? Anterior(int torreId, int? compId, int actId)
+    {
+        if (inf is null || Torre(torreId) is not { } t || Act(actId) is not { } a) return null;
+        var dia = inf.Fecha.Date.AddDays(-1);
+        if (compId is int c && t.Patas.FirstOrDefault(p => p.ComponenteId == c) is { } p) return s!.PctPata(t, p, a, dia);
+        return s!.PctActividad(t, a, dia);
+    }
+
+    // Montaje por peso: t acumuladas antes del día + las del día / peso del modelo.
+    private decimal? PorPeso(int torreId, int actId, decimal cantidadDia)
+    {
+        if (inf is null || Torre(torreId) is not { PesoModeloKg: double kg } || Act(actId) is not { } a) return null;
+        if (a.Efecto is not (EfectoAvance3D.Montaje or EfectoAvance3D.Prearmado) || !string.Equals(a.Unidad, "t", StringComparison.OrdinalIgnoreCase)) return null;
+        var antes = cantidades.Where(c => c.Torre == torreId && c.Act == actId && c.Fecha.Date < inf.Fecha.Date && c.Informe != inf.Id).Sum(c => c.Cantidad);
+        return Math.Clamp((antes + cantidadDia) * 1000m / (decimal)kg * 100m, 0, 100);
+    }
+
+    private void AgregarFila()
+    {
+        error = null;
+        var t = TorrePorNombre(nuevaTorre);
+        if (t is null) { error = "Elige una torre de la lista."; return; }
+        if (Act(nueva.ActividadId) is not { } a) { error = "Elige la actividad."; return; }
+        if (a.Ambito == AmbitoAvance.Torre) nueva.ComponenteId = null;
+        if (nueva.Avance is null && !nueva.NoAplica && nueva.Cantidad is decimal q) nueva.Avance = PorPeso(t.Id, a.Id, q);
+        if (nueva.Avance is null && !nueva.NoAplica && !nueva.Programado) { error = "Digita el % acumulado (o marca N/A)."; return; }
+        nueva.Avance = Math.Clamp(nueva.Avance ?? 0, 0, 100);
+        nueva.TorreId = t.Id;
+        filas.Add(nueva);
+        nueva = new FilaReg { ActividadId = a.Id };
+    }
+
+    private async Task GuardarInforme()
+    {
+        if (inf is null || guardando) return;
+        error = null; guardando = true;
+        try
+        {
+            var fecha = inf.Fecha.Date;
+            if (Db.InformesDiarios.AsNoTracking().Any(i => i.Fecha.Date == fecha && i.Id != inf.Id)) { error = $"Ya existe un informe del {fecha:dd/MM/yyyy}."; return; }
+            InformeDiario e;
+            if (inf.Id == 0) { e = new InformeDiario(); Db.InformesDiarios.Add(e); }
+            else e = Db.InformesDiarios.First(i => i.Id == inf.Id);
+            e.Fecha = fecha; e.ClimaManana = inf.ClimaManana; e.ClimaTarde = inf.ClimaTarde; e.HorasLluvia = inf.HorasLluvia;
+            e.ElaboradoPor = inf.ElaboradoPor; e.RevisadoPor = inf.RevisadoPor; e.AprobadoPor = inf.AprobadoPor; e.Observaciones = inf.Observaciones;
+            await Db.SaveChangesAsync();
+
+            // Notas por área: se reemplazan.
+            Db.NotasInformeArea.RemoveRange(Db.NotasInformeArea.Where(n => n.InformeDiarioId == e.Id));
+            foreach (var n in notas.Where(n => !string.IsNullOrWhiteSpace(n.Realizadas) || !string.IsNullOrWhiteSpace(n.Programadas)))
+                Db.NotasInformeArea.Add(new NotaInformeArea { InformeDiarioId = e.Id, Area = n.Area, Realizadas = n.Realizadas, Programadas = n.Programadas, Orden = n.Orden });
+
+            var ahora = DateTime.Now;
+            var ids = filas.Where(f => f.Id > 0).Select(f => f.Id).ToList();
+            var guardados = Db.RegistrosAvance.Where(r => ids.Contains(r.Id)).ToDictionary(r => r.Id);
+            foreach (var f in filas)
+            {
+                if (f.Id == 0)
+                {
+                    if (f.Quitar) continue;
+                    Db.RegistrosAvance.Add(new RegistroAvance
+                    {
+                        InformeDiarioId = e.Id, Fecha = fecha, ElementoTrazadoId = f.TorreId, ComponenteId = f.ComponenteId, ActividadObraId = f.ActividadId,
+                        Cantidad = f.Cantidad, AvanceAcumulado = Math.Clamp(f.Avance ?? 0, 0, 100), NoAplica = f.NoAplica, Programado = f.Programado, Observaciones = f.Observaciones
+                    });
+                }
+                else if (guardados.TryGetValue(f.Id, out var r))
+                {
+                    if (f.Quitar) { r.Eliminado = true; r.FechaEliminacion = ahora; continue; }   // → Papelera
+                    r.Fecha = fecha; r.Cantidad = f.Cantidad; r.AvanceAcumulado = Math.Clamp(f.Avance ?? 0, 0, 100);
+                    r.NoAplica = f.NoAplica; r.Programado = f.Programado; r.Observaciones = f.Observaciones;
+                }
+            }
+            foreach (var f in fotos)
+                if (Db.FotosAvance.FirstOrDefault(x => x.Id == f.Id) is { } fe) fe.Observacion = f.Observacion;
+            await Db.SaveChangesAsync();
+            Db.ChangeTracker.Clear();
+            var id = e.Id;
+            Cargar();
+            AbrirInformeId(id);
+            aviso = $"Informe del {fecha:dd/MM/yyyy} guardado.";
+        }
+        catch (Exception ex) { Db.ChangeTracker.Clear(); error = "No se pudo guardar: " + (ex.InnerException?.Message ?? ex.Message); }
+        finally { guardando = false; }
+    }
+
+    private void EliminarInforme()
+    {
+        if (inf is null || inf.Id == 0) return;
+        try
+        {
+            var ahora = DateTime.Now;
+            var e = Db.InformesDiarios.First(i => i.Id == inf.Id);
+            e.Eliminado = true; e.FechaEliminacion = ahora;
+            foreach (var r in Db.RegistrosAvance.Where(r => r.InformeDiarioId == e.Id)) { r.Eliminado = true; r.FechaEliminacion = ahora; }
+            foreach (var f in Db.FotosAvance.Where(f => f.InformeDiarioId == e.Id)) { f.Eliminado = true; f.FechaEliminacion = ahora; }
+            Db.SaveChanges();
+            Db.ChangeTracker.Clear();
+            aviso = $"Informe del {e.Fecha:dd/MM/yyyy} enviado a la Papelera.";
+            inf = null; confirmarInforme = false;
+            Cargar();
+        }
+        catch (Exception ex) { Db.ChangeTracker.Clear(); error = "No se pudo eliminar: " + ex.Message; }
+    }
+
+    private async Task CargarFotos(InputFileChangeEventArgs e)
+    {
+        if (inf is null) return;
+        error = null;
+        try
+        {
+            if (inf.Id == 0) { await GuardarInforme(); if (inf is null || inf.Id == 0) return; }
+            var carpeta = Path.Combine(Env.WebRootPath, "uploads", "avance-obra");
+            Directory.CreateDirectory(carpeta);
+            foreach (var a in e.GetMultipleFiles(50))
+            {
+                var nombre = $"{Guid.NewGuid():N}{Path.GetExtension(a.Name)}";
+                await using (var st = a.OpenReadStream(MaxFoto))
+                await using (var destino = File.Create(Path.Combine(carpeta, nombre)))
+                    await st.CopyToAsync(destino);
+                Db.FotosAvance.Add(new FotoAvance { InformeDiarioId = inf.Id, Ruta = $"/uploads/avance-obra/{nombre}", Nombre = a.Name });
+            }
+            await Db.SaveChangesAsync();
+            Db.ChangeTracker.Clear();
+            fotos = Db.FotosAvance.AsNoTracking().Where(f => f.InformeDiarioId == inf.Id).OrderBy(f => f.Id).ToList();
+            CargarInformes();
+        }
+        catch (Exception ex) { Db.ChangeTracker.Clear(); error = "No se pudieron cargar las fotos: " + ex.Message; }
+    }
+
+    private void EliminarFoto(int id)
+    {
+        try
+        {
+            var f = Db.FotosAvance.FirstOrDefault(x => x.Id == id);
+            if (f is not null) { f.Eliminado = true; f.FechaEliminacion = DateTime.Now; Db.SaveChanges(); }
+            Db.ChangeTracker.Clear();
+            fotos.RemoveAll(x => x.Id == id); fotoElim = null;
+            CargarInformes();
+        }
+        catch (Exception ex) { Db.ChangeTracker.Clear(); error = "No se pudo eliminar la foto: " + ex.Message; }
+    }
+
+    private RenderFragment VistaInforme() => __builder =>
+    {
+        <div class="ind-foco">
+            <nav class="ind-rail">
+                @foreach (var i0 in informes)
+                {
+                    var i = i0;
+                    <button type="button" class="ind-rail-item @(inf?.Id == i.Id && i.Id > 0 ? "activo" : "")" @onclick="() => AbrirInformeId(i.Id)">
+                        <span class="pv-rail-cab">
+                            <span class="pv-cod">@Fecha(i.Fecha)</span>
+                            <span class="pv-fecha">@i.Registros reg.</span>
+                            @if (i.Fotos > 0) { <span class="pv-fecha">@i.Fotos fotos</span> }
+                        </span>
+                    </button>
+                }
+                @if (informes.Count == 0) { <span class="text-muted small p-2">Sin informes.</span> }
+            </nav>
+            <section class="ind-det">
+                @if (inf is null)
+                {
+                    <div class="av-vacio">
+                        <button type="button" class="btn btn-outline-secondary btn-sm" title="Nuevo informe del día" @onclick="() => AbrirInforme(DateTime.Today)"><Ico Nombre="agregar" /> @DateTime.Today.ToString("dd/MM/yyyy")</button>
+                    </div>
+                }
+                else
+                {
+                    @if (confirmarInforme)
+                    {
+                        var n = filas.Count(f => f.Id > 0);
+                        <div class="alert alert-warning py-2 small d-flex align-items-center gap-2">
+                            <span>El informe del @Fecha(inf.Fecha) va a la Papelera con @n registro(s) de avance y @fotos.Count foto(s). El avance de las torres deja de contarlos.</span>
+                            <button type="button" class="btn btn-sm btn-danger ms-auto" title="Enviar a la Papelera" @onclick="EliminarInforme"><Ico Nombre="eliminar" /></button>
+                            <button type="button" class="btn btn-sm btn-secondary" title="Cancelar" @onclick="() => confirmarInforme = false"><Ico Nombre="cancelar" /></button>
+                        </div>
+                    }
+                    <FormularioSig Titulo="@($"Informe diario de avance · {Fecha(inf.Fecha)}")" Icono="documento">
+                        <SeccionFormulario Titulo="Encabezado">
+                            <CampoFormulario Etiqueta="Fecha" Ancho="col-md-2" Obligatorio="true" Destacado="true"><input type="date" class="form-control" @bind="inf.Fecha" /></CampoFormulario>
+                            <CampoFormulario Etiqueta="Clima mañana" Ancho="col-md-2"><input class="form-control" list="dl-av-clima" @bind="inf.ClimaManana" /></CampoFormulario>
+                            <CampoFormulario Etiqueta="Clima tarde" Ancho="col-md-2"><input class="form-control" list="dl-av-clima" @bind="inf.ClimaTarde" /></CampoFormulario>
+                            <CampoFormulario Etiqueta="Horas de lluvia" Ancho="col-md-2"><input type="number" step="0.5" min="0" class="form-control" @bind="inf.HorasLluvia" /></CampoFormulario>
+                            <CampoFormulario Etiqueta="Elaboró" Ancho="col-md-4"><input class="form-control" @bind="inf.ElaboradoPor" /></CampoFormulario>
+                            <CampoFormulario Etiqueta="Revisó" Ancho="col-md-4"><input class="form-control" @bind="inf.RevisadoPor" /></CampoFormulario>
+                            <CampoFormulario Etiqueta="Aprobó" Ancho="col-md-4"><input class="form-control" @bind="inf.AprobadoPor" /></CampoFormulario>
+                            <CampoFormulario Etiqueta="Observaciones" Ancho="col-md-4"><textarea class="form-control" rows="1" @bind="inf.Observaciones"></textarea></CampoFormulario>
+                        </SeccionFormulario>
+
+                        <SeccionFormulario Titulo="Avance del día" SinFila="true">
+                            @{ var actN = Act(nueva.ActividadId); var torreN = TorrePorNombre(nuevaTorre); }
+                            <div class="frm-linea av-linea">
+                                <input class="form-control form-control-sm av-l-torre" list="dl-av-torres" placeholder="Torre" title="Torre" @bind="nuevaTorre" @bind:event="oninput" />
+                                <select class="form-select form-select-sm av-l-act" title="Actividad" @bind="nueva.ActividadId">
+                                    <option value="0">Actividad…</option>
+                                    @foreach (var g in Grupos())
+                                    {
+                                        <optgroup label="@g.Key">
+                                            @foreach (var a in g) { <option value="@a.Id">@a.Nombre</option> }
+                                        </optgroup>
+                                    }
+                                </select>
+                                @if (actN?.Ambito == AmbitoAvance.Pata)
+                                {
+                                    <select class="form-select form-select-sm av-l-pata" title="Pata" @bind="nueva.ComponenteId">
+                                        <option value="">Todas las patas</option>
+                                        @if (torreN is not null) { foreach (var p in torreN.Patas) { <option value="@p.ComponenteId">Pata @p.Letra</option> } }
+                                    </select>
+                                }
+                                <input type="number" step="any" class="form-control form-control-sm av-l-num" placeholder="@(actN?.Unidad ?? "Cant.")" title="@($"Cantidad del día{(actN?.Unidad is string u ? " (" + u + ")" : "")}")" @bind="nueva.Cantidad" />
+                                <input type="number" step="any" min="0" max="100" class="form-control form-control-sm av-l-num" placeholder="% acum." title="% acumulado al cierre del día" @bind="nueva.Avance" />
+                                @if (torreN is not null && actN is not null && Anterior(torreN.Id, nueva.ComponenteId, actN.Id) is decimal antes)
+                                {
+                                    <span class="av-l-antes" title="Acumulado anterior">antes @FormatoPct(antes)</span>
+                                }
+                                <label class="av-l-chk" title="No aplica"><input type="checkbox" @bind="nueva.NoAplica" /> N/A</label>
+                                <label class="av-l-chk" title="Programado (no suma avance)"><input type="checkbox" @bind="nueva.Programado" /> Prog.</label>
+                                <input class="form-control form-control-sm av-l-obs" placeholder="Observación" title="Observación" @bind="nueva.Observaciones" />
+                                <button type="button" class="frm-icono-btn" title="Agregar al informe" @onclick="AgregarFila"><Ico Nombre="agregar" /></button>
+                            </div>
+                            <div class="tabla-scroll mt-2">
+                                <table class="table table-sm av-regs">
+                                    <thead><tr><th>Torre</th><th>Pata</th><th>Actividad</th><th>Cantidad</th><th>% acumulado</th><th>Antes</th><th>N/A</th><th>Prog.</th><th>Observación</th><th></th></tr></thead>
+                                    <tbody>
+                                        @foreach (var f0 in filas)
+                                        {
+                                            var f = f0;
+                                            var a = Act(f.ActividadId);
+                                            var t = Torre(f.TorreId);
+                                            <tr class="@(f.Quitar ? "av-quitar" : "") @(f.Programado ? "av-prog" : "")">
+                                                <td>@(t?.Nombre ?? "#" + f.TorreId)</td>
+                                                <td>@(f.ComponenteId is int c ? "Pata " + t?.Patas.FirstOrDefault(p => p.ComponenteId == c)?.Letra : a?.Ambito == AmbitoAvance.Pata ? "Todas" : "")</td>
+                                                <td>@(a?.Nombre ?? "(en la Papelera)")</td>
+                                                <td><input type="number" step="any" class="form-control form-control-sm av-l-num" disabled="@f.Quitar" @bind="f.Cantidad" /> <small class="text-muted">@a?.Unidad</small></td>
+                                                <td><input type="number" step="any" min="0" max="100" class="form-control form-control-sm av-l-num" disabled="@(f.Quitar || f.NoAplica)" @bind="f.Avance" /></td>
+                                                <td class="small text-muted">@FormatoPct(Anterior(f.TorreId, f.ComponenteId, f.ActividadId))</td>
+                                                <td><input type="checkbox" disabled="@f.Quitar" @bind="f.NoAplica" /></td>
+                                                <td><input type="checkbox" disabled="@f.Quitar" @bind="f.Programado" /></td>
+                                                <td><input class="form-control form-control-sm" disabled="@f.Quitar" @bind="f.Observaciones" /></td>
+                                                <td>
+                                                    <button type="button" class="ens-mini" title="@(f.Quitar ? "Conservar" : f.Id > 0 ? "Quitar (a la Papelera al guardar)" : "Quitar")" @onclick="() => { if (f.Id == 0) filas.Remove(f); else f.Quitar = !f.Quitar; }"><Ico Nombre="@(f.Quitar ? "restaurar" : "eliminar")" /></button>
+                                                </td>
+                                            </tr>
+                                        }
+                                        @if (filas.Count == 0) { <tr><td colspan="10" class="text-muted small text-center">Sin registros.</td></tr> }
+                                    </tbody>
+                                </table>
+                            </div>
+                        </SeccionFormulario>
+
+                        <SeccionFormulario Titulo="Cantidades por ítem" SinFila="true">
+                            @{ var items = s!.Actividades.Where(a => !string.IsNullOrWhiteSpace(a.ItemContrato)).ToList(); }
+                            <table class="table table-sm av-items">
+                                <thead><tr><th>Ítem</th><th>Actividad</th><th>Unidad</th><th>Del día</th><th>Anterior</th><th>Acumulado</th></tr></thead>
+                                <tbody>
+                                    @foreach (var a in items)
+                                    {
+                                        var dia = filas.Where(f => !f.Quitar && !f.Programado && f.ActividadId == a.Id).Sum(f => f.Cantidad ?? 0);
+                                        var ant = cantidades.Where(c => c.Act == a.Id && c.Fecha.Date < inf.Fecha.Date && c.Informe != inf.Id).Sum(c => c.Cantidad);
+                                        <tr><td>@a.ItemContrato</td><td>@a.Nombre</td><td>@a.Unidad</td><td class="av-mx-num">@dia.ToString("#,0.##", Es)</td><td class="av-mx-num">@ant.ToString("#,0.##", Es)</td><td class="av-mx-num fw-semibold">@((dia + ant).ToString("#,0.##", Es))</td></tr>
+                                    }
+                                </tbody>
+                            </table>
+                        </SeccionFormulario>
+
+                        <SeccionFormulario Titulo="Actividades complementarias" SinFila="true">
+                            <div class="av-notas">
+                                @foreach (var n in notas)
+                                {
+                                    <div class="av-nota">
+                                        <span class="av-nota-area">@n.Area</span>
+                                        <textarea class="form-control form-control-sm" rows="2" placeholder="Realizadas" title="Actividades realizadas" @bind="n.Realizadas"></textarea>
+                                        <textarea class="form-control form-control-sm" rows="2" placeholder="Programadas" title="Actividades programadas" @bind="n.Programadas"></textarea>
+                                    </div>
+                                }
+                            </div>
+                        </SeccionFormulario>
+
+                        <SeccionFormulario Titulo="Registro fotográfico" SinFila="true">
+                            <Extra>
+                                <label class="ens-mini mb-0" title="Cargar fotos"><Ico Nombre="agregar" /><InputFile class="d-none" multiple accept="image/*" OnChange="CargarFotos" /></label>
+                            </Extra>
+                            <ChildContent>
+                                <div class="av-fotos">
+                                    @foreach (var f0 in fotos)
+                                    {
+                                        var f = f0;
+                                        <figure class="av-foto">
+                                            <a href="@f.Ruta" target="_blank" title="@f.Nombre"><img src="@f.Ruta" alt="@f.Nombre" loading="lazy" /></a>
+                                            <input class="form-control form-control-sm" placeholder="Descripción" title="Descripción" @bind="f.Observacion" />
+                                            @if (fotoElim == f.Id)
+                                            {
+                                                <div class="d-flex gap-1">
+                                                    <button type="button" class="btn btn-sm btn-danger" title="Enviar a la Papelera" @onclick="() => EliminarFoto(f.Id)"><Ico Nombre="eliminar" /></button>
+                                                    <button type="button" class="btn btn-sm btn-secondary" title="Cancelar" @onclick="() => fotoElim = null"><Ico Nombre="cancelar" /></button>
+                                                </div>
+                                            }
+                                            else
+                                            {
+                                                <button type="button" class="ens-mini av-foto-x" title="Eliminar" @onclick="() => fotoElim = f.Id"><Ico Nombre="eliminar" /></button>
+                                            }
+                                        </figure>
+                                    }
+                                    @if (fotos.Count == 0) { <span class="text-muted small">Sin fotos.</span> }
+                                </div>
+                            </ChildContent>
+                        </SeccionFormulario>
+                    </FormularioSig>
+                    <datalist id="dl-av-torres">@foreach (var t in s!.Torres) { <option value="@t.Nombre"></option> }</datalist>
+                    <datalist id="dl-av-clima"><option value="Seco"></option><option value="Nublado"></option><option value="Lluvia ligera"></option><option value="Lluvia"></option></datalist>
+                }
+            </section>
+        </div>
+    };
+
+    // ================= Ajustes: actividades, pesos y cotas =================
+    private List<ActividadObra> actsEdit = new();
+    private ConfigCotasAvance cotasEdit = new();
+    private Dictionary<int, int> regsPorAct = new();
+    private int? actElim;
+    private string nuevaAct = "", nuevoGrupo = "";
+    private AmbitoAvance nuevoAmbito = AmbitoAvance.Pata;
+
+    private void PrepararAjustes()
+    {
+        actsEdit = Db.ActividadesObra.AsNoTracking().OrderBy(a => a.Orden).ThenBy(a => a.Id).ToList();
+        cotasEdit = ConfigCotasAvance.Leer(Db.Configuracion.AsNoTracking().Select(c => c.AvanceObraCotas).FirstOrDefault());
+        regsPorAct = Db.RegistrosAvance.AsNoTracking().GroupBy(r => r.ActividadObraId).Select(g => new { g.Key, N = g.Count() }).ToDictionary(x => x.Key, x => x.N);
+        actElim = null;
+    }
+
+    private void AgregarActividad()
+    {
+        if (string.IsNullOrWhiteSpace(nuevaAct)) return;
+        var grupo = string.IsNullOrWhiteSpace(nuevoGrupo) ? "Otras" : nuevoGrupo.Trim();
+        actsEdit.Add(new ActividadObra { Nombre = nuevaAct.Trim(), Grupo = grupo, Ambito = nuevoAmbito, Orden = (actsEdit.Count == 0 ? 0 : actsEdit.Max(a => a.Orden)) + 1 });
+        nuevaAct = "";
+    }
+
+    private async Task GuardarAjustes()
+    {
+        if (guardando) return;
+        error = null; guardando = true;
+        try
+        {
+            if (actsEdit.Any(a => string.IsNullOrWhiteSpace(a.Nombre))) { error = "Toda actividad necesita nombre."; return; }
+            if (actsEdit.Any(a => a.Peso < 0 || a.Peso > 1)) { error = "El peso va de 0 % a 100 %."; return; }
+            var ids = actsEdit.Where(a => a.Id > 0).Select(a => a.Id).ToList();
+            var bd = Db.ActividadesObra.Where(a => ids.Contains(a.Id)).ToDictionary(a => a.Id);
+            foreach (var a in actsEdit)
+            {
+                var e = a.Id > 0 && bd.TryGetValue(a.Id, out var x) ? x : null;
+                if (e is null) { e = new ActividadObra(); Db.ActividadesObra.Add(e); }
+                e.Nombre = a.Nombre.Trim(); e.Grupo = (a.Grupo ?? "").Trim(); e.Ambito = a.Ambito; e.Peso = a.Peso; e.Unidad = a.Unidad;
+                e.ItemContrato = a.ItemContrato; e.Efecto = a.Efecto; e.Orden = a.Orden; e.Activo = a.Activo;
+            }
+            var cfg = Db.Configuracion.FirstOrDefault();
+            if (cfg is null) { cfg = new ConfiguracionEmpresa { Id = 1 }; Db.Configuracion.Add(cfg); }
+            cfg.AvanceObraCotas = cotasEdit.Escribir();
+            await Db.SaveChangesAsync();
+            Db.ChangeTracker.Clear();
+            Cargar();
+            visorTorre = null;
+            aviso = "Ajustes guardados.";
+        }
+        catch (Exception ex) { Db.ChangeTracker.Clear(); error = "No se pudo guardar: " + (ex.InnerException?.Message ?? ex.Message); }
+        finally { guardando = false; }
+    }
+
+    private void EliminarActividad(ActividadObra a)
+    {
+        if (a.Id == 0) { actsEdit.Remove(a); actElim = null; return; }
+        try
+        {
+            var ahora = DateTime.Now;
+            var e = Db.ActividadesObra.First(x => x.Id == a.Id);
+            e.Eliminado = true; e.FechaEliminacion = ahora;
+            foreach (var r in Db.RegistrosAvance.Where(r => r.ActividadObraId == a.Id)) { r.Eliminado = true; r.FechaEliminacion = ahora; }
+            Db.SaveChanges();
+            Db.ChangeTracker.Clear();
+            actsEdit.Remove(a); actElim = null;
+            aviso = $"«{a.Nombre}» enviada a la Papelera.";
+            s = ServicioAvanceObra.Cargar(Db, Env.WebRootPath);
+            CargarInformes();
+        }
+        catch (Exception ex) { Db.ChangeTracker.Clear(); error = "No se pudo eliminar: " + ex.Message; }
+    }
+
+    private static string NombreEfecto(EfectoAvance3D e) => e switch
+    {
+        EfectoAvance3D.Ninguno => "Solo en el %",
+        EfectoAvance3D.Excavacion => "Excavación",
+        EfectoAvance3D.Solado => "Solado",
+        EfectoAvance3D.Nivelacion => "Stub / parrilla",
+        EfectoAvance3D.Acero => "Acero",
+        EfectoAvance3D.Concreto => "Concreto",
+        EfectoAvance3D.Relleno => "Relleno",
+        EfectoAvance3D.Prearmado => "Prearmado",
+        EfectoAvance3D.Montaje => "Montaje (piezas)",
+        EfectoAvance3D.Verticalidad => "Verticalidad",
+        EfectoAvance3D.Vestida => "Vestida (aisladores)",
+        _ => e.ToString()
+    };
+
+    private RenderFragment VistaAjustes() => __builder =>
+    {
+        var total = actsEdit.Where(a => a.Activo).Sum(a => a.Peso);
+        <div class="av-ajustes">
+            <div class="frm-linea av-linea mb-2">
+                <input class="form-control form-control-sm" placeholder="Nueva actividad" title="Nombre" @bind="nuevaAct" />
+                <input class="form-control form-control-sm" list="dl-av-grupos" placeholder="Grupo" title="Grupo" @bind="nuevoGrupo" />
+                <select class="form-select form-select-sm" style="width:auto" title="Se registra por" @bind="nuevoAmbito">
+                    <option value="@AmbitoAvance.Pata">Por pata</option>
+                    <option value="@AmbitoAvance.Torre">Por torre</option>
+                </select>
+                <button type="button" class="frm-icono-btn" title="Agregar actividad" disabled="@string.IsNullOrWhiteSpace(nuevaAct)" @onclick="AgregarActividad"><Ico Nombre="agregar" /></button>
+                <span class="av-suma ms-auto" title="Suma de pesos de las actividades activas (el avance de cada torre se divide por la suma de lo que aplica)">Σ pesos @((total * 100).ToString("0.#", Es)) %</span>
+            </div>
+            <datalist id="dl-av-grupos">@foreach (var g in actsEdit.Select(a => a.Grupo).Distinct()) { <option value="@g"></option> }</datalist>
+            <div class="av-grupos">
+                @foreach (var g in actsEdit.GroupBy(a => a.Grupo).ToList())
+                {
+                    <div class="av-grupo">
+                        <div class="av-grupo-cab"><span>@g.Key</span><span class="av-grupo-peso">@((g.Where(a => a.Activo).Sum(a => a.Peso) * 100).ToString("0.#", Es)) %</span></div>
+                        @foreach (var a0 in g)
+                        {
+                            var a = a0;
+                            <div class="av-act @(a.Activo ? "" : "av-na")">
+                                <input class="form-control form-control-sm av-act-nom" title="Nombre" @bind="a.Nombre" />
+                                <div class="av-act-campos">
+                                    <label title="Peso en el avance de la torre (%)"><span>Peso %</span><input type="number" step="0.1" min="0" max="100" class="form-control form-control-sm" value="@((a.Peso * 100).ToString("0.###", CultureInfo.InvariantCulture))" @onchange="@(e => { if (decimal.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) a.Peso = Math.Round(v / 100m, 5); })" /></label>
+                                    <label title="Se registra por"><span>Por</span>
+                                        <select class="form-select form-select-sm" @bind="a.Ambito"><option value="@AmbitoAvance.Pata">Pata</option><option value="@AmbitoAvance.Torre">Torre</option></select>
+                                    </label>
+                                    <label title="Unidad"><span>Unidad</span><input class="form-control form-control-sm" @bind="a.Unidad" /></label>
+                                    <label title="Ítem de la lista de cantidades"><span>Ítem</span><input class="form-control form-control-sm" @bind="a.ItemContrato" /></label>
+                                    <label title="Qué dibuja en el visor 3D"><span>3D</span>
+                                        <select class="form-select form-select-sm" @bind="a.Efecto">
+                                            @foreach (var ef in Enum.GetValues<EfectoAvance3D>()) { <option value="@ef">@NombreEfecto(ef)</option> }
+                                        </select>
+                                    </label>
+                                    <label class="av-act-chk" title="Activa"><input type="checkbox" @bind="a.Activo" /></label>
+                                    @if (actElim == a.GetHashCode())
+                                    {
+                                        var n = regsPorAct.TryGetValue(a.Id, out var k) ? k : 0;
+                                        <span class="av-act-elim">
+                                            @(n > 0 ? $"{n} registro(s) de avance van con ella a la Papelera." : "Sin registros.")
+                                            <button type="button" class="btn btn-sm btn-danger" title="Enviar a la Papelera" @onclick="() => EliminarActividad(a)"><Ico Nombre="eliminar" /></button>
+                                            <button type="button" class="btn btn-sm btn-secondary" title="Cancelar" @onclick="() => actElim = null"><Ico Nombre="cancelar" /></button>
+                                        </span>
+                                    }
+                                    else
+                                    {
+                                        <button type="button" class="ens-mini" title="Eliminar" @onclick="() => actElim = a.GetHashCode()"><Ico Nombre="eliminar" /></button>
+                                    }
+                                </div>
+                            </div>
+                        }
+                    </div>
+                }
+                <div class="av-grupo">
+                    <div class="av-grupo-cab"><span>Cotas del visor 3D</span></div>
+                    @{ var dg = Diagnostico(); }
+                    <div class="av-sub">Tipo de torre: @(s.ClaveTipoUsada ?? "sin columna") · @dg.Exactos con modelo · @dg.Siluetas paramétricas (@dg.SinTipo sin tipo) · Cimentación: @dg.Cim</div>
+                    <div class="av-cotas">
+                        <label title="Columna de la tabla de torres con el tipo de torre"><span>Tipo de torre</span>
+                            <select class="form-select form-select-sm" value="@(cotasEdit.ClaveTipoTorre ?? "")" @onchange="@(e => cotasEdit.ClaveTipoTorre = string.IsNullOrWhiteSpace(e.Value?.ToString()) ? null : e.Value!.ToString())">
+                                <option value="">(como Línea 3D@(s.ClaveTipoUsada is null ? ": no encontrada" : ": " + s.ClaveTipoUsada))</option>
+                                @foreach (var c in s!.ClavesTabla) { <option value="@c">@c</option> }
+                            </select>
+                        </label>
+                        <label title="Columna con el tipo de cimentación (un valor con «parrilla» = pata con parrilla)"><span>Tipo de cimentación</span>
+                            <select class="form-select form-select-sm" value="@(cotasEdit.ClaveTipoCimentacion ?? "")" @onchange="@(e => cotasEdit.ClaveTipoCimentacion = string.IsNullOrWhiteSpace(e.Value?.ToString()) ? null : e.Value!.ToString())">
+                                <option value="">(automático@(s.ClaveCimUsada is null ? ": no encontrada, todas zapata" : ": " + s.ClaveCimUsada))</option>
+                                @foreach (var c in s.ClavesTabla) { <option value="@c">@c</option> }
+                            </select>
+                        </label>
+                        @foreach (var (campo, nombre, gen) in ConfigCotasAvance.Cotas)
+                        {
+                            var cp = campo;
+                            <label title="@($"Columna de la tabla de torres (o de la pata). Sin columna = {gen.ToString("0.##", Es)} m")"><span>@nombre</span>
+                                <select class="form-select form-select-sm" value="@(cotasEdit.Clave(cp) ?? "")" @onchange="@(e => cotasEdit.Asignar(cp, e.Value?.ToString()))">
+                                    <option value="">(genérica: @gen.ToString("0.##", Es) m)</option>
+                                    @foreach (var c in s.ClavesTabla) { <option value="@c">@c</option> }
+                                </select>
+                            </label>
+                        }
+                    </div>
+                </div>
+            </div>
+        </div>
+    };
+
+    public async ValueTask DisposeAsync()
+    {
+        Parar();
+        await LiberarVisor();
+        try { if (modulo is not null) await modulo.DisposeAsync(); }
+        catch (JSDisconnectedException) { }
+    }
+}

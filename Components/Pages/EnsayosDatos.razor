@@ -1,0 +1,1115 @@
+@page "/ensayos/{TipoEnsayoId:int}"
+@rendermode InteractiveServer
+@implements IAsyncDisposable
+@using System.Globalization
+@using Microsoft.EntityFrameworkCore
+@using SigWeb.Data
+@using SigWeb.Data.Ensayos
+@using SigWeb.Models
+@using SigWeb.Data.Tablas
+@inject AppDbContext Db
+@inject SigWeb.Data.Impacto.AnalizadorImpacto Analizador
+@inject IJSRuntime JS
+
+@if (tipo is null)
+{
+    <p class="text-muted">Tipo de ensayo no encontrado. <a href="ensayos">Volver a Ensayos</a></p>
+}
+else
+{
+    <div class="no-imprimir @(PantallaCompleta ? "ens-pantalla" : "")">
+    <EncabezadoPagina Titulo="@tipo.Nombre" IconoUrl="@rutaIconoTipo" Atras="ensayos" OnAtras="AtrasDatos"
+                      Subtitulo="@($"{resultados.Count} resultado{(resultados.Count == 1 ? "" : "s")}")">
+        <Acciones>
+            <button class="pg-btn @(vistaExcel ? "activo" : "")" title="Vista de hoja de cálculo" @onclick='() => CambiarVista(vistaExcel ? "tabla" : "excel")'>📊</button>
+            <button class="pg-btn @(mostrarGrafico ? "activo" : "")" title="Gráficos" @onclick='() => CambiarVista("grafico")'>📈</button>
+            @if (!mostrarGrafico && !vistaExcel)
+            {
+                <button class="pg-btn @(tablaCompleta ? "activo" : "")" title="@(tablaCompleta ? "Salir de pantalla completa" : "Pantalla completa")" @onclick="() => tablaCompleta = !tablaCompleta"><Ico Nombre="pantalla-completa" /></button>
+            }
+            <span class="pg-sep"></span>
+            <BotonCampos Activo="verCampos" Deshabilitado="motor is null" OnClick="() => verCampos = true" />
+            <button class="pg-btn" title="Importar desde Excel" @onclick="() => mostrarImportar = true"><Ico Nombre="importar" /></button>
+            <BotonExportar Titulo="@tipo.Nombre" OnExportar="Exportar" />
+            <span class="pg-sep"></span>
+            <button class="pg-btn pg-btn-peligro" title="Eliminar una carga" @onclick="AbrirEliminarLote" disabled="@(resultados.Count == 0)"><Ico Nombre="eliminar" /></button>
+            @if (!mostrarGrafico)
+            {
+                <button class="pg-btn" title="Editar muestra (fila seleccionada)" @onclick="EditarMuestraActiva"><Ico Nombre="editar" /></button>
+            }
+            <button class="pg-btn pg-btn-primario" title="Agregar resultado" @onclick="() => AbrirAgregar(null)"><Ico Nombre="agregar" /></button>
+        </Acciones>
+    </EncabezadoPagina>
+
+    @if (verCampos && motor is not null)
+    {
+        <PanelCampos Motor="motor" OnCerrar="() => verCampos = false" OnCambio="StateHasChanged">
+            <Acciones>
+                <button type="button" class="pg-btn" title="Campos de la plantilla del ensayo (tipo, unidad, fórmula, adjunto, importación)" @onclick="() => { verCampos = false; mostrarConfigCampos = true; }"><Ico Nombre="listado" /></button>
+            </Acciones>
+        </PanelCampos>
+    }
+
+    @if (!mostrarGrafico)
+    {
+    <div class="d-flex justify-content-between align-items-center mb-2 gap-2 flex-wrap">
+        <input class="form-control form-control-sm" style="max-width:320px;"
+               placeholder="@(tipo.UsaTorre ? "Buscar por torre..." : "Buscar por localización...")" @bind="filtro" @bind:event="oninput" />
+        <div class="d-flex align-items-center gap-2">
+            @if (!vistaExcel)
+            {
+                @* La Vista Excel (Univer) trae su propio control de zoom abajo a la
+                   derecha de la hoja — este slider de la app solo aplica a la Vista
+                   tabla (HTML simple), que no tiene uno propio. *@
+                <span class="small text-muted">🔍 Alejar</span>
+                <input type="range" min="40" max="100" step="5" class="form-range" style="width:140px;" value="@escalaTabla"
+                       @oninput="@(e => escalaTabla = int.TryParse(e.Value?.ToString(), out var n) ? n : escalaTabla)" />
+                <span class="small text-muted" style="width:38px;">@(escalaTabla)%</span>
+                @if (escalaTabla != 100)
+                {
+                    <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-1" title="Restablecer zoom" @onclick="@(() => escalaTabla = 100)">↺</button>
+                }
+            }
+        </div>
+    </div>
+    }
+
+    @if (mostrarGrafico)
+    {
+        <GraficoEnsayos Titulo="@tipo.Nombre" Columnas="ColumnasExcel()" Filas="FilasExcel(resultados)" Tipos="TiposCampoGrafico()" />
+    }
+    else if (vistaExcel)
+    {
+        <div class="hoja-wrap">
+        @if (!string.IsNullOrEmpty(mensajeFilaActiva))
+        {
+            <div class="text-muted small mb-1">@mensajeFilaActiva</div>
+        }
+        <div id="hoja-ensayos" style="height:74vh;"></div>
+        @if (mostrarAgregar)
+        {
+            <DialogoAgregarResultadoEnsayo TipoEnsayoId="TipoEnsayoId" ResultadoEnsayoId="resultadoEditandoId"
+                                        OnCerrar="@(() => mostrarAgregar = false)" OnGuardado="CargarTodo" />
+        }
+        </div>
+    }
+    else
+    {
+    @if (!string.IsNullOrEmpty(mensajeFilaActiva))
+    {
+        <div class="text-muted small mb-1">@mensajeFilaActiva</div>
+    }
+    <div class="table-responsive ens-tabla-marco" style="max-height:74vh; overflow-y:auto; zoom:@(escalaTabla)%;">
+        <table id="tabla-ensayos" class="table table-sm table-bordered table-hover tabla-compacta align-middle mb-0">
+            <thead>
+                <tr>
+                    @foreach (var c in Columnas)
+                    {
+                        <th class="@(c.Clave == "DisenoMezcla" ? "" : "th-ordenable") @ClaseCelda(c.Clave)" data-col="@c.Clave" @onclick="() => OrdenarPor(c.Clave)">
+                            @c.Nombre@(Flecha(c.Clave))
+                            <button type="button" class="btn-fijar-col @(columnasFijas.Contains(c.Clave) ? "activo" : "")"
+                                    title="@(columnasFijas.Contains(c.Clave) ? "Soltar columna" : "Fijar columna")"
+                                    @onclick="() => TogglePin(c.Clave)" @onclick:stopPropagation="true">📌</button>
+                        </th>
+                    }
+                    <th style="width:130px;"></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var (r, gris) in FilasMostradas)
+                {
+                    <tr class="@(gris ? "fila-gris" : "") @(filaSeleccionadaId == r.Id ? "table-active" : "")" @onclick="() => { filaSeleccionadaId = r.Id; mensajeFilaActiva = string.Empty; }">
+                        @foreach (var c in Columnas)
+                        {
+                            var nat = c.Origen == OrigenCampoTabla.Nativo && Motor.Estilo(r.Id, c) is null;
+                            if (nat && c.Clave == "Torre")
+                            {
+                                <td class="@ClaseCelda("Torre")" data-col="Torre" style="@FondoCelda("Torre", gris)">@(string.IsNullOrEmpty(TorreOLocalizacion(r)) ? "—" : TorreOLocalizacion(r))</td>
+                            }
+                            else if (nat && c.Clave == "Elemento")
+                            {
+                                <td class="@ClaseCelda("Elemento")" data-col="Elemento" style="@FondoCelda("Elemento", gris)">
+                            @r.ElementoTexto
+                            @if (r.SubElemento != SubElementoResultado.Ninguno)
+                            {
+                                <span class="text-muted small">(@EtiquetaSubElemento(r.SubElemento))</span>
+                            }
+                        </td>
+                            }
+                            else if (nat && c.Clave == "Informe")
+                            {
+                                <td class="@ClaseCelda("Informe")" data-col="Informe" style="@FondoCelda("Informe", gris)">
+                            @if (r.InformeId is int idInformeFila)
+                            {
+                                var numeroInforme = informeNumeroPorResultado.TryGetValue(r.Id, out var inf) ? inf : "—";
+                                if (archivosPorInforme.TryGetValue(idInformeFila, out var cant) && cant > 0)
+                                {
+                                    <BotonArchivos Archivos="ArchivosVistaInforme(idInformeFila)" Texto="@numeroInforme" Titulo="@($"Informe {numeroInforme}")" />
+                                    <button class="ens-mini" title="Gestionar documentos del informe" @onclick="() => AbrirArchivosInforme(idInformeFila)"><Ico Nombre="adjuntar" /></button>
+                                }
+                                else
+                                {
+                                    <button class="btn btn-link p-0 border-0 text-decoration-none align-baseline text-secondary" title="Subir documentos del informe"
+                                            @onclick="() => AbrirArchivosInforme(idInformeFila)">@numeroInforme</button>
+                                }
+                            }
+                            else
+                            {
+                                <span class="text-muted">—</span>
+                            }
+                        </td>
+                            }
+                            else if (nat && c.Clave == "DisenoMezcla")
+                            {
+                                <td class="@ClaseCelda("DisenoMezcla")" data-col="DisenoMezcla" style="@FondoCelda("DisenoMezcla", gris)">
+                                @if (!string.IsNullOrWhiteSpace(r.DisenoMezclaArchivo))
+                                {
+                                    var nomDm = string.IsNullOrWhiteSpace(r.DisenoMezclaCodigo) ? "Diseño de mezcla" : r.DisenoMezclaCodigo;
+                                    <BotonArchivos Archivos="@(new[] { new BotonArchivos.Archivo(nomDm, r.DisenoMezclaArchivo) })" Texto="@nomDm" Titulo="Diseño de mezcla" />
+                                }
+                                else
+                                {
+                                    @(r.DisenoMezclaCodigo ?? "—")
+                                }
+                            </td>
+                            }
+                            else if (nat && c.Clave == "FechaEjecucion")
+                            {
+                                <td class="@ClaseCelda("FechaEjecucion")" data-col="FechaEjecucion" style="@FondoCelda("FechaEjecucion", gris)">
+                                @(r.FechaEjecucion?.ToString("dd/MM/yyyy") ?? "—")
+                            </td>
+                            }
+                            else if (nat && CampoViejo(c.Clave) is not null)
+                            {
+                                <td class="@ClaseCelda(c.Clave)" data-col="@c.Clave" style="@FondoCelda(c.Clave, gris)">
+                                @if (CampoViejo(c.Clave)?.LlevaAdjunto == true && RutaAdjunto(r.Id, c.Clave) is string rutaAdj)
+                                {
+                                    var valAdj = ObtenerValor(r.Id, c.Clave);
+                                    <BotonArchivos Archivos="@(new[] { new BotonArchivos.Archivo(string.IsNullOrWhiteSpace(valAdj) ? c.Nombre : valAdj, rutaAdj) })" Texto="@valAdj" Titulo="@c.Nombre" />
+                                }
+                                else
+                                {
+                                    @ObtenerValor(r.Id, c.Clave)
+                                }
+                            </td>
+                            }
+                            else
+                            {
+                                <CeldaCampo Motor="Motor" Campo="c" Fila="r.Id" Clase="@ClaseCelda(c.Clave)" Col="@c.Clave" Estilo="@FondoCelda(c.Clave, gris)" OnCambio="StateHasChanged" />
+                            }
+                        }
+                        <td class="text-nowrap">
+                            <button class="btn btn-sm btn-outline-secondary py-0" title="Editar" @onclick="() => AbrirAgregar(r.Id)"><Ico Nombre="editar" /></button>
+                            <button class="btn btn-sm btn-outline-danger" title="Eliminar" @onclick="() => PedirEliminarResultado(r.Id)"><Ico Nombre="eliminar" /></button>
+                        </td>
+                    </tr>
+                }
+                @if (!ResultadosMostrados.Any())
+                {
+                    <tr><td colspan="@(Columnas.Count() + 1)" class="text-muted small text-center py-3">
+                        <em>Sin resultados. Carga un Excel o agrega uno manualmente.</em>
+                    </td></tr>
+                }
+            </tbody>
+        </table>
+    </div>
+    }
+
+    @if (mostrarConfigCampos)
+    {
+        <DialogoConfigurarCamposEnsayo TipoEnsayoId="TipoEnsayoId" OnCerrar="@(() => { mostrarConfigCampos = false; CargarTodo(); })" />
+    }
+    @if (mostrarImportar)
+    {
+        <DialogoImportarEnsayo TipoEnsayoId="TipoEnsayoId" OnCerrar="@(() => mostrarImportar = false)" OnImportado="CargarTodo" />
+    }
+    @if (mostrarAgregar && !(vistaExcel && !mostrarGrafico))
+    {
+        <DialogoAgregarResultadoEnsayo TipoEnsayoId="TipoEnsayoId" ResultadoEnsayoId="resultadoEditandoId"
+                                        OnCerrar="@(() => mostrarAgregar = false)" OnGuardado="CargarTodo" />
+    }
+    @if (informeIdParaArchivos is int idInformeAbierto)
+    {
+        <DialogoArchivosInforme InformeId="idInformeAbierto"
+                                 OnCerrar="@(() => informeIdParaArchivos = null)" OnCambiado="CargarTodo" />
+    }
+    @if (mostrarEliminarLote)
+    {
+        <div class="modal-backdrop-custom">
+            <div class="modal-box-custom" style="max-width: 560px;">
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <h5 class="mb-0">Eliminar una carga completa</h5>
+                    <button type="button" class="btn-close" aria-label="Cerrar" @onclick="CerrarEliminarLote"></button>
+                </div>
+
+                @if (loteConfirmando is null)
+                {
+                    <div class="modal-area-flexible">
+                        @foreach (var lote in lotesDisponibles)
+                        {
+                            <div class="d-flex justify-content-between align-items-center border rounded p-2 mb-2">
+                                <div class="small">
+                                    <div>@lote.Origen</div>
+                                    <div class="text-muted">@lote.Cantidad resultado@(lote.Cantidad == 1 ? "" : "s")</div>
+                                </div>
+                                <button class="btn btn-sm btn-outline-danger" @onclick="() => PedirEliminarLote(lote.Origen)">Eliminar</button>
+                            </div>
+                        }
+                        @if (lotesDisponibles.Count == 0)
+                        {
+                            <p class="text-muted small">No hay cargas para eliminar.</p>
+                        }
+                    </div>
+                }
+                else
+                {
+                    <div class="alert alert-warning py-2 small">
+                        ¿Eliminar toda la carga <strong>"@loteConfirmando"</strong>
+                        (@(lotesDisponibles.FirstOrDefault(l => l.Origen == loteConfirmando).Cantidad) resultado(s))?
+                        Se irán a la Papelera.
+                    </div>
+                    <PanelImpacto Informe="impacto" OnEntendido="@(v => impactoOk = v)" />
+                    <div class="d-flex justify-content-end gap-2">
+                        <button class="btn btn-secondary btn-sm" @onclick="() => loteConfirmando = null" title="Cancelar"><Ico Nombre="cancelar" /></button>
+                        <button class="btn btn-danger btn-sm" disabled="@BloqueadoPorImpacto" @onclick="EliminarLoteConfirmado">Sí, eliminar carga</button>
+                    </div>
+                }
+            </div>
+        </div>
+    }
+    </div>
+
+    <div class="solo-imprimir">
+        <h4>@tipo.Nombre — Resultados de ensayo</h4>
+        <p>Generado el @DateTime.Now.ToString("dd/MM/yyyy HH:mm")</p>
+        <table class="table table-bordered table-sm" style="font-size:0.7rem">
+            <thead>
+                <tr>
+                    @foreach (var col in columnasParaImprimir)
+                    {
+                        <th>@col["title"]</th>
+                    }
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var fila in datosParaImprimir)
+                {
+                    <tr>
+                        @foreach (var col in columnasParaImprimir)
+                        {
+                            var campoClave = col["field"].ToString() ?? "";
+                            <td>@(fila.TryGetValue(campoClave, out var v) ? v : "")</td>
+                        }
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+@if (idPendienteEliminar is not null)
+{
+    <div class="modal-backdrop-custom">
+        <div class="modal-box-custom" style="max-width: 560px;">
+            <h5>¿Eliminar este resultado?</h5>
+            <PanelImpacto Informe="impacto" OnEntendido="@(v => impactoOk = v)" />
+            <div class="d-flex gap-2 justify-content-end">
+                <button class="btn btn-secondary btn-sm" @onclick="() => idPendienteEliminar = null" title="Cancelar"><Ico Nombre="cancelar" /></button>
+                <button class="btn btn-danger btn-sm" disabled="@BloqueadoPorImpacto" @onclick="() => ConfirmarEliminar(idPendienteEliminar.Value)">Sí, eliminar</button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public int TipoEnsayoId { get; set; }
+
+    private TipoEnsayo? tipo;
+    private string rutaIconoTipo = "images/iconos/documento.svg";
+    private List<CampoEnsayo> campos = new();
+    private List<ResultadoEnsayo> resultados = new();
+    private Dictionary<int, Dictionary<string, string>> valoresPorResultado = new();
+    private Dictionary<int, Dictionary<string, string>> adjuntoPorResultado = new();
+    private string? RutaAdjunto(int resultadoId, string clave) =>
+        adjuntoPorResultado.TryGetValue(resultadoId, out var d) && d.TryGetValue(clave, out var r) ? r : null;
+    private Dictionary<int, string> torreCodigoPorResultado = new();
+    private Dictionary<int, string> informeNumeroPorResultado = new();
+
+    // Texto a mostrar en la columna "Torre"/"Localización": si el resultado
+    // ya tiene una Torre resuelta (ElementoTrazadoId — ver CargarTodo), se
+    // muestra siempre, sin importar si el Tipo de Ensayo usa Torre o
+    // Localización en este momento. Esto evita "perder" referencias de
+    // torre ya guardadas en resultados antiguos si alguien cambia la
+    // casilla "Se asocia a Torres del trazado" del Tipo de Ensayo después
+    // de que esos resultados ya se cargaron con Torre (ver Ensayos.razor).
+    // Si no hay Torre resuelta, se cae a la Localización (si el tipo no usa
+    // Torre) o a vacío.
+    private string TorreOLocalizacion(ResultadoEnsayo r)
+    {
+        if (torreCodigoPorResultado.TryGetValue(r.Id, out var torreCod)) return torreCod;
+        return tipo?.UsaTorre == false ? (r.Localizacion ?? "") : "";
+    }
+    private Dictionary<int, int> archivosPorInforme = new(); // InformeId -> cantidad de PDF adjuntos
+    private Dictionary<int, IReadOnlyList<BotonArchivos.Archivo>> archivosListaPorInforme = new();
+    private IReadOnlyList<BotonArchivos.Archivo> ArchivosVistaInforme(int informeId) =>
+        archivosListaPorInforme.TryGetValue(informeId, out var l) ? l : Array.Empty<BotonArchivos.Archivo>();
+    private int? informeIdParaArchivos;
+
+    private bool mostrarConfigCampos = false;
+    private bool mostrarImportar = false;
+    private bool mostrarAgregar = false;
+    private int? resultadoEditandoId;
+    private int? idPendienteEliminar;
+
+    private bool mostrarEliminarLote = false;
+    private List<(string Origen, int Cantidad)> lotesDisponibles = new();
+    private string? loteConfirmando;
+
+    private string filtro = "";
+    private string columnaOrden = "";
+    private bool ordenAscendente = true;
+
+    // Vista Excel (hoja real con Univer, ver wwwroot/js/hojaExcel.js) es la
+    // vista por defecto y la única editable. La vieja Vista tabla (HTML
+    // simple) ya no tiene botón propio — se deja el código y la ruta
+    // "tabla" de CambiarVista sin usar, por si hiciera falta reactivarla,
+    // pero no se llega a ella desde la interfaz. El Gráfico (ver abajo) NO
+    // depende de esta vista: lee directamente de ColumnasExcel()/FilasExcel(),
+    // así que ocultar la Vista tabla no le afecta en nada.
+    private bool vistaExcel = false;
+
+    // Panel de gráficos dinámicos ("📈 Gráfico") — tercera vista, excluyente
+    // con las otras dos.
+    private bool mostrarGrafico = false;
+
+    // Zoom de la tabla (100% = normal). Deja ver más filas/columnas sin
+    // necesidad de hacer scroll, encogiendo visualmente la tabla. Aplica
+    // tanto a la Vista tabla como a la Vista Excel.
+    private int escalaTabla = 100;
+
+    // Columnas que el usuario eligió "inmovilizar" (fijar a la izquierda al
+    // hacer scroll horizontal). "Torre" fija por defecto, como antes; el
+    // usuario puede fijar o soltar cualquier otra desde el botón 📌 del
+    // header. js/tablaFijar.js es quien calcula el offset real de cada una.
+    private HashSet<string> columnasFijas = new() { "Torre" };
+
+    private int? tipoIdAnterior;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        // Al pasar de un tipo de ensayo a otro se reutiliza este mismo componente: la hoja de Univer del tipo anterior
+        // se destruye para que la nueva se cree limpia (si no, queda sin estilos).
+        if (tipoIdAnterior is int previo && previo != TipoEnsayoId && vistaExcel)
+        {
+            try { await JS.InvokeVoidAsync("sigwebHojaExcelDestruir", "hoja-ensayos"); }
+            catch (JSDisconnectedException) { }
+            firmaDatosExcelAplicada = null;
+        }
+        tipoIdAnterior = TipoEnsayoId;
+        CargarTodo();
+    }
+
+    private void CargarTodo()
+    {
+        tipo = Db.TiposEnsayo.AsNoTracking().FirstOrDefault(t => t.Id == TipoEnsayoId);
+        if (tipo is null) return;
+
+        var grupo = Db.GruposEnsayo.AsNoTracking().FirstOrDefault(g => g.Id == tipo.GrupoEnsayoId);
+        var iconoId = tipo.IconoCatalogoId ?? grupo?.IconoCatalogoId;
+        rutaIconoTipo = iconoId is null ? "images/iconos/documento.svg"
+            : (Db.IconosCatalogo.AsNoTracking().FirstOrDefault(i => i.Id == iconoId)?.RutaArchivo ?? "images/iconos/documento.svg");
+
+        campos = Db.CamposEnsayo.AsNoTracking()
+            .Where(c => c.TipoEnsayoId == TipoEnsayoId && c.Activo)
+            .OrderBy(c => c.Orden).ThenBy(c => c.Etiqueta)
+            .ToList();
+
+        resultados = Db.ResultadosEnsayo.AsNoTracking()
+            .Where(r => r.TipoEnsayoId == TipoEnsayoId && !r.Eliminado)
+            .OrderByDescending(r => r.Id)
+            .ToList();
+
+        resultadosPorId = resultados.ToDictionary(r => r.Id);
+        motorPendiente = true;
+        var idsResultado = resultados.Select(r => r.Id).ToList();
+
+        var todosCampos = Db.CamposEnsayo.AsNoTracking()
+            .Where(c => c.TipoEnsayoId == TipoEnsayoId)
+            .ToDictionary(c => c.Id, c => c.Clave);
+
+        valoresPorResultado = new();
+        foreach (var v in Db.ValoresCampoEnsayo.AsNoTracking().Where(v => idsResultado.Contains(v.ResultadoEnsayoId)))
+        {
+            if (!todosCampos.TryGetValue(v.CampoEnsayoId, out var clave)) continue;
+            if (!valoresPorResultado.TryGetValue(v.ResultadoEnsayoId, out var dict))
+            {
+                dict = new();
+                valoresPorResultado[v.ResultadoEnsayoId] = dict;
+            }
+            dict[clave] = v.Valor;
+        }
+
+        adjuntoPorResultado = new();
+        var conAdj = Db.ValoresCampoEnsayo.AsNoTracking()
+            .Where(v => idsResultado.Contains(v.ResultadoEnsayoId) && v.AdjuntoEnsayoId != null).ToList();
+        if (conAdj.Count > 0)
+        {
+            var rutas = Db.AdjuntosEnsayo.AsNoTracking().ToDictionary(a => a.Id, a => a.Ruta);
+            foreach (var v in conAdj)
+            {
+                if (!todosCampos.TryGetValue(v.CampoEnsayoId, out var cl) || !rutas.TryGetValue(v.AdjuntoEnsayoId!.Value, out var ruta)) continue;
+                if (!adjuntoPorResultado.TryGetValue(v.ResultadoEnsayoId, out var d2)) adjuntoPorResultado[v.ResultadoEnsayoId] = d2 = new();
+                d2[cl] = ruta;
+            }
+        }
+
+        var torreIds = resultados.Where(r => r.ElementoTrazadoId != null).Select(r => r.ElementoTrazadoId!.Value).Distinct().ToList();
+        var torres = Db.ElementosTrazado.AsNoTracking().Where(t => torreIds.Contains(t.Id)).ToDictionary(t => t.Id, t => t.Codigo);
+        torreCodigoPorResultado = resultados.Where(r => r.ElementoTrazadoId != null)
+            .ToDictionary(r => r.Id, r => torres.TryGetValue(r.ElementoTrazadoId!.Value, out var c) ? c : "?");
+
+        var informeIds = resultados.Where(r => r.InformeId != null).Select(r => r.InformeId!.Value).Distinct().ToList();
+        var informes = Db.Informes.AsNoTracking().Where(i => informeIds.Contains(i.Id)).ToDictionary(i => i.Id, i => i.Numero);
+        informeNumeroPorResultado = resultados.Where(r => r.InformeId != null)
+            .ToDictionary(r => r.Id, r => informes.TryGetValue(r.InformeId!.Value, out var n) ? n : "?");
+
+        archivosListaPorInforme = Db.ArchivosInforme.AsNoTracking().Where(a => informeIds.Contains(a.InformeId)).ToList()
+            .GroupBy(a => a.InformeId)
+            .ToDictionary(g => g.Key, g => (IReadOnlyList<BotonArchivos.Archivo>)g.OrderBy(a => a.NombreOriginal).Select(a => new BotonArchivos.Archivo(a.NombreOriginal, a.RutaArchivo)).ToList());
+        archivosPorInforme = archivosListaPorInforme.ToDictionary(kv => kv.Key, kv => kv.Value.Count);
+    }
+
+    private void AbrirArchivosInforme(int informeId)
+    {
+        informeIdParaArchivos = informeId;
+    }
+
+    private string ObtenerValor(int resultadoId, string clave) =>
+        valoresPorResultado.TryGetValue(resultadoId, out var v) && v.TryGetValue(clave, out var val) ? val : "";
+
+    private static string EtiquetaSubElemento(SubElementoResultado s) => s switch
+    {
+        SubElementoResultado.Pedestal => "Pedestal",
+        SubElementoResultado.Zapata => "Zapata",
+        SubElementoResultado.Otro => "Otro",
+        _ => ""
+    };
+
+    private void AbrirAgregar(int? resultadoId)
+    {
+        resultadoEditandoId = resultadoId;
+        mostrarAgregar = true;
+    }
+
+    // Botón "✎ Editar muestra" de Vista Excel: el bloque de datos no se
+    // edita escribiendo directo en la celda (ver hojaExcel.js), así que se
+    // lee cuál fila tiene la celda activa en la hoja (Univer) y se abre el
+    // mismo diálogo Agregar/Editar de siempre, con los datos de esa
+    // muestra ya cargados (Torre, Elemento, Informe y todos los campos).
+    private string mensajeFilaActiva = "";
+
+    // En la vista de lista, la fila seleccionada es la última en la que se hizo clic.
+    private int? filaSeleccionadaId;
+
+    private async Task EditarMuestraActiva()
+    {
+        mensajeFilaActiva = "";
+        int? id = null;
+        if (!vistaExcel)
+        {
+            if (filaSeleccionadaId is int sel && resultados.Any(x => x.Id == sel)) { AbrirAgregar(sel); return; }
+            mensajeFilaActiva = "Haz clic primero en la fila que quieres editar.";
+            return;
+        }
+        try
+        {
+            id = await JS.InvokeAsync<int?>("sigwebHojaExcelFilaActiva", "hoja-ensayos");
+        }
+        catch (JSDisconnectedException) { return; }
+        if (id is null)
+        {
+            mensajeFilaActiva = "Haz clic primero en una celda de la fila que quieres editar.";
+            return;
+        }
+        AbrirAgregar(id);
+    }
+
+    private SigWeb.Data.Impacto.InformeImpacto? impacto;
+    private bool impactoOk;
+    private bool BloqueadoPorImpacto => impacto is null || (impacto.RequiereEntender && !impactoOk);
+
+    private async Task CalcularImpacto(Func<Task<SigWeb.Data.Impacto.InformeImpacto>> f)
+    {
+        impacto = null; impactoOk = false;
+        try { impacto = await f(); } catch { impacto = new SigWeb.Data.Impacto.InformeImpacto { Elemento = "No se pudo calcular el impacto" }; }
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private void PedirEliminarResultado(int id)
+    {
+        idPendienteEliminar = id;
+        _ = CalcularImpacto(() => Analizador.ResultadoEnsayo(id));
+    }
+
+    private async Task ConfirmarEliminar(int id)
+    {
+        var item = await Db.ResultadosEnsayo.FindAsync(id);
+        if (item is not null)
+        {
+            item.Eliminado = true;
+            item.FechaEliminacion = DateTime.UtcNow;
+            await Db.SaveChangesAsync();
+        }
+        Db.ChangeTracker.Clear();
+        idPendienteEliminar = null;
+        CargarTodo();
+    }
+
+    // ---------- Eliminar una carga completa (todos los resultados con el
+    // mismo "Origen", ej. una importación de Excel que salió mal) ----------
+    private void PedirEliminarLote(string origen)
+    {
+        loteConfirmando = origen;
+        _ = CalcularImpacto(() => Analizador.LoteEnsayos(TipoEnsayoId, origen));
+    }
+
+    private void AbrirEliminarLote()
+    {
+        lotesDisponibles = resultados
+            .GroupBy(r => r.Origen)
+            .Select(g => (Origen: g.Key, Cantidad: g.Count()))
+            .OrderByDescending(l => l.Cantidad)
+            .ToList();
+        loteConfirmando = null;
+        mostrarEliminarLote = true;
+    }
+
+    private void CerrarEliminarLote()
+    {
+        mostrarEliminarLote = false;
+        loteConfirmando = null;
+    }
+
+    private async Task EliminarLoteConfirmado()
+    {
+        if (loteConfirmando is null) return;
+        var origen = loteConfirmando;
+
+        var afectados = await Db.ResultadosEnsayo
+            .Where(r => r.TipoEnsayoId == TipoEnsayoId && r.Origen == origen && !r.Eliminado)
+            .ToListAsync();
+
+        var ahora = DateTime.UtcNow;
+        foreach (var r in afectados)
+        {
+            r.Eliminado = true;
+            r.FechaEliminacion = ahora;
+        }
+        await Db.SaveChangesAsync();
+        Db.ChangeTracker.Clear();
+
+        mostrarEliminarLote = false;
+        loteConfirmando = null;
+        CargarTodo();
+    }
+
+    // ---------- Búsqueda y orden ----------
+    private IEnumerable<ResultadoEnsayo> ResultadosMostrados
+    {
+        get
+        {
+            var query = resultados.AsEnumerable();
+            if (!string.IsNullOrWhiteSpace(filtro))
+            {
+                query = query.Where(CoincideFiltro);
+            }
+            if (!string.IsNullOrEmpty(columnaOrden))
+            {
+                var propia = columnaOrden is "Torre" or "Elemento" or "Informe" or "FechaEjecucion" || CampoViejo(columnaOrden) is not null;
+                if (!propia && motor is not null) query = motor.Ordenar(query, r => r.Id, columnaOrden, ordenAscendente);
+                else query = ordenAscendente ? query.OrderBy(r => ValorOrden(r, columnaOrden)) : query.OrderByDescending(r => ValorOrden(r, columnaOrden));
+            }
+            return query;
+        }
+    }
+
+    private bool CoincideFiltro(ResultadoEnsayo r) =>
+        TorreOLocalizacion(r).Contains(filtro, StringComparison.OrdinalIgnoreCase)
+        || (motor is not null && motor.TextoBusqueda(r.Id).Contains(filtro, StringComparison.OrdinalIgnoreCase));
+
+    // ---------- Campos (columnas visibles, campos creados, fórmulas y formatos) ----------
+    private MotorTabla? motor;
+    private MotorTabla Motor => motor!;
+    private bool verCampos, motorPendiente = true;
+    private Dictionary<int, ResultadoEnsayo> resultadosPorId = new();
+
+    private IEnumerable<CampoTabla> Columnas => motor?.Visibles ?? Enumerable.Empty<CampoTabla>();
+
+    private CampoEnsayo? CampoViejo(string clave) => campos.FirstOrDefault(c => c.Clave == clave);
+
+    private static TipoCampoTabla TipoDe(TipoDatoCampoEnsayo t) => t switch
+    {
+        TipoDatoCampoEnsayo.Numero => TipoCampoTabla.Numero,
+        TipoDatoCampoEnsayo.Formula => TipoCampoTabla.Auto,   // una fórmula puede devolver número o texto ("OK", "No cumple"…)
+        TipoDatoCampoEnsayo.Fecha => TipoCampoTabla.Fecha,
+        _ => TipoCampoTabla.Texto
+    };
+
+    // Columnas propias del ensayo + los campos de su plantilla (CampoEnsayo), que siguen administrándose en su diálogo.
+    private IEnumerable<ColumnaNativa> ColumnasNativas()
+    {
+        var l = new List<ColumnaNativa>
+        {
+            new("Torre", tipo?.UsaTorre == true ? "Torre" : "Localización", TipoCampoTabla.Texto, id => resultadosPorId.TryGetValue(id, out var r) ? TorreOLocalizacion(r) : null),
+            new("Elemento", "Elemento", TipoCampoTabla.Texto, id => resultadosPorId.TryGetValue(id, out var r) ? r.ElementoTexto : null),
+        };
+        foreach (var c in campos)
+        {
+            var cc = c;
+            var nombre = cc.Etiqueta + (string.IsNullOrEmpty(cc.Unidad) ? "" : $" ({cc.Unidad})");
+            l.Add(new ColumnaNativa(cc.Clave, nombre, TipoDe(cc.TipoDato),
+                id => MotorTabla.Tipar(new CampoTabla { Tipo = TipoDe(cc.TipoDato) }, ObtenerValor(id, cc.Clave)), true, "Excel"));
+        }
+        l.Add(new("Informe", "Informe", TipoCampoTabla.Texto, id => informeNumeroPorResultado.TryGetValue(id, out var i) ? i : null));
+        if (tipo?.UsaTorre == true)
+            l.Add(new("DisenoMezcla", "Diseño mezcla", TipoCampoTabla.Texto, id => resultadosPorId.TryGetValue(id, out var r) ? r.DisenoMezclaCodigo : null));
+        else
+            l.Add(new("FechaEjecucion", "Fecha ejecución", TipoCampoTabla.Fecha, id => resultadosPorId.TryGetValue(id, out var r) ? r.FechaEjecucion : null));
+        return l;
+    }
+
+    private IEnumerable<(int Id, string Etiqueta)> FilasMotor() =>
+        resultados.Select(r => (r.Id, $"{TorreOLocalizacion(r)} · {r.ElementoTexto} · #{r.Id}"));
+
+    // ---------- Franjas de color por muestra ----------
+    // Detecta genéricamente cuál es la clave del campo "No. Muestra" (u
+    // otro campo cuya etiqueta contenga "muestra"), en vez de asumir una
+    // clave fija — distintos Tipos de Ensayo pueden tener campos distintos.
+    private string? ClaveCampoMuestra =>
+        campos.FirstOrDefault(c => c.Etiqueta.Contains("muestra", StringComparison.OrdinalIgnoreCase))?.Clave;
+
+    // Materializa las filas a mostrar junto con si les toca franja gris,
+    // alternando cada vez que cambia el valor de la muestra (no fila por
+    // fila) — así todas las filas de la muestra 177 quedan del mismo color.
+    private List<(ResultadoEnsayo Resultado, bool Gris)> FilasMostradas
+    {
+        get
+        {
+            var lista = new List<(ResultadoEnsayo, bool)>();
+            var claveMuestra = ClaveCampoMuestra;
+            string? valorAnterior = null;
+            var gris = false;
+            var primero = true;
+
+            foreach (var r in ResultadosMostrados)
+            {
+                var valorActual = claveMuestra is not null ? ObtenerValor(r.Id, claveMuestra) : "";
+                if (primero)
+                {
+                    primero = false;
+                }
+                else if (!string.Equals(valorActual, valorAnterior, StringComparison.OrdinalIgnoreCase))
+                {
+                    gris = !gris;
+                }
+                valorAnterior = valorActual;
+                lista.Add((r, gris));
+            }
+            return lista;
+        }
+    }
+
+    // ---------- Columnas fijas (inmovilizar/movilizar) ----------
+    private void TogglePin(string clave)
+    {
+        if (!columnasFijas.Remove(clave))
+            columnasFijas.Add(clave);
+    }
+
+    private string ClaseCelda(string clave) => columnasFijas.Contains(clave) ? "col-fija" : "";
+
+    // Las celdas fijas ("sticky") necesitan fondo opaco explícito — si no,
+    // se ven transparentes al pasar otras celdas por debajo durante el
+    // scroll horizontal. Las celdas normales no lo necesitan: su color lo
+    // da la clase "fila-gris" de la fila.
+    private string? FondoCelda(string clave, bool gris) =>
+        columnasFijas.Contains(clave) ? $"background:{(gris ? "#f1f3f5" : "#ffffff")}" : null;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        // CargarTodo() es síncrono y se llama en muchos lugares: el motor de Campos se (re)arma después de dibujar.
+        if (motorPendiente && tipo is not null)
+        {
+            motorPendiente = false;
+            try { motor = await MotorTabla.CargarAsync(Db, $"ensayos:{TipoEnsayoId}", ColumnasNativas(), FilasMotor()); StateHasChanged(); }
+            catch (Exception) { motor = null; }
+        }
+        try
+        {
+            if (vistaExcel)
+            {
+                // Solo se reenvían todas las filas a la hoja (Univer) cuando
+                // los datos realmente cambiaron (filtro, orden, importación,
+                // etc.) — la hoja ya actualiza sus datos en el lugar sin
+                // perder el scroll ni las fórmulas sueltas que el usuario
+                // haya escrito en el área de trabajo (ver hojaExcel.js).
+                var firmaActual = $"{resultados.Count}|{filtro}|{campos.Count}|{columnaOrden}|{ordenAscendente}";
+                if (firmaActual != firmaDatosExcelAplicada)
+                {
+                    dotNetRef ??= DotNetObjectReference.Create(this);
+                    await JS.InvokeVoidAsync("sigwebHojaExcel", "hoja-ensayos", ColumnasExcel(), FilasParaMostrar(FilasExcel()), dotNetRef);
+                    firmaDatosExcelAplicada = firmaActual;
+                }
+            }
+            else if (!mostrarGrafico)
+            {
+                await JS.InvokeVoidAsync("sigwebFijarColumnas", "tabla-ensayos", columnasFijas.ToArray());
+            }
+        }
+        catch (JSDisconnectedException)
+        {
+            // El circuito se cerró (navegación, recarga, etc.) — nada que hacer.
+        }
+    }
+
+    // ---------- Vista Excel (Univer — wwwroot/js/hojaExcel.js) ----------
+    private string? firmaDatosExcelAplicada;
+    private DotNetObjectReference<EnsayosDatos>? dotNetRef;
+
+    // ---------- Cambiar entre Vista tabla / Vista Excel / Gráfico ----------
+    // Las tres son excluyentes: salir de la Vista Excel destruye la hoja de
+    // Univer (si no, queda una instancia "fantasma" en el DOM).
+    private async Task CambiarVista(string modo)
+    {
+        if (modo == "grafico")
+        {
+            if (vistaExcel)
+            {
+                try { await JS.InvokeVoidAsync("sigwebHojaExcelDestruir", "hoja-ensayos"); }
+                catch (JSDisconnectedException) { }
+                vistaExcel = false;
+            }
+            mostrarGrafico = true;
+        }
+        else if (modo == "excel")
+        {
+            mostrarGrafico = false;
+            if (!vistaExcel)
+            {
+                // Al volver a entrar a la Vista Excel hay que forzar que se
+                // vuelva a crear la hoja (la instancia anterior en JS ya se
+                // destruyó al salir), sin eso se quedaría "pegada" vacía.
+                firmaDatosExcelAplicada = null;
+                vistaExcel = true;
+            }
+        }
+        else // "tabla"
+        {
+            mostrarGrafico = false;
+            if (vistaExcel)
+            {
+                try { await JS.InvokeVoidAsync("sigwebHojaExcelDestruir", "hoja-ensayos"); }
+                catch (JSDisconnectedException) { }
+                vistaExcel = false;
+            }
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (vistaExcel)
+        {
+            try { await JS.InvokeVoidAsync("sigwebHojaExcelDestruir", "hoja-ensayos"); }
+            catch (JSDisconnectedException) { }
+            catch (InvalidOperationException) { }
+        }
+        dotNetRef?.Dispose();
+    }
+
+    // ---------- Exportar (Excel/PDF, igual que en Materiales) ----------
+    private bool mostrarMenuExportar = false;
+    private List<Dictionary<string, object>> columnasParaImprimir = new();
+    private List<Dictionary<string, object>> datosParaImprimir = new();
+
+    private async Task Exportar(string formato)
+    {
+        mostrarMenuExportar = false;
+        var columnas = ColumnasExcel();
+        var filas = FilasParaMostrar(FilasExcel());
+
+        if (formato == "excel")
+        {
+            await DescargarExcelEnsayos(columnas, filas);
+        }
+        else
+        {
+            columnasParaImprimir = columnas;
+            datosParaImprimir = filas;
+            StateHasChanged();
+            await Task.Delay(200);
+            await JS.InvokeVoidAsync("window.print");
+        }
+    }
+
+    private async Task DescargarExcelEnsayos(List<Dictionary<string, object>> columnas, List<Dictionary<string, object>> filas)
+    {
+        using var wb = new ClosedXML.Excel.XLWorkbook();
+        var ws = wb.Worksheets.Add(tipo?.Nombre ?? "Ensayos");
+
+        for (var c = 0; c < columnas.Count; c++)
+        {
+            ws.Cell(1, c + 1).Value = columnas[c]["title"].ToString();
+        }
+        ws.Row(1).Style.Font.Bold = true;
+
+        for (var f = 0; f < filas.Count; f++)
+        {
+            for (var c = 0; c < columnas.Count; c++)
+            {
+                var clave = columnas[c]["field"].ToString() ?? "";
+                ws.Cell(f + 2, c + 1).Value = filas[f].TryGetValue(clave, out var v) ? v?.ToString() ?? "" : "";
+            }
+        }
+        ws.Columns().AdjustToContents();
+
+        using var ms = new MemoryStream();
+        wb.SaveAs(ms);
+        var base64 = Convert.ToBase64String(ms.ToArray());
+        var nombreArchivo = $"ensayos-{(tipo?.Nombre ?? "datos")}_{DateTime.Now:yyyyMMdd_HHmm}.xlsx";
+        await JS.InvokeVoidAsync("descargarArchivo", nombreArchivo,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", base64);
+    }
+
+    private List<Dictionary<string, object>> ColumnasExcel()
+    {
+        // Torre, Elemento e Informe no son editables aquí: cambiarlos implica
+        // resolver la torre/pata o crear un Informe, lo mismo que hace el
+        // diálogo "Agregar/Editar" — se dejan solo para ese diálogo.
+        var cols = new List<Dictionary<string, object>>
+        {
+            new() { ["title"] = tipo?.UsaTorre == false ? "Localización" : "Torre", ["field"] = "Torre", ["headerFilter"] = "input", ["frozen"] = true },
+        };
+        if (tipo?.MostrarElemento != false)
+        {
+            cols.Add(new() { ["title"] = "Elemento", ["field"] = "Elemento", ["headerFilter"] = "input" });
+        }
+        foreach (var campo in campos)
+        {
+            var col = new Dictionary<string, object>
+            {
+                ["title"] = campo.Etiqueta + (string.IsNullOrEmpty(campo.Unidad) ? "" : $" ({campo.Unidad})"),
+                ["field"] = campo.Clave,
+                ["headerFilter"] = "input"
+            };
+            // Los campos de tipo Fórmula (Área, Cumplimiento, Seguimiento...)
+            // se calculan solos; no tiene sentido editarlos a mano. Los demás
+            // siguen lo que el usuario eligió en ⚙ Campos (por defecto,
+            // editables) — ver CampoEnsayo.EditableEnVistaExcel.
+            if (campo.TipoDato != TipoDatoCampoEnsayo.Formula && campo.EditableEnVistaExcel)
+            {
+                col["editor"] = "input";
+            }
+            cols.Add(col);
+        }
+        if (tipo?.MostrarInforme != false)
+        {
+            cols.Add(new() { ["title"] = "Informe", ["field"] = "Informe", ["headerFilter"] = "input" });
+        }
+        if (tipo?.UsaTorre == false)
+        {
+            if (tipo?.MostrarFechaEjecucion != false)
+            {
+                cols.Add(new() { ["title"] = "Fecha ejecución", ["field"] = "FechaEjecucion", ["headerFilter"] = "input", ["editor"] = "input" });
+            }
+        }
+        else if (tipo?.MostrarDisenoMezcla != false)
+        {
+            cols.Add(new() { ["title"] = "Diseño mezcla", ["field"] = "DisenoMezcla", ["headerFilter"] = "input", ["editor"] = "input" });
+        }
+        return cols;
+    }
+
+    private List<Dictionary<string, object>> FilasExcel(IEnumerable<ResultadoEnsayo>? origen = null)
+    {
+        var filas = new List<Dictionary<string, object>>();
+        foreach (var r in origen ?? ResultadosMostrados)
+        {
+            var fila = new Dictionary<string, object>
+            {
+                ["__Id"] = r.Id,
+                ["Torre"] = TorreOLocalizacion(r),
+                ["Elemento"] = r.ElementoTexto + (r.SubElemento != SubElementoResultado.Ninguno ? $" ({EtiquetaSubElemento(r.SubElemento)})" : ""),
+                ["Informe"] = r.InformeId is not null && informeNumeroPorResultado.TryGetValue(r.Id, out var inf) ? inf : "",
+            };
+            if (tipo?.UsaTorre == false)
+            {
+                fila["FechaEjecucion"] = r.FechaEjecucion?.ToString("yyyy-MM-dd") ?? "";
+            }
+            else
+            {
+                fila["DisenoMezcla"] = r.DisenoMezclaCodigo ?? "";
+            }
+            foreach (var campo in campos)
+            {
+                fila[campo.Clave] = ObtenerValor(r.Id, campo.Clave);
+            }
+            filas.Add(fila);
+        }
+        return filas;
+    }
+
+    // Vista Excel y exportación muestran las fechas día/mes/año; FilasExcel() queda con yyyy-MM-dd
+    // porque el gráfico dinámico filtra y ordena con ese texto.
+    private List<Dictionary<string, object>> FilasParaMostrar(List<Dictionary<string, object>> filas)
+    {
+        var fechas = TiposCampoGrafico().Where(kv => kv.Value == TipoDatoCampoEnsayo.Fecha).Select(kv => kv.Key).ToList();
+        if (fechas.Count == 0) return filas;
+        return filas.Select(f =>
+        {
+            var c = new Dictionary<string, object>(f);
+            foreach (var k in fechas)
+                if (c.TryGetValue(k, out var v) && v is string s && DateTime.TryParseExact(s, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var d))
+                    c[k] = d.ToString("dd/MM/yyyy", CultureInfo.InvariantCulture);
+            return c;
+        }).ToList();
+    }
+
+    // ---------- Gráfico dinámico ----------
+    // Mismo "mapa de campos" que ColumnasExcel/FilasExcel (Torre, Elemento,
+    // Informe, Diseño mezcla + cada campo de la plantilla), para que el
+    // panel sepa cuáles tratar como fecha (filtro por rango), cuáles como
+    // número (disponibles para graficar en el eje Y) y el resto como texto
+    // (filtro por "slicers" de botones).
+    private Dictionary<string, TipoDatoCampoEnsayo?> TiposCampoGrafico()
+    {
+        var tipos = new Dictionary<string, TipoDatoCampoEnsayo?>
+        {
+            ["Torre"] = null,
+            ["Elemento"] = null,
+            ["Informe"] = null,
+        };
+        if (tipo?.UsaTorre == false) tipos["FechaEjecucion"] = TipoDatoCampoEnsayo.Fecha;
+        else tipos["DisenoMezcla"] = null;
+        foreach (var campo in campos) tipos[campo.Clave] = campo.TipoDato;
+        return tipos;
+    }
+
+    // Se llama desde la Vista Excel (js/hojaExcel.js, motor Univer) cuando el usuario edita una
+    // celda directamente en la Vista Excel. Guarda el valor y, si hay
+    // fórmulas (Área, Cumplimiento, Seguimiento...), las recalcula y las
+    // devuelve para actualizar esa fila en la grilla sin recargar todo.
+    [JSInvokable]
+    public async Task<Dictionary<string, string>> CeldaEditada(int resultadoId, string clave, string valor)
+    {
+        var actualizacion = new Dictionary<string, string>();
+        try
+        {
+            if (clave == "DisenoMezcla")
+            {
+                var r = await Db.ResultadosEnsayo.FirstOrDefaultAsync(x => x.Id == resultadoId);
+                if (r is not null)
+                {
+                    r.DisenoMezclaCodigo = string.IsNullOrWhiteSpace(valor) ? null : valor.Trim();
+                    await Db.SaveChangesAsync();
+                }
+                Db.ChangeTracker.Clear();
+                return actualizacion;
+            }
+
+            if (clave == "FechaEjecucion")
+            {
+                var r = await Db.ResultadosEnsayo.FirstOrDefaultAsync(x => x.Id == resultadoId);
+                if (r is not null)
+                {
+                    r.FechaEjecucion = SigWeb.Data.Documentos.FechaTexto.Parsear(valor);
+                    await Db.SaveChangesAsync();
+                }
+                Db.ChangeTracker.Clear();
+                return actualizacion;
+            }
+
+            var campo = campos.FirstOrDefault(c => c.Clave == clave);
+            if (campo is null || campo.TipoDato == TipoDatoCampoEnsayo.Formula || !campo.EditableEnVistaExcel) return actualizacion;
+            // Fechas: se escriben día/mes/año y se guardan como siempre (yyyy-MM-dd).
+            if (campo.TipoDato == TipoDatoCampoEnsayo.Fecha && SigWeb.Data.Documentos.FechaTexto.Parsear(valor) is DateTime fv)
+                valor = fv.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+
+            var existente = await Db.ValoresCampoEnsayo.FirstOrDefaultAsync(v => v.ResultadoEnsayoId == resultadoId && v.CampoEnsayoId == campo.Id);
+            if (string.IsNullOrWhiteSpace(valor))
+            {
+                if (existente is not null) Db.ValoresCampoEnsayo.Remove(existente);
+            }
+            else if (existente is not null)
+            {
+                existente.Valor = valor;
+            }
+            else
+            {
+                Db.ValoresCampoEnsayo.Add(new ValorCampoEnsayo { ResultadoEnsayoId = resultadoId, CampoEnsayoId = campo.Id, Valor = valor });
+            }
+            await Db.SaveChangesAsync();
+            Db.ChangeTracker.Clear();
+
+            // Recalcula las fórmulas de este resultado con los valores que
+            // tiene ahora guardados, para devolverlas y refrescar esa fila.
+            var camposPorId = campos.ToDictionary(c => c.Id, c => c.Clave);
+            var valoresActuales = new Dictionary<string, string>();
+            foreach (var v in await Db.ValoresCampoEnsayo.AsNoTracking().Where(v => v.ResultadoEnsayoId == resultadoId).ToListAsync())
+            {
+                if (camposPorId.TryGetValue(v.CampoEnsayoId, out var cl)) valoresActuales[cl] = v.Valor;
+            }
+
+            foreach (var f in campos.Where(c => c.TipoDato == TipoDatoCampoEnsayo.Formula && !string.IsNullOrWhiteSpace(c.Formula)))
+            {
+                string calculado;
+                try { calculado = EvaluadorFormulas.Evaluar(f.Formula!, valoresActuales!); }
+                catch { calculado = ""; }
+                valoresActuales[f.Clave] = calculado;
+                actualizacion[f.Clave] = calculado;
+            }
+
+            CargarTodo(); // mantiene al día el estado en memoria del resto de la página
+        }
+        catch (JSDisconnectedException)
+        {
+            // El circuito se cerró — nada que hacer.
+        }
+        return actualizacion;
+    }
+
+    private string ValorOrden(ResultadoEnsayo r, string columna)
+    {
+        if (columna == "Torre") return Relleno(TorreOLocalizacion(r));
+        if (columna == "Elemento") return r.ElementoTexto;
+        if (columna == "Informe") return Relleno(informeNumeroPorResultado.TryGetValue(r.Id, out var i) ? i : "");
+        if (columna == "FechaEjecucion") return Relleno(r.FechaEjecucion?.ToString("yyyy-MM-dd") ?? "");
+        if (valoresPorResultado.TryGetValue(r.Id, out var vals) && vals.TryGetValue(columna, out var v)) return Relleno(v);
+        return "";
+    }
+
+    // Si el texto es un número, lo rellena con ceros a la izquierda para
+    // que la comparación alfabética también ordene bien los números
+    // (sin esto, "10" quedaría antes que "2").
+    private static string Relleno(string texto)
+    {
+        if (double.TryParse(texto, NumberStyles.Any, CultureInfo.InvariantCulture, out var numero))
+            return (numero < 0 ? "-" : "") + Math.Abs(numero).ToString("000000000000.000000");
+        return texto;
+    }
+
+    private void OrdenarPor(string columna)
+    {
+        if (columnaOrden == columna) ordenAscendente = !ordenAscendente;
+        else { columnaOrden = columna; ordenAscendente = true; }
+    }
+
+    private string Flecha(string columna) => columnaOrden != columna ? "" : (ordenAscendente ? " ▲" : " ▼");
+
+    // Desde la vista Excel o los gráficos, «volver» regresa a la tabla; desde la tabla, a Ensayos.
+    private EventCallback AtrasDatos => PantallaCompleta ? EventCallback.Factory.Create(this, () => tablaCompleta = false)
+        : (vistaExcel || mostrarGrafico) ? EventCallback.Factory.Create(this, () => CambiarVista("tabla")) : default;
+
+    // Pantalla completa de la vista de lista (no aplica a la hoja de cálculo ni a los gráficos).
+    private bool tablaCompleta;
+    private bool PantallaCompleta => tablaCompleta && !vistaExcel && !mostrarGrafico;
+}

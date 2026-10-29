@@ -1,0 +1,47 @@
+@using SigWeb.Data.Impacto
+
+@* Resumen del impacto de eliminar algo: gravedad, qué menús se afectan y, si es
+   alto o crítico, una casilla de "entendido" que el diálogo padre usa para
+   habilitar el botón de confirmar. *@
+@if (Informe is not null)
+{
+    var clase = Informe.Nivel switch { NivelImpacto.Critico => "danger", NivelImpacto.Alto => "warning", NivelImpacto.Medio => "info", _ => "secondary" };
+    var etiqueta = Informe.Nivel switch { NivelImpacto.Critico => "Crítico", NivelImpacto.Alto => "Alto", NivelImpacto.Medio => "Medio", _ => "Bajo" };
+    <div class="alert alert-@clase py-2 small mb-2">
+        <div><span class="badge bg-@clase">Impacto @etiqueta</span> <strong>@Informe.Elemento</strong></div>
+        @if (Informe.Dependencias.Count > 0)
+        {
+            <ul class="mb-1 mt-1 ps-3">
+                @foreach (var d in Informe.Dependencias)
+                {
+                    <li><strong>@d.Menu:</strong> @d.Cantidad @d.Detalle</li>
+                }
+            </ul>
+        }
+        <div>@Informe.Recomendacion</div>
+        @if (Informe.RequiereEntender)
+        {
+            <label class="d-flex align-items-center gap-2 mt-2 mb-0">
+                <input type="checkbox" checked="@entendido" @onchange="Cambiar" /> Entiendo lo que se verá afectado
+            </label>
+        }
+    </div>
+}
+
+@code {
+    [Parameter] public InformeImpacto? Informe { get; set; }
+    [Parameter] public EventCallback<bool> OnEntendido { get; set; }
+    private bool entendido;
+    private InformeImpacto? ultimo;
+
+    protected override void OnParametersSet()
+    {
+        if (!ReferenceEquals(ultimo, Informe)) { ultimo = Informe; entendido = false; }
+    }
+
+    private async Task Cambiar(ChangeEventArgs e)
+    {
+        entendido = e.Value is bool b && b;
+        await OnEntendido.InvokeAsync(entendido);
+    }
+}

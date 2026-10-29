@@ -1,0 +1,575 @@
+@* Importa un DWG/DXF con obras complementarias cercanas a una torre
+   (cunetas, trinchos, gaviones...) y crea Componentes para esa torre,
+   con tratamiento similar al de las patas: el usuario elige, capa por
+   capa, qué dibujar en el trazado y qué conservar solo como información
+   adicional (de textos, anotaciones y tablas de cantidades encontradas).
+
+   Las coordenadas del DWG casi nunca son las reales de la torre (son de
+   obras cercanas), así que no se usan tal cual: se toma como origen
+   local el primer bloque insertado cuyo nombre o capa contenga "TORRE"
+   (o, si no hay ninguno, el centro del dibujo), se calcula el
+   desplazamiento en metros de cada punto respecto a ese origen, y ese
+   desplazamiento se aplica sobre la Latitud/Longitud ya registrada de
+   la torre que el usuario elija. *@
+@using ACadSharp
+@using ACadSharp.Entities
+@using ACadSharp.IO
+@using CSMath
+@using Microsoft.AspNetCore.Components.Forms
+@using Microsoft.EntityFrameworkCore
+@using SigWeb.Data
+@using SigWeb.Models
+@using System.Text.Json
+@inject AppDbContext Db
+@inject IWebHostEnvironment Env
+
+<div class="modal-backdrop-custom">
+    <div class="modal-box-custom" style="max-width: 1200px;">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+            <h5 class="mb-0">Importar desde DWG/DXF</h5>
+            <button type="button" class="btn-close" aria-label="Cerrar" @onclick="Cerrar"></button>
+        </div>
+
+
+        <div class="row g-2 align-items-end mb-2">
+            <div class="col-md-5">
+                <label class="form-label small mb-0">Torre</label>
+                <select class="form-select form-select-sm" @bind="torreSeleccionadaId">
+                    <option value="">-- Elige la torre --</option>
+                    @foreach (var t in torres)
+                    {
+                        <option value="@t.Id">@t.Codigo</option>
+                    }
+                </select>
+            </div>
+            <div class="col-md-7">
+                <label class="form-label small mb-0">Archivo (.dwg o .dxf)</label>
+                <InputFile class="form-control form-control-sm" OnChange="CargarArchivo" accept=".dwg,.dxf" />
+            </div>
+        </div>
+
+        @if (procesando)
+        {
+            <div class="text-muted small mb-2">Leyendo el archivo...</div>
+        }
+
+        @if (!string.IsNullOrEmpty(errorMensaje))
+        {
+            <div class="alert alert-warning py-2 small mb-2">@errorMensaje</div>
+        }
+
+        @if (resultado is not null)
+        {
+            <div class="row g-3 mb-2 modal-area-flexible">
+                <div class="col-md-3" style="overflow-y:auto;">
+                    <h6 class="small text-uppercase text-muted">Miniatura</h6>
+                    @if (miniaturaDataUrl is not null)
+                    {
+                        <img src="@miniaturaDataUrl" class="img-fluid border rounded" alt="Miniatura del plano" />
+                    }
+                    else
+                    {
+                        <div class="text-muted small">Este archivo no trae una miniatura incrustada.</div>
+                    }
+                    <div class="text-muted small mt-2">
+                        Origen local usado para ubicar los elementos:
+                        <strong>@(resultado.OrigenDescripcion)</strong>
+                        (X: @resultado.OrigenX.ToString("F2"), Y: @resultado.OrigenY.ToString("F2"))
+                    </div>
+                </div>
+
+                <div class="col-md-9" style="display:flex; flex-direction:column; min-height:0;">
+                    <h6 class="small text-uppercase text-muted">Elementos identificados (por capa)</h6>
+                    <div class="modal-area-flexible">
+                        <table class="table table-sm table-bordered align-middle mb-0">
+                            <thead>
+                                <tr>
+                                    <th style="width:22%;">Capa / Nombre</th>
+                                    <th style="width:10%;">Dibujar</th>
+                                    <th style="width:10%;">Usar info</th>
+                                    <th>Contenido encontrado</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var g in resultado.Grupos)
+                                {
+                                    <tr>
+                                        <td>
+                                            <div class="text-muted small mb-1">@g.Capa</div>
+                                            <input class="form-control form-control-sm" @bind="g.NombreSugerido" placeholder="Nombre del elemento" />
+                                        </td>
+                                        <td class="text-center">
+                                            <input type="checkbox" class="form-check-input" @bind="g.Dibujar" disabled="@(!g.TieneGeometria)" />
+                                            @if (g.TieneGeometria)
+                                            {
+                                                <div class="text-muted small">@g.ResumenGeometria</div>
+                                            }
+                                        </td>
+                                        <td class="text-center">
+                                            <input type="checkbox" class="form-check-input" @bind="g.UsarInformacion" disabled="@(!g.TieneInformacion)" />
+                                        </td>
+                                        <td class="small">
+                                            @if (g.Textos.Count > 0)
+                                            {
+                                                <div><strong>Textos:</strong> @string.Join(" · ", g.Textos.Take(6))@(g.Textos.Count > 6 ? "…" : "")</div>
+                                            }
+                                            @if (g.Tablas.Count > 0)
+                                            {
+                                                <div><strong>Tablas:</strong> @g.Tablas.Count fila(s) encontradas</div>
+                                                @foreach (var fila in g.Tablas.Take(4))
+                                                {
+                                                    <div class="text-muted">@fila</div>
+                                                }
+                                            }
+                                            @if (g.Textos.Count == 0 && g.Tablas.Count == 0 && !g.TieneGeometria)
+                                            {
+                                                <span class="text-muted">(sin geometría ni texto relevante)</span>
+                                            }
+                                        </td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            @if (!string.IsNullOrEmpty(errorGuardar))
+            {
+                <div class="alert alert-danger py-2 small mb-2">@errorGuardar</div>
+            }
+
+            <div class="d-flex justify-content-end gap-2">
+                <button class="btn btn-secondary btn-sm" @onclick="Cerrar" disabled="@guardando" title="Cancelar"><Ico Nombre="cancelar" /></button>
+                <button class="btn btn-primary btn-sm" @onclick="Guardar" disabled="@(guardando || !resultado.Grupos.Any(g => g.Dibujar))">
+                    @(guardando ? "Guardando..." : "Crear elemento(s) en la torre")
+                </button>
+            </div>
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter] public EventCallback OnCerrar { get; set; }
+    [Parameter] public EventCallback OnImportado { get; set; }
+
+    private List<ElementoTrazado> torres = new();
+    private int? torreSeleccionadaId;
+
+    private bool procesando = false;
+    private bool guardando = false;
+    private string? errorMensaje;
+    private string? errorGuardar;
+    private ResultadoImportacionCad? resultado;
+
+    private byte[]? archivoOriginalBytes;
+    private string archivoOriginalExtension = ".dwg";
+    private string archivoOriginalNombre = "";
+    private byte[]? miniaturaBytes;
+    private string? miniaturaDataUrl;
+
+    protected override void OnInitialized()
+    {
+        torres = Db.ElementosTrazado.AsNoTracking()
+            .Where(e => !e.Eliminado)
+            .OrderBy(e => e.Codigo)
+            .ToList();
+    }
+
+    private async Task CargarArchivo(InputFileChangeEventArgs e)
+    {
+        errorMensaje = null;
+        errorGuardar = null;
+        resultado = null;
+        miniaturaBytes = null;
+        miniaturaDataUrl = null;
+        procesando = true;
+        StateHasChanged();
+        await Task.Yield();
+
+        try
+        {
+            var archivo = e.File;
+            var extension = Path.GetExtension(archivo.Name).ToLowerInvariant();
+            if (extension != ".dwg" && extension != ".dxf")
+            {
+                errorMensaje = "Solo se admiten archivos .dwg o .dxf.";
+            }
+            else
+            {
+                await using var origen = archivo.OpenReadStream(120 * 1024 * 1024);
+                using var memoria = new MemoryStream();
+                await origen.CopyToAsync(memoria);
+                archivoOriginalBytes = memoria.ToArray();
+                archivoOriginalExtension = extension;
+                archivoOriginalNombre = archivo.Name;
+
+                memoria.Position = 0;
+                CadDocument doc = extension == ".dwg" ? DwgReader.Read(memoria) : DxfReader.Read(memoria);
+                resultado = Analizar(doc);
+
+                if (extension == ".dwg")
+                {
+                    miniaturaBytes = ExtraerMiniaturaPng(archivoOriginalBytes);
+                    if (miniaturaBytes is not null)
+                    {
+                        miniaturaDataUrl = $"data:image/png;base64,{Convert.ToBase64String(miniaturaBytes)}";
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            errorMensaje = $"No se pudo leer el archivo: {ex.Message}";
+        }
+
+        procesando = false;
+        StateHasChanged();
+    }
+
+    // Agrupa por capa: para cada una, junta su geometría dibujable (de
+    // LwPolyline/Polyline) y su información textual (TEXT/MTEXT/MultiLeader
+    // y filas de TableEntity), y calcula el origen local (bloque "TORRE...").
+    private static ResultadoImportacionCad Analizar(CadDocument doc)
+    {
+        var grupos = new Dictionary<string, GrupoCapaImportacion>(StringComparer.OrdinalIgnoreCase);
+
+        GrupoCapaImportacion ObtenerGrupo(string capa)
+        {
+            if (!grupos.TryGetValue(capa, out var g))
+            {
+                g = new GrupoCapaImportacion { Capa = capa, NombreSugerido = HumanizarNombreCapa(capa) };
+                grupos[capa] = g;
+            }
+            return g;
+        }
+
+        // Primera pasada: candidatos a bloque de referencia de la torre. OJO:
+        // un DWG de un corredor de línea suele traer VARIOS bloques que
+        // contienen "TORRE" en el nombre (uno por cada torre del tramo, a
+        // veces a kilómetros de distancia uno del otro) — tomar el primero
+        // que aparezca en el archivo es arbitrario y puede escoger uno que
+        // no tiene nada que ver con las obras que se están importando aquí.
+        // Por eso se guardan TODOS los candidatos y, más abajo (ya con la
+        // geometría dibujable leída), se elige el más cercano a ella.
+        var candidatosOrigen = new List<(XYZ Punto, string Descripcion)>();
+        foreach (var ent in doc.Entities)
+        {
+            if (ent is Insert ins)
+            {
+                var nombreBloque = ins.Block?.Name ?? "";
+                var nombreCapa = ins.Layer?.Name ?? "";
+                if (nombreBloque.Contains("TORRE", StringComparison.OrdinalIgnoreCase) ||
+                    nombreCapa.Contains("TORRE", StringComparison.OrdinalIgnoreCase))
+                {
+                    candidatosOrigen.Add((ins.InsertPoint, $"bloque \"{nombreBloque}\""));
+                }
+            }
+        }
+
+        var xMin = double.MaxValue; var xMax = double.MinValue;
+        var yMin = double.MaxValue; var yMax = double.MinValue;
+        double sumaPuntosX = 0, sumaPuntosY = 0; long totalPuntosGeometria = 0;
+
+        foreach (var ent in doc.Entities)
+        {
+            try
+            {
+                var caja = ent.GetBoundingBox();
+                if (caja.Min.X < xMin) xMin = caja.Min.X;
+                if (caja.Max.X > xMax) xMax = caja.Max.X;
+                if (caja.Min.Y < yMin) yMin = caja.Min.Y;
+                if (caja.Max.Y > yMax) yMax = caja.Max.Y;
+            }
+            catch { }
+
+            var nombreCapa = ent.Layer?.Name ?? "(sin capa)";
+
+            if (ent is TableEntity tabla)
+            {
+                var g = ObtenerGrupo(nombreCapa);
+                foreach (var fila in tabla.Rows)
+                {
+                    var celdas = fila.Cells.Select(c => c.Content?.CadValue?.FormattedValue?.Trim() ?? "");
+                    var texto = string.Join(" | ", celdas);
+                    if (!string.IsNullOrWhiteSpace(texto.Replace("|", "").Trim()))
+                    {
+                        g.Tablas.Add(texto);
+                    }
+                }
+            }
+            else if (ent is TextEntity texto)
+            {
+                if (!string.IsNullOrWhiteSpace(texto.Value))
+                {
+                    ObtenerGrupo(nombreCapa).Textos.Add(texto.Value.Trim());
+                }
+            }
+            else if (ent is MText mtexto)
+            {
+                if (!string.IsNullOrWhiteSpace(mtexto.PlainText))
+                {
+                    ObtenerGrupo(nombreCapa).Textos.Add(mtexto.PlainText.Trim());
+                }
+            }
+            else if (ent is MultiLeader lider)
+            {
+                var valor = lider.ContextData?.TextLabel;
+                if (!string.IsNullOrWhiteSpace(valor))
+                {
+                    ObtenerGrupo(nombreCapa).Textos.Add(valor.Trim());
+                }
+            }
+            else if (ent is IPolyline poli)
+            {
+                var puntos = poli.Vertices
+                    .Select(v => (X: v.Location[0], Y: v.Location[1]))
+                    .ToList();
+                if (puntos.Count >= 2)
+                {
+                    var g = ObtenerGrupo(nombreCapa);
+                    g.Puntos.Add(puntos);
+                    foreach (var p in puntos) { sumaPuntosX += p.X; sumaPuntosY += p.Y; totalPuntosGeometria++; }
+                }
+            }
+            else if (ent is Line linea)
+            {
+                var g = ObtenerGrupo(nombreCapa);
+                g.Puntos.Add(new List<(double X, double Y)> { (linea.StartPoint.X, linea.StartPoint.Y), (linea.EndPoint.X, linea.EndPoint.Y) });
+                sumaPuntosX += linea.StartPoint.X + linea.EndPoint.X;
+                sumaPuntosY += linea.StartPoint.Y + linea.EndPoint.Y;
+                totalPuntosGeometria += 2;
+            }
+        }
+
+        XYZ? origen = null;
+        string origenDescripcion;
+
+        if (candidatosOrigen.Count > 0)
+        {
+            // Si hay más de un bloque candidato (típico en un DWG de
+            // corredor con varias torres), se elige el más cercano a la
+            // geometría que realmente se va a dibujar aquí — no el primero
+            // que aparezca en el archivo, que puede quedar a kilómetros.
+            var centroGeometriaX = totalPuntosGeometria > 0 ? sumaPuntosX / totalPuntosGeometria : (xMin == double.MaxValue ? 0 : (xMin + xMax) / 2.0);
+            var centroGeometriaY = totalPuntosGeometria > 0 ? sumaPuntosY / totalPuntosGeometria : (yMin == double.MaxValue ? 0 : (yMin + yMax) / 2.0);
+
+            var elegido = candidatosOrigen
+                .OrderBy(c => Math.Pow(c.Punto.X - centroGeometriaX, 2) + Math.Pow(c.Punto.Y - centroGeometriaY, 2))
+                .First();
+
+            origen = elegido.Punto;
+            origenDescripcion = candidatosOrigen.Count > 1
+                ? $"{elegido.Descripcion} (el más cercano a las obras del dibujo, de {candidatosOrigen.Count} bloques \"TORRE\" encontrados en el archivo)"
+                : elegido.Descripcion;
+        }
+        else
+        {
+            // Sin ningún bloque "TORRE": usar el centro del dibujo como
+            // origen local (sigue siendo útil para conservar la FORMA
+            // relativa del elemento, aunque ya no apunte exactamente al
+            // eje de la torre real).
+            var cx = xMin == double.MaxValue ? 0 : (xMin + xMax) / 2.0;
+            var cy = yMin == double.MaxValue ? 0 : (yMin + yMax) / 2.0;
+            origen = new XYZ(cx, cy, 0);
+            origenDescripcion = "centro del dibujo (no se encontró un bloque con nombre \"TORRE\")";
+        }
+
+        foreach (var g in grupos.Values)
+        {
+            g.TieneGeometria = g.Puntos.Count > 0;
+            g.TieneInformacion = g.Textos.Count > 0 || g.Tablas.Count > 0;
+            g.Dibujar = g.TieneGeometria;
+            g.UsarInformacion = g.TieneInformacion;
+            if (g.TieneGeometria)
+            {
+                var totalVertices = g.Puntos.Sum(p => p.Count);
+                g.ResumenGeometria = $"{g.Puntos.Count} línea(s), {totalVertices} punto(s)";
+            }
+        }
+
+        return new ResultadoImportacionCad
+        {
+            Grupos = grupos.Values
+                .Where(g => g.TieneGeometria || g.TieneInformacion)
+                .OrderByDescending(g => g.TieneGeometria)
+                .ThenBy(g => g.Capa, StringComparer.OrdinalIgnoreCase)
+                .ToList(),
+            OrigenX = origen.Value.X,
+            OrigenY = origen.Value.Y,
+            OrigenDescripcion = origenDescripcion,
+        };
+    }
+
+    private static string HumanizarNombreCapa(string capa)
+    {
+        var limpio = capa.Replace("_", " ").Replace("-", " ").Trim();
+        return string.IsNullOrWhiteSpace(limpio) ? capa : limpio;
+    }
+
+    // Busca la firma PNG (\x89PNG\r\n\x1a\n) dentro de los bytes del DWG y
+    // extrae el bloque completo recorriendo los chunks PNG hasta IEND: los
+    // DWG suelen traer una miniatura incrustada así, sin necesitar ACadSharp.
+    private static byte[]? ExtraerMiniaturaPng(byte[] datos)
+    {
+        byte[] firma = { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A };
+        int inicio = -1;
+        for (int i = 0; i <= datos.Length - firma.Length; i++)
+        {
+            bool coincide = true;
+            for (int j = 0; j < firma.Length; j++)
+            {
+                if (datos[i + j] != firma[j]) { coincide = false; break; }
+            }
+            if (coincide) { inicio = i; break; }
+        }
+        if (inicio < 0) return null;
+
+        int pos = inicio + firma.Length;
+        while (pos + 8 <= datos.Length)
+        {
+            long longitudChunk = ((long)datos[pos] << 24) | ((long)datos[pos + 1] << 16) | ((long)datos[pos + 2] << 8) | datos[pos + 3];
+            string tipoChunk = System.Text.Encoding.ASCII.GetString(datos, pos + 4, 4);
+            long finChunk = pos + 8 + longitudChunk + 4;
+            if (finChunk > datos.Length) return null;
+
+            if (tipoChunk == "IEND")
+            {
+                var largo = (int)(finChunk - inicio);
+                var bloque = new byte[largo];
+                Array.Copy(datos, inicio, bloque, 0, largo);
+                return bloque;
+            }
+            pos = (int)finChunk;
+        }
+        return null;
+    }
+
+    private async Task Guardar()
+    {
+        errorGuardar = null;
+
+        if (resultado is null || torreSeleccionadaId is null)
+        {
+            errorGuardar = "Elige la torre a la que pertenece este plano.";
+            return;
+        }
+
+        var torre = await Db.ElementosTrazado.AsNoTracking().FirstOrDefaultAsync(t => t.Id == torreSeleccionadaId);
+        if (torre is null || (torre.Latitud == 0 && torre.Longitud == 0))
+        {
+            errorGuardar = "Esa torre todavía no tiene Latitud/Longitud registradas; no se puede ubicar el elemento junto a ella.";
+            return;
+        }
+
+        var grupos = resultado.Grupos.Where(g => g.Dibujar && g.TieneGeometria).ToList();
+        if (grupos.Count == 0)
+        {
+            errorGuardar = "Marca al menos un elemento para dibujar.";
+            return;
+        }
+
+        guardando = true;
+        StateHasChanged();
+
+        try
+        {
+            var carpeta = Path.Combine(Env.WebRootPath, "uploads", "trazado");
+            Directory.CreateDirectory(carpeta);
+
+            string? rutaArchivo = null;
+            if (archivoOriginalBytes is not null)
+            {
+                var nombreArchivo = $"{Guid.NewGuid()}{archivoOriginalExtension}";
+                await File.WriteAllBytesAsync(Path.Combine(carpeta, nombreArchivo), archivoOriginalBytes);
+                rutaArchivo = $"/uploads/trazado/{nombreArchivo}";
+            }
+
+            string? rutaMiniatura = null;
+            if (miniaturaBytes is not null)
+            {
+                var nombreMiniatura = $"{Guid.NewGuid()}.png";
+                await File.WriteAllBytesAsync(Path.Combine(carpeta, nombreMiniatura), miniaturaBytes);
+                rutaMiniatura = $"/uploads/trazado/{nombreMiniatura}";
+            }
+
+            var infoPartes = resultado.Grupos
+                .Where(g => g.UsarInformacion && g.TieneInformacion)
+                .Select(g =>
+                {
+                    var lineas = new List<string>();
+                    lineas.Add($"[{g.NombreSugerido}]");
+                    lineas.AddRange(g.Textos);
+                    lineas.AddRange(g.Tablas);
+                    return string.Join("\n", lineas);
+                })
+                .ToList();
+            var informacionAdicional = infoPartes.Count > 0 ? string.Join("\n\n", infoPartes) : null;
+
+            var ordenBase = await Db.Componentes.CountAsync(c => c.ElementoTrazadoId == torre.Id && !c.Eliminado);
+            var i = 0;
+            foreach (var g in grupos)
+            {
+                var caminos = g.Puntos
+                    .Select(camino => camino
+                        .Select(p => new double[]
+                        {
+                            torre.Latitud + (p.Y - resultado.OrigenY) / 111320.0,
+                            torre.Longitud + (p.X - resultado.OrigenX) / (111320.0 * Math.Cos(torre.Latitud * Math.PI / 180.0))
+                        })
+                        .ToList())
+                    .ToList();
+
+                Db.Componentes.Add(new Componente
+                {
+                    ElementoTrazadoId = torre.Id,
+                    Nombre = string.IsNullOrWhiteSpace(g.NombreSugerido) ? g.Capa : g.NombreSugerido.Trim(),
+                    EsPredeterminado = false,
+                    Orden = ordenBase + i,
+                    GeometriaJson = JsonSerializer.Serialize(caminos),
+                    InformacionAdicional = informacionAdicional,
+                    OrigenArchivoDwg = rutaArchivo,
+                    MiniaturaDwg = rutaMiniatura,
+                });
+                i++;
+            }
+
+            await Db.SaveChangesAsync();
+            Db.ChangeTracker.Clear();
+
+            await OnImportado.InvokeAsync();
+            await OnCerrar.InvokeAsync();
+        }
+        catch (Exception ex)
+        {
+            errorGuardar = $"No se pudo guardar: {ex.Message}";
+        }
+
+        guardando = false;
+        StateHasChanged();
+    }
+
+    private async Task Cerrar() => await OnCerrar.InvokeAsync();
+
+    private class ResultadoImportacionCad
+    {
+        public List<GrupoCapaImportacion> Grupos { get; set; } = new();
+        public double OrigenX { get; set; }
+        public double OrigenY { get; set; }
+        public string OrigenDescripcion { get; set; } = "";
+    }
+
+    private class GrupoCapaImportacion
+    {
+        public string Capa { get; set; } = "";
+        public string NombreSugerido { get; set; } = "";
+        public bool Dibujar { get; set; }
+        public bool UsarInformacion { get; set; }
+        public bool TieneGeometria { get; set; }
+        public bool TieneInformacion { get; set; }
+        public string ResumenGeometria { get; set; } = "";
+        public List<List<(double X, double Y)>> Puntos { get; set; } = new();
+        public List<string> Textos { get; set; } = new();
+        public List<string> Tablas { get; set; } = new();
+    }
+}

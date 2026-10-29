@@ -1,0 +1,304 @@
+﻿@page "/linea3d"
+@rendermode InteractiveServer
+@implements IAsyncDisposable
+@using System.Globalization
+@using System.Text.RegularExpressions
+@using Microsoft.EntityFrameworkCore
+@using SigWeb.Data
+@using SigWeb.Data.Modelos3D
+@using SigWeb.Models
+@inject IJSRuntime JS
+@inject AppDbContext Db
+@inject IWebHostEnvironment Env
+@inject NavigationManager Nav
+
+<PageTitle>Línea 3D</PageTitle>
+
+<EncabezadoPagina Titulo="Línea 3D" Icono="linea3d" Subtitulo="@($"{torres.Count} torres")" />
+
+@if (!string.IsNullOrEmpty(error))
+{
+    <div class="alert alert-warning py-1">@error</div>
+}
+
+<div class="l3d-wrap">
+    <div class="l3d-barra">
+        <input class="form-control form-control-sm" style="width:130px;" list="lista-torres-3d" placeholder="Ir a torre..." title="Ir a una torre"
+               @oninput="@(async e => { var v = e.Value?.ToString(); if (torres.Any(x => string.Equals(x.Nombre, v?.Trim(), StringComparison.OrdinalIgnoreCase))) await IrATorre(v); })"
+               @onchange="@(async e => await IrATorre(e.Value?.ToString()))" />
+        <datalist id="lista-torres-3d">
+            @foreach (var t in torres) { <option value="@t.Nombre"></option> }
+        </datalist>
+        <select class="form-select form-select-sm" style="width:auto;" title="Color de las torres" @onchange="@(async e => { modo = e.Value?.ToString() ?? "tipo"; await Llamar("setModo", modo); })">
+            <option value="tipo" selected="@(modo == "tipo")">Por tipo</option>
+            <option value="pie" selected="@(modo == "pie")">Avance PIE</option>
+            <option value="plano" selected="@(modo == "plano")">Sin color</option>
+            <option value="fijo" selected="@(modo == "fijo")">Color fijo</option>
+        </select>
+        <select class="form-select form-select-sm" style="width:auto;" title="Aspecto del terreno" @onchange="@(async e => { aspecto = e.Value?.ToString() ?? "satelite"; await Llamar("mostrarTerreno", aspecto, false); })">
+            <option value="satelite" selected="@(aspecto == "satelite")">Terreno: imagen</option>
+            <option value="poligonos" selected="@(aspecto == "poligonos")">Terreno: polígonos</option>
+            <option value="malla" selected="@(aspecto == "malla")">Terreno: malla</option>
+            <option value="plano" selected="@(aspecto == "plano")">Terreno: plano</option>
+            <option value="vacio" selected="@(aspecto == "vacio")">Sin terreno (vacío)</option>
+        </select>
+        <select class="form-select form-select-sm" style="width:auto;" title="Margen de terreno alrededor del trazado (menos margen = más detalle)"
+                @onchange="@(async e => { margenKm = int.TryParse(e.Value?.ToString(), out var mk) ? mk : 0; await Llamar("setMargen", (double)margenKm); })">
+            @foreach (var m in new[] { 0, 1, 2, 5, 10, 20, 40 })
+            {
+                <option value="@m" selected="@(margenKm == m)">@(m == 0 ? "Margen: auto" : $"Margen: {m} km")</option>
+            }
+        </select>
+        <label class="d-flex align-items-center gap-1 small text-white mb-0" title="Exagera el tamaño de las torres para verlas en toda la línea">
+            ⇕ <input type="range" min="1" max="60" value="@escala" style="width:90px;" @oninput="@(async e => { escala = int.Parse(e.Value?.ToString() ?? "10"); await Llamar("setEscala", (double)escala); })" /> ×@escala
+        </label>
+        <label class="d-flex align-items-center gap-1 small text-white mb-0" title="Exageración vertical del relieve (×1 = topografía real)">
+            ⛰ <input type="range" min="1" max="5" value="@relieve" style="width:70px;" @oninput="@(async e => { relieve = int.Parse(e.Value?.ToString() ?? "1"); await Llamar("setRelieve", (double)relieve); })" /> ×@relieve
+        </label>
+        <button type="button" class="l3d-chipbar" title="Colores y línea de unión" @onclick="() => panelColor = !panelColor">🎨</button>
+        <span class="l3d-chipbar" style="cursor:help;" title="@(estadoTerreno ?? "Cargando terreno (elevaciones e imagen satelital)...")">@(terrenoOk ? "⛰ ✓" : "⛰ …")</span>
+        <span class="l3d-chipbar" style="cursor:help;" title="@($"{torres.Count(t => t.Real)} torre(s) tienen modelo de planos (según Modelos 3D); el resto es una geometría aproximada según tipo y cuerpo. {sinTipo} torre(s) sin tipo en la tabla de torres.")">⚠ @(torres.Count(t => !t.Real)) aprox.</span>
+    </div>
+    @if (panelColor)
+    {
+        <div class="mpie-back" @onclick="() => panelColor = false"></div>
+        <div class="l3d-panel">
+            <label class="d-flex align-items-center gap-2 mb-2">
+                <input type="checkbox" checked="@lineaVisible" @onchange="@(async e => { lineaVisible = e.Value is true; await AplicarLinea(); })" /> Línea que une las torres
+                <input type="color" value="@colorLinea" title="Color de la línea" @onchange="@(async e => { colorLinea = e.Value?.ToString() ?? colorLinea; await AplicarLinea(); })" />
+            </label>
+            <label class="d-flex align-items-center gap-2">
+                Color de las torres
+                <input type="color" value="@colorTorres" title="Color único para todas las torres" @onchange="@(async e => { colorTorres = e.Value?.ToString() ?? colorTorres; modo = "fijo"; await Llamar("setColorFijo", colorTorres); await Llamar("setModo", "fijo"); })" />
+            </label>
+        </div>
+    }
+    <div class="l3d-cuerpo">
+    <div class="l3d-visor" @ref="contenedor"></div>
+
+    <div class="l3d-leyenda">
+        @foreach (var f in torres.Select(t => t.Familia).Distinct().OrderBy(x => x))
+        {
+            var on = !familiasOcultas.Contains(f);
+            <label class="l3d-ley-item" title="@(on ? "Ocultar" : "Mostrar") las torres tipo @f">
+                <input type="checkbox" checked="@on" @onchange="@(async () => await AlternarFamilia(f))" />
+                @if (modo == "tipo") { <span class="l3d-chip" style="background:@ColorFamilia(f)"></span> }
+                <span>@f</span>
+            </label>
+        }
+        @if (modo == "pie")
+        {
+            <div class="l3d-grad" title="Avance PIE de la torre: 0 % → 100 %"></div>
+            <div class="d-flex justify-content-between"><span>0%</span><span>100%</span></div>
+        }
+    </div>
+
+    @if (seleccionada is not null)
+    {
+        <div class="l3d-card">
+            <div class="d-flex justify-content-between align-items-center mb-1">
+                <strong>Torre @seleccionada.Nombre</strong>
+                <button type="button" class="btn-close btn-close-white" style="font-size:.6rem;" @onclick="() => seleccionada = null"></button>
+            </div>
+            <div>Tipo: <b>@(string.IsNullOrEmpty(seleccionada.TipoTexto) ? "—" : seleccionada.TipoTexto)</b></div>
+            <div>Familia / cuerpo: @seleccionada.Familia / @(seleccionada.Cuerpo > 0 ? seleccionada.Cuerpo.ToString() : "—")</div>
+            <div>Altura: @alturaSel.ToString("0.#") m · Base: @anchoSel.ToString("0.#") m</div>
+            <div>Avance PIE: <a href="@($"/trazado?torre={seleccionada.Id}&hdv=true&volver=linea3d")" class="fw-bold text-reset" title="Hoja de vida de la torre">@(seleccionada.Pct is null ? "—" : seleccionada.Pct.Value.ToString("0.#") + "%")</a></div>
+            <div class="mt-1">
+                @if (modeloSel == "real") { <span class="badge bg-success">Modelo real</span> }
+                else { <span class="badge bg-warning text-dark" title="Aún no se ha modelado esta torre; la geometría es una aproximación por tipo y cuerpo.">Modelo aproximado</span> }
+            </div>
+        </div>
+    }
+    </div>
+</div>
+
+@code {
+    private class TorreVista
+    {
+        public int Id { get; set; }
+        public string Nombre { get; set; } = "";
+        public double X { get; set; }
+        public double Z { get; set; }
+        public string TipoTexto { get; set; } = "";
+        public string Familia { get; set; } = "?";
+        public int Cuerpo { get; set; }
+        public bool Real { get; set; }
+        public string Modelo { get; set; } = "";
+        public double? Pct { get; set; }
+        public string Color { get; set; } = "#9aa4b2";
+        public double Lat { get; set; }
+        public double Lon { get; set; }
+    }
+
+    // ?torre=Id: al volver desde la hoja de vida (Trazado) se enfoca y selecciona esa torre.
+    [SupplyParameterFromQuery(Name = "torre")] public int? TorreQ { get; set; }
+
+    private double lat0, lon0;
+    private int relieve = 1;
+    private string aspecto = "satelite";
+    private int margenKm = 0;
+    private bool panelColor, lineaVisible = true;
+    private string colorLinea = "#ec1c24", colorTorres = "#b7c0cc";
+
+    private Task AplicarLinea() => Llamar("setLinea", lineaVisible, colorLinea);
+    private string? estadoTerreno;
+    private bool terrenoOk;
+
+    private readonly HashSet<string> familiasOcultas = new();
+
+    private async Task AlternarFamilia(string f)
+    {
+        if (!familiasOcultas.Remove(f)) familiasOcultas.Add(f);
+        await Llamar("setFamiliasOcultas", new object[] { familiasOcultas.ToArray() });
+    }
+
+    private List<ConfigModelo> cfgModelos = new();
+
+    private List<TorreVista> torres = new();
+    private TorreVista? seleccionada;
+    private double alturaSel, anchoSel;
+    private string modeloSel = "";
+    private string modo = "tipo";
+    private int escala = 10;
+    private int sinTipo;
+    private string? error;
+    private bool iniciando;
+
+    private ElementReference contenedor;
+    private IJSObjectReference? modulo, visor;
+    private DotNetObjectReference<Linea3D>? yo;
+
+    private static readonly Dictionary<string, string> ColoresFamilia = new()
+    {
+        ["A"] = "#4e79a7", ["AA"] = "#59a14f", ["AAE"] = "#e15759", ["AP"] = "#76b7b2",
+        ["BP"] = "#edc948", ["BE"] = "#b07aa1", ["C"] = "#f28e2b", ["D"] = "#9c755f"
+    };
+    private static string ColorFamilia(string f) => ColoresFamilia.TryGetValue(f, out var c) ? c : "#9aa4b2";
+
+    protected override void OnInitialized()
+    {
+        try { Cargar(); }
+        catch (Exception ex) { error = "No se pudieron cargar las torres: " + ex.Message; }
+    }
+
+    private void Cargar()
+    {
+        var elementos = Db.ElementosTrazado.AsNoTracking().Where(e => !e.Eliminado).ToList();
+        if (elementos.Count == 0) return;
+
+        // ---- tipo, cuerpo y modelo de cada torre (regla compartida con Avance de obra) ----
+        cfgModelos = ConfigModelos3D.Cargar(Env.WebRootPath);
+        var tipos = TiposTorre.Cargar(Db, cfgModelos);
+
+        // ---- avance PIE por torre (promedio de los parámetros que aplican) ----
+        var estados = Db.EstadosParametro.AsNoTracking().ToDictionary(e => e.Id, e => e.Porcentaje);
+        var idsAct = Db.Actividades.AsNoTracking().Where(a => a.Activo && a.Ambito == AmbitoActividad.Torre).Select(a => a.Id).ToList();
+        var idsParam = Db.ParametrosActividad.AsNoTracking().Where(p => p.Activo && idsAct.Contains(p.ActividadId)).Select(p => p.Id).ToHashSet();
+        var hdv = Db.Componentes.AsNoTracking().Where(c => c.EsHojaDeVida && !c.Eliminado)
+            .Select(c => new { c.Id, c.ElementoTrazadoId }).ToList()
+            .GroupBy(c => c.ElementoTrazadoId).ToDictionary(g => g.Key, g => g.First().Id);
+        var porComp = Db.RegistrosParametro.AsNoTracking().Where(r => r.Completado).ToList()
+            .Where(r => idsParam.Contains(r.ParametroActividadId))
+            .GroupBy(r => r.ComponenteId).ToDictionary(g => g.Key, g => g.ToList());
+
+        // ---- posiciones en metros locales (x = este, z = -norte) ----
+        lat0 = elementos.Average(e => e.Latitud);
+        lon0 = elementos.Average(e => e.Longitud);
+        var kLon = 111320.0 * Math.Cos(lat0 * Math.PI / 180.0);
+
+        var lista = new List<TorreVista>();
+        foreach (var e in elementos)
+        {
+            var t = new TorreVista
+            {
+                Id = e.Id,
+                Nombre = string.IsNullOrWhiteSpace(e.Nombre) ? e.Codigo : e.Nombre!,
+                X = (e.Longitud - lon0) * kLon,
+                Z = -(e.Latitud - lat0) * 110574.0,
+                Lat = e.Latitud,
+                Lon = e.Longitud,
+            };
+            if (tipos.TryGetValue(e.Id, out var tp))
+            {
+                if (tp.Texto is not null) t.TipoTexto = tp.Texto;
+                if (tp.Familia.Length > 0) { t.Familia = tp.Familia; t.Cuerpo = tp.Cuerpo; }
+                if (tp.Modelo is not null) { t.Real = true; t.Modelo = tp.Modelo.Codigo; }
+            }
+            t.Color = ColorFamilia(t.Familia);
+            if (hdv.TryGetValue(e.Id, out var comp) && porComp.TryGetValue(comp, out var regs) && regs.Count > 0)
+                t.Pct = (double)regs.Average(r => r.EstadoParametroId is int id && estados.TryGetValue(id, out var p) ? p : 0m);
+            lista.Add(t);
+        }
+
+        // Orden a lo largo de la línea: por número de torre (3, 5N, 6N, 7...)
+        torres = lista.OrderBy(t => NumeroInicial(t.Nombre)).ThenBy(t => t.Nombre, StringComparer.OrdinalIgnoreCase).ToList();
+        sinTipo = torres.Count(t => string.IsNullOrEmpty(t.TipoTexto));
+    }
+
+    private static int NumeroInicial(string n)
+    {
+        var d = new string(n.TakeWhile(char.IsDigit).ToArray());
+        return int.TryParse(d, out var v) ? v : int.MaxValue;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (visor is not null || iniciando || torres.Count == 0) return;
+        iniciando = true;
+        try
+        {
+            yo = DotNetObjectReference.Create(this);
+            modulo = await JS.InvokeAsync<IJSObjectReference>("import", "./js/linea3d.js");
+            var datos = torres.Select(t => new { id = t.Id, nombre = t.Nombre, x = t.X, z = t.Z, familia = t.Familia, cuerpo = t.Cuerpo, real = t.Real, modelo = t.Modelo, pct = t.Pct, color = t.Color, lat = t.Lat, lon = t.Lon });
+            visor = await modulo.InvokeAsync<IJSObjectReference>("crear", contenedor, datos, cfgModelos.ToDictionary(c => c.Codigo, c => "modelos3d/" + c.Archivo), new { lat0, lon0 }, yo);
+            await visor.InvokeVoidAsync("setEscala", (double)escala);
+            if (TorreQ is int tq && torres.Any(t => t.Id == tq)) await visor.InvokeVoidAsync("enfocar", tq);
+        }
+        catch (Exception ex) { error = "No se pudo iniciar el visor 3D: " + ex.Message; StateHasChanged(); }
+    }
+
+    [JSInvokable]
+    public Task AlTerreno(bool ok, string mensaje)
+    {
+        terrenoOk = ok; estadoTerreno = mensaje;
+        StateHasChanged();
+        return Task.CompletedTask;
+    }
+
+    [JSInvokable]
+    public Task AlSeleccionarTorre(int? id, double alto, double ancho, string modelo)
+    {
+        seleccionada = id is null ? null : torres.FirstOrDefault(t => t.Id == id);
+        alturaSel = alto; anchoSel = ancho; modeloSel = modelo;
+        StateHasChanged();
+        return Task.CompletedTask;
+    }
+
+    private async Task IrATorre(string? nombre)
+    {
+        var q = nombre?.Trim();
+        if (string.IsNullOrEmpty(q)) return;
+        var t = torres.FirstOrDefault(x => string.Equals(x.Nombre, q, StringComparison.OrdinalIgnoreCase))
+             ?? torres.FirstOrDefault(x => x.Nombre.StartsWith(q, StringComparison.OrdinalIgnoreCase))
+             ?? torres.FirstOrDefault(x => x.Nombre.Contains(q, StringComparison.OrdinalIgnoreCase));
+        if (t is not null) await Llamar("enfocar", t.Id);
+    }
+
+    private async Task Llamar(string metodo, params object[] args)
+    {
+        if (visor is null) return;
+        try { await visor.InvokeVoidAsync(metodo, args); } catch (JSException) { }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        try
+        {
+            if (visor is not null) { await visor.InvokeVoidAsync("liberar"); await visor.DisposeAsync(); }
+            if (modulo is not null) await modulo.DisposeAsync();
+        }
+        catch (JSDisconnectedException) { }
+        yo?.Dispose();
+    }
+}

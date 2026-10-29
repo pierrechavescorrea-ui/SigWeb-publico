@@ -1,0 +1,111 @@
+@* Lugares de un plan (o de cualquier registro): torre, pata o elemento de
+   torre, localización del catálogo o tiro. Mismo funcionamiento que el
+   Alcance de un riesgo. Todo llega precargado: aquí no se consulta la base. *@
+@using SigWeb.Models
+<div class="d-flex flex-wrap gap-1 align-items-center">
+    @foreach (var l in Lugares.ToList())
+    {
+        <span class="rg-chip">@Texto(l) <button type="button" class="rg-chip-x" title="Quitar" @onclick="() => Quitar(l)">✕</button></span>
+    }
+    <button type="button" class="ens-mini" title="Agregar lugar" @onclick="() => abierto = !abierto"><Ico Nombre="agregar" /></button>
+</div>
+@if (abierto)
+{
+    <div class="border rounded p-2 mt-1 small d-flex flex-wrap gap-1 align-items-center">
+        <select class="form-select form-select-sm" style="max-width:220px;" @bind="tipo" @bind:after="() => { id = 0; torreDeComponente = 0; }">
+            <option value="torre">Torre</option>
+            <option value="componente">Pata o elemento de una torre</option>
+            <option value="localizacion">Localización (catálogo)</option>
+            <option value="tiro">Tiro</option>
+        </select>
+        @if (tipo == "torre")
+        {
+            <select class="form-select form-select-sm" style="max-width:200px;" @bind="id">
+                <option value="0">—</option>
+                @foreach (var t in Torres) { <option value="@t.Id">@t.Codigo</option> }
+            </select>
+        }
+        else if (tipo == "componente")
+        {
+            <select class="form-select form-select-sm" style="max-width:160px;" @bind="torreDeComponente" @bind:after="() => id = 0">
+                <option value="0">— torre —</option>
+                @foreach (var t in Torres) { <option value="@t.Id">@t.Codigo</option> }
+            </select>
+            <select class="form-select form-select-sm" style="max-width:220px;" @bind="id">
+                <option value="0">— elemento —</option>
+                @foreach (var c in Componentes.Values.Where(c => c.ElementoTrazadoId == torreDeComponente && !c.Eliminado).OrderBy(c => c.Orden).ThenBy(c => c.Nombre))
+                {
+                    <option value="@c.Id">@c.Nombre</option>
+                }
+            </select>
+        }
+        else if (tipo == "localizacion")
+        {
+            <select class="form-select form-select-sm" style="max-width:260px;" @bind="id">
+                <option value="0">—</option>
+                @foreach (var l in Localizaciones) { <option value="@l.Id">@l.Nombre</option> }
+            </select>
+        }
+        else
+        {
+            <select class="form-select form-select-sm" style="max-width:200px;" @bind="id">
+                <option value="0">—</option>
+                @foreach (var t in Tiros) { <option value="@t.Id">@t.Nombre</option> }
+            </select>
+        }
+        <button type="button" class="btn btn-sm btn-primary" title="Agregar" disabled="@(id == 0)" @onclick="Agregar"><Ico Nombre="agregar" /></button>
+        <button type="button" class="btn btn-sm btn-secondary" title="Cancelar" @onclick="() => abierto = false"><Ico Nombre="cancelar" /></button>
+    </div>
+}
+
+@code {
+    [Parameter] public List<LugarPlan> Lugares { get; set; } = new();
+    [Parameter] public List<ElementoTrazado> Torres { get; set; } = new();
+    [Parameter] public Dictionary<int, Componente> Componentes { get; set; } = new();
+    [Parameter] public List<ItemCatalogo> Localizaciones { get; set; } = new();
+    [Parameter] public List<Tiro> Tiros { get; set; } = new();
+    [Parameter] public EventCallback OnCambio { get; set; }
+
+    private bool abierto;
+    private string tipo = "torre";
+    private int id, torreDeComponente;
+
+    public string Texto(LugarPlan l) => Texto(l, Torres, Componentes, Localizaciones, Tiros);
+
+    public static string Texto(LugarPlan l, List<ElementoTrazado> torres, Dictionary<int, Componente> comps, List<ItemCatalogo> locs, List<Tiro> tiros)
+    {
+        if (l.ElementoTrazadoId is int t) return torres.FirstOrDefault(x => x.Id == t)?.Codigo ?? $"Torre {t}";
+        if (l.ComponenteId is int c)
+        {
+            if (!comps.TryGetValue(c, out var k)) return $"Elemento {c}";
+            var tr = torres.FirstOrDefault(x => x.Id == k.ElementoTrazadoId);
+            return tr is null ? k.Nombre : $"{tr.Codigo} · {k.Nombre}";
+        }
+        if (l.ItemCatalogoId is int i) return locs.FirstOrDefault(x => x.Id == i)?.Nombre ?? $"Localización {i}";
+        if (l.TiroId is int ti) return "Tiro " + (tiros.FirstOrDefault(x => x.Id == ti)?.Nombre ?? ti.ToString());
+        return "—";
+    }
+
+    private async Task Agregar()
+    {
+        if (id == 0) return;
+        var l = new LugarPlan();
+        switch (tipo)
+        {
+            case "torre": l.ElementoTrazadoId = id; break;
+            case "componente": l.ComponenteId = id; break;
+            case "localizacion": l.ItemCatalogoId = id; break;
+            default: l.TiroId = id; break;
+        }
+        if (!Lugares.Any(x => x.ElementoTrazadoId == l.ElementoTrazadoId && x.ComponenteId == l.ComponenteId && x.ItemCatalogoId == l.ItemCatalogoId && x.TiroId == l.TiroId))
+            Lugares.Add(l);
+        id = 0;
+        await OnCambio.InvokeAsync();
+    }
+
+    private async Task Quitar(LugarPlan l)
+    {
+        Lugares.Remove(l);
+        await OnCambio.InvokeAsync();
+    }
+}

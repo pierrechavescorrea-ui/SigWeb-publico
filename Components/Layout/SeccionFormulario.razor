@@ -1,0 +1,31 @@
+@* Sección numerada de un formulario: título con número (contador CSS) y una fila de campos. *@
+<section class="frm-sec @Clase">
+    <div class="frm-sec-tit">
+        @if (!string.IsNullOrWhiteSpace(Icono))
+        {
+            <span class="frm-sec-ico"><Ico Nombre="@Icono" /></span>
+        }
+        <span class="frm-sec-txt">@Titulo</span>
+        @if (Extra is not null)
+        {
+            <span class="frm-sec-extra">@Extra</span>
+        }
+    </div>
+    @if (SinFila)
+    {
+        @ChildContent
+    }
+    else
+    {
+        <div class="row g-3">@ChildContent</div>
+    }
+</section>
+
+@code {
+    [Parameter] public string Titulo { get; set; } = "";
+    [Parameter] public string? Icono { get; set; }
+    [Parameter] public string? Clase { get; set; }
+    [Parameter] public bool SinFila { get; set; }
+    [Parameter] public RenderFragment? Extra { get; set; }
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+}

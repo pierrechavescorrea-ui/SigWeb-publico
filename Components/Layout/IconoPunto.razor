@@ -1,0 +1,16 @@
+@* Ícono de un punto de la app (menú, encabezado…): el asignado desde Catálogos o, si no hay, el de por defecto (ChildContent). *@
+@inject SigWeb.Data.Iconos.IconosApp IconosApp
+@if (IconosApp.Ruta(Punto) is string ruta)
+{
+    <img class="@Clase ico-asignado" src="@ruta" alt="" />
+}
+else
+{
+    @ChildContent
+}
+
+@code {
+    [Parameter] public string Punto { get; set; } = "";
+    [Parameter] public string? Clase { get; set; }
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+}

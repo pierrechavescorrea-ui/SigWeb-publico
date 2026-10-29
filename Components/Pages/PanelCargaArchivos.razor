@@ -1,0 +1,169 @@
+@* Carga masiva de archivos a un listado (Documentos, Planos): pregunta qué se carga (vigentes,
+   editables u obsoletas), sugiere la fila de cada archivo por su nombre y el usuario confirma o
+   cambia; cada archivo lleva su clase y su versión. La página guarda (OnCargar). *@
+@using SigWeb.Data.Documentos
+@using SigWeb.Models
+
+<div class="card panel-formulario mb-3">
+    <div class="card-body">
+        <div class="d-flex gap-2 align-items-center flex-wrap mb-2">
+            <div class="btn-group btn-group-sm" role="group" title="¿Qué estás cargando?">
+                @foreach (var cl in Clases)
+                {
+                    var clase = cl;
+                    <button type="button" class="btn @(claseLote == clase ? "btn-dark" : "btn-outline-secondary")" title="@Nombre(clase, true)" @onclick="() => CambiarClase(clase)">@Nombre(clase, true)</button>
+                }
+            </div>
+            <InputFile class="form-control form-control-sm" style="max-width:340px;" multiple OnChange="Seleccionar" accept="@Accept" />
+            <input type="date" class="form-control form-control-sm" style="max-width:160px;" title="Fecha de las versiones" @bind="fecha" />
+            @if (lote.Count > 0)
+            {
+                <span class="text-muted small">@lote.Count(x => x.FilaId is not null) / @lote.Count</span>
+            }
+            <button type="button" class="btn btn-secondary btn-sm ms-auto" title="Cancelar" @onclick="OnCancelar"><Ico Nombre="cancelar" /></button>
+            <button type="button" class="btn btn-primary btn-sm" title="@($"Cargar {Listos.Count} archivo(s)")" disabled="@(Listos.Count == 0 || Cargando)" @onclick="Cargar">
+                @if (Cargando) { <span class="spinner-border spinner-border-sm" role="status"></span> }
+                else { <Ico Nombre="guardar" /> <span class="small">@Listos.Count</span> }
+            </button>
+        </div>
+        @if (lote.Count > 0)
+        {
+            // Dos archivos de la misma clase (no obsoletas) a la misma fila: el último cargado queda como actual.
+            var repetidos = lote.Where(x => x.Incluir && x.FilaId is not null && x.Clase != ClaseArchivoDocumento.Obsoleta)
+                .GroupBy(x => (x.FilaId, x.Clase)).Where(g => g.Count() > 1).Select(g => g.Key).ToHashSet();
+            <div class="tabla-scroll" style="max-height:420px;">
+                <table class="table table-sm table-bordered align-middle mb-0">
+                    <thead>
+                        <tr>
+                            <th style="width:32px;"></th>
+                            <th>Archivo</th>
+                            <th style="min-width:340px;">@TituloFila</th>
+                            @if (Clases.Count > 1) { <th style="width:130px;">Clase</th> }
+                            <th style="width:110px;">Versión</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var a in lote)
+                        {
+                            var it = a;
+                            <tr class="@(it.FilaId is null ? "doc-lote-sin" : "") @(it.Incluir ? "" : "doc-fila-off")">
+                                <td><input type="checkbox" class="form-check-input" checked="@it.Incluir" @onchange="@(e => it.Incluir = (bool)e.Value!)" /></td>
+                                <td class="small">
+                                    <div class="text-truncate" style="max-width:320px;" title="@it.Archivo.Name">@it.Archivo.Name</div>
+                                    <span class="text-muted">@((it.Archivo.Size / 1024.0).ToString("0")) KB</span>
+                                    @if (it.Archivo.Size > MaxArchivo) { <span class="text-danger"> · supera 50 MB</span> }
+                                </td>
+                                <td class="small">
+                                    <div class="d-flex gap-1">
+                                        <input class="form-control form-control-sm" style="max-width:130px;" placeholder="Buscar..." value="@it.Busqueda" @oninput="@(e => it.Busqueda = e.Value?.ToString() ?? "")" />
+                                        <select class="form-select form-select-sm" value="@(it.FilaId?.ToString() ?? "")" @onchange="@(e => Elegir(it, e.Value?.ToString()))">
+                                            <option value="">—</option>
+                                            @foreach (var o in Opciones(it))
+                                            {
+                                                <option value="@o.Id">@o.Etiqueta@(o.Puntos > 0 ? $"  ({SugeridorArchivos.Coincidencia(o.Puntos)})" : "")</option>
+                                            }
+                                        </select>
+                                    </div>
+                                    @if (it.FilaId is not null && repetidos.Contains((it.FilaId, it.Clase)))
+                                    {
+                                        <span class="text-danger">Otro archivo de la misma clase va a la misma fila</span>
+                                    }
+                                </td>
+                                @if (Clases.Count > 1)
+                                {
+                                    <td class="p-0">
+                                        <select class="form-select form-select-sm cc-input" value="@((int)it.Clase)" @onchange="@(e => { it.Clase = (ClaseArchivoDocumento)int.Parse(e.Value!.ToString()!); it.Version = it.FilaId is int f ? VersionSugerida(f, it.Clase) : null; })">
+                                            @foreach (var cl in Clases) { <option value="@((int)cl)">@Nombre(cl, false)</option> }
+                                        </select>
+                                    </td>
+                                }
+                                <td class="p-0"><input class="form-control form-control-sm cc-input @(string.IsNullOrWhiteSpace(it.Version) && it.FilaId is not null ? "is-invalid" : "")" @bind="it.Version" /></td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter] public IReadOnlyList<SugeridorArchivos.Indice> Indice { get; set; } = Array.Empty<SugeridorArchivos.Indice>();
+    [Parameter] public IReadOnlyList<ClaseArchivoDocumento> Clases { get; set; } = new[] { ClaseArchivoDocumento.Vigente, ClaseArchivoDocumento.Editable, ClaseArchivoDocumento.Obsoleta };
+    // (fila, clase) → versión sugerida; null = la escribe el usuario.
+    [Parameter] public Func<int, ClaseArchivoDocumento, string?> VersionSugerida { get; set; } = (_, _) => null;
+    [Parameter] public string Accept { get; set; } = ".pdf,.doc,.docx,.xls,.xlsx,.xlsm";
+    [Parameter] public string TituloFila { get; set; } = "Documento";
+    [Parameter] public bool Cargando { get; set; }
+    [Parameter] public EventCallback<(DateTime? Fecha, List<ArchivoACargar> Archivos)> OnCargar { get; set; }
+    [Parameter] public EventCallback OnCancelar { get; set; }
+
+    public const long MaxArchivo = 50L * 1024 * 1024;
+
+    private sealed class Fila
+    {
+        public Microsoft.AspNetCore.Components.Forms.IBrowserFile Archivo = null!;
+        public List<SugeridorArchivos.Candidato> Candidatos = new();
+        public int? FilaId;
+        public string? Version;
+        public ClaseArchivoDocumento Clase;
+        public bool Incluir = true;
+        public string Busqueda = "";
+    }
+
+    private List<Fila> lote = new();
+    private DateTime? fecha = DateTime.Today;
+    private ClaseArchivoDocumento claseLote;
+
+    protected override void OnInitialized() => claseLote = Clases.FirstOrDefault();
+
+    private List<Fila> Listos => lote.Where(x => x.Incluir && x.FilaId is not null && !string.IsNullOrWhiteSpace(x.Version) && x.Archivo.Size <= MaxArchivo).ToList();
+
+    public static string Nombre(ClaseArchivoDocumento c, bool plural) => c switch
+    {
+        ClaseArchivoDocumento.Vigente => plural ? "Vigentes" : "Vigente",
+        ClaseArchivoDocumento.Editable => plural ? "Editables" : "Editable",
+        _ => plural ? "Obsoletas" : "Obsoleta"
+    };
+
+    private void CambiarClase(ClaseArchivoDocumento c)
+    {
+        claseLote = c;
+        foreach (var a in lote) { a.Clase = c; a.Version = a.FilaId is int f ? VersionSugerida(f, c) : null; }
+    }
+
+    private void Elegir(Fila a, string? valor)
+    {
+        a.FilaId = int.TryParse(valor, out var id) ? id : null;
+        a.Version = a.FilaId is int f ? VersionSugerida(f, a.Clase) : null;
+    }
+
+    private IEnumerable<SugeridorArchivos.Candidato> Opciones(Fila a)
+    {
+        var l = string.IsNullOrWhiteSpace(a.Busqueda)
+            ? a.Candidatos.ToList()
+            : Indice.Where(d => d.Etiqueta.Contains(a.Busqueda.Trim(), StringComparison.OrdinalIgnoreCase)).Take(30)
+                .Select(d => new SugeridorArchivos.Candidato(d.Id, d.Etiqueta, 0)).ToList();
+        if (a.FilaId is int id && l.All(x => x.Id != id) && Indice.FirstOrDefault(d => d.Id == id) is { } sel)
+            l.Insert(0, new SugeridorArchivos.Candidato(sel.Id, sel.Etiqueta, 0));
+        return l;
+    }
+
+    private void Seleccionar(InputFileChangeEventArgs e)
+    {
+        foreach (var f in e.GetMultipleFiles(300))
+        {
+            if (lote.Any(x => x.Archivo.Name == f.Name && x.Archivo.Size == f.Size)) continue;
+            var a = new Fila { Archivo = f, Candidatos = SugeridorArchivos.Sugerir(f.Name, Indice), Clase = claseLote };
+            if (SugeridorArchivos.EsClara(a.Candidatos)) Elegir(a, a.Candidatos[0].Id.ToString());
+            if (f.Size > MaxArchivo) a.Incluir = false;
+            lote.Add(a);
+        }
+    }
+
+    private async Task Cargar()
+    {
+        var listos = Listos.Select(x => new ArchivoACargar(x.Archivo, x.FilaId!.Value, x.Clase, x.Version!.Trim())).ToList();
+        if (listos.Count > 0) await OnCargar.InvokeAsync((fecha, listos));
+    }
+}

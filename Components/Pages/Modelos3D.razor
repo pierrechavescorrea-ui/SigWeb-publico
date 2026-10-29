@@ -1,0 +1,714 @@
+﻿@page "/modelos3d"
+@rendermode InteractiveServer
+@implements IAsyncDisposable
+@using System.Globalization
+@using System.Text.Json
+@using System.Text.Json.Serialization
+@using System.Text.RegularExpressions
+@using Microsoft.EntityFrameworkCore
+@using SigWeb.Data
+@using SigWeb.Data.Planos
+@using SigWeb.Data.Modelos3D
+@using SigWeb.Models
+@using SigWeb.Data.Tablas
+@inject IJSRuntime JS
+@inject IWebHostEnvironment Env
+@inject AppDbContext Db
+
+<PageTitle>Modelos 3D</PageTitle>
+
+<EncabezadoPagina Titulo="Modelos 3D" Icono="modelos3d" Subtitulo="@(modelo is null ? "Elige un tipo de torre" : modelo.Meta.Nombre)" OnAtras="AtrasModelos">
+    <Acciones>
+        <button type="button" class="pg-btn @(modelo is null ? "pg-btn-primario" : "")" title="Tipos de torre" aria-label="Seleccionar tipo de torre" @onclick="AbrirSelector">
+            <Ico Nombre="torre" />
+        </button>
+        <button type="button" class="pg-btn" title="Nombres, descripciones y vínculo con la tabla de torres" aria-label="Administrar modelos" @onclick="AbrirAdmin">
+            <Ico Nombre="listado" />
+        </button>
+        @if (modelo is not null)
+        {
+            <button type="button" class="pg-btn" title="Información de la torre" aria-label="Información de la torre" @onclick="() => verInfo = true">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5.5M12 7.6v.2"/></svg>
+            </button>
+            <button type="button" class="pg-btn" title="Lista de materiales (@modelo.ListaMateriales.Count filas)" aria-label="Lista de materiales" @onclick="AbrirListaAsync">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6h11M9 12h11M9 18h11"/><path d="M4 6h.01M4 12h.01M4 18h.01"/></svg>
+            </button>
+            <button type="button" class="pg-btn" title="Alcance y supuestos" aria-label="Alcance y supuestos" @onclick="() => verSupuestos = true">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 2.8 19h18.4z"/><path d="M12 10v4.2M12 16.8v.2"/></svg>
+            </button>
+        }
+    </Acciones>
+</EncabezadoPagina>
+
+@if (verAdmin)
+{
+    <div class="modal-backdrop fade show"></div>
+    <div class="modal d-block" tabindex="-1" role="dialog" @onclick="() => verAdmin = false">
+        <div class="modal-dialog modal-xl modal-dialog-scrollable" role="document" @onclick:stopPropagation="true">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Modelos de torre</h5>
+                    <button type="button" class="btn-close" aria-label="Cerrar" @onclick="() => verAdmin = false"></button>
+                </div>
+                <div class="modal-body">
+                    <table class="table table-sm align-middle mb-0">
+                        <thead><tr><th style="width:90px;">Modelo</th><th style="width:220px;" title="Nombre principal: es el que se relaciona con el tipo de la tabla de torres">Nombre</th><th>Descripción</th><th class="text-center" style="width:110px;" title="Modelo que usa la tabla de torres. Solo uno por nombre; sin marcar, ese tipo no se modela">Modelado en línea 3D</th></tr></thead>
+                        <tbody>
+                        @foreach (var c in edicion)
+                        {
+                                            <tr>
+                                <td class="text-muted small">@c.Codigo</td>
+                                <td><input class="form-control form-control-sm" value="@c.Nombre" @onchange="@(e => CambiarNombre(c, e.Value?.ToString() ?? ""))" /></td>
+                                <td><textarea class="form-control form-control-sm" rows="1" @onchange="@(e => c.Descripcion = e.Value?.ToString() ?? "")">@c.Descripcion</textarea></td>
+                                <td class="text-center">
+                                    <input type="checkbox" class="form-check-input" checked="@c.Vinculado"
+                                           title="Usar este modelo en la tabla de torres" @onchange="@(e => Vincular(c, (bool)e.Value!))" />
+                                </td>
+                            </tr>
+                        }
+                        </tbody>
+                    </table>
+                </div>
+                <div class="modal-footer">
+                    @if (avisoAdmin is not null) { <span class="text-success small me-auto">@avisoAdmin</span> }
+                    <button type="button" class="btn btn-outline-secondary btn-sm" title="Cerrar" @onclick="() => verAdmin = false"><Ico Nombre="cancelar" /></button>
+                    <button type="button" class="btn btn-primary btn-sm" @onclick="GuardarAdmin" title="Guardar"><Ico Nombre="guardar" /></button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@if (verSelector)
+{
+    <div class="modal-backdrop fade show"></div>
+    <div class="modal d-block" tabindex="-1" role="dialog" @onclick="() => verSelector = false">
+        <div class="modal-dialog modal-dialog-scrollable" role="document" @onclick:stopPropagation="true">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Tipo de torre</h5>
+                    <button type="button" class="btn-close" aria-label="Cerrar" @onclick="() => verSelector = false"></button>
+                </div>
+                <div class="modal-body">
+                        <div class="list-group">
+                            @foreach (var m in manifiesto)
+                            {
+                                var it = ItemDe(m);
+                                <div class="list-group-item d-flex justify-content-between align-items-center gap-2">
+                                    <span>
+                                        <strong>@m.Nombre</strong>@if (m.Vinculado) { <span class="badge bg-success ms-1" title="Modelo vinculado a la tabla de torres">tabla</span> }
+                                        @if (!string.IsNullOrWhiteSpace(m.Descripcion)) { <span class="text-muted small d-block">@m.Descripcion</span> }
+                                        else if (!string.IsNullOrWhiteSpace(it.Descripcion)) { <span class="text-muted small d-block">@it.Descripcion</span> }
+                                    </span>
+                                    <button type="button" class="btn btn-sm @(archivoModelo == m.Archivo ? "btn-primary" : "btn-outline-primary")" @onclick="() => ElegirTorreAsync(it, m.Archivo)">Ver</button>
+                                </div>
+                            }
+                        </div>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@if (verInfo && modelo is not null)
+{
+    <div class="modal-backdrop fade show"></div>
+    <div class="modal d-block" tabindex="-1" role="dialog" @onclick="() => verInfo = false">
+        <div class="modal-dialog" role="document" @onclick:stopPropagation="true">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">@modelo.Meta.Nombre</h5>
+                    <button type="button" class="btn-close" aria-label="Cerrar" @onclick="() => verInfo = false"></button>
+                </div>
+                <div class="modal-body">
+                    <dl class="row mb-0">
+                        <dt class="col-sm-4">Línea</dt><dd class="col-sm-8">@modelo.Meta.Linea</dd>
+                        <dt class="col-sm-4">Alto</dt><dd class="col-sm-8">@Metros(modelo.Meta.AltoTotalMm)</dd>
+                        <dt class="col-sm-4">Ancho en base</dt><dd class="col-sm-8">@Metros(modelo.Meta.AnchoBaseMm)</dd>
+                        <dt class="col-sm-4">Miembros</dt><dd class="col-sm-8">@modelo.Miembros.Count</dd>
+                        <dt class="col-sm-4">Con marca</dt><dd class="col-sm-8">@modelo.Miembros.Count(m => m.Marcas is { Count: > 0 }) miembros</dd>
+                    </dl>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@if (modelo is not null)
+{
+    @if (verSupuestos)
+    {
+        <div class="modal-backdrop fade show"></div>
+        <div class="modal d-block" tabindex="-1" role="dialog" @onclick="() => verSupuestos = false">
+            <div class="modal-dialog modal-lg modal-dialog-scrollable" role="document" @onclick:stopPropagation="true">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title">Alcance y supuestos del modelo</h5>
+                        <button type="button" class="btn-close" aria-label="Cerrar" @onclick="() => verSupuestos = false"></button>
+                    </div>
+                    <div class="modal-body small">
+                        <p><strong>Fuente:</strong> @modelo.Meta.Fuente</p>
+                        <p class="mb-1"><strong>Supuestos y limitaciones</strong></p>
+                        <ul>
+                            @foreach (var s in modelo.Meta.Supuestos) { <li>@s</li> }
+                        </ul>
+                        <p class="mb-1"><strong>Verificación contra cotas del plano</strong></p>
+                        <ul class="mb-0">
+                            @foreach (var v in modelo.Meta.Validacion)
+                            {
+                                <li>@v.Hoja · @v.Cota: plano @v.PlanoMm.ToString("0.0", Ci) mm / modelo @v.ModeloMm.ToString("0.0", Ci) mm</li>
+                            }
+                        </ul>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-primary btn-sm" title="Cerrar" @onclick="() => verSupuestos = false"><Ico Nombre="cancelar" /></button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    }
+
+    @if (verCamposBom && motorBom is not null)
+    {
+        <PanelCampos Motor="motorBom" OnCerrar="() => verCamposBom = false" OnCambio="StateHasChanged" />
+    }
+
+    @if (verLista)
+    {
+        <div class="modal-backdrop fade show"></div>
+        <div class="modal d-block" tabindex="-1" role="dialog" @onclick="() => verLista = false">
+            <div class="modal-dialog modal-xl modal-dialog-scrollable" role="document" @onclick:stopPropagation="true">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title">Lista de materiales</h5>
+                        <span class="ms-auto"></span>
+                        <button type="button" class="btn btn-sm btn-outline-secondary me-2" title="Campos" disabled="@(motorBom is null)" @onclick="() => verCamposBom = true">
+                            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16v14H4z"/><path d="M9.3 5v14M14.7 5v14"/></svg>
+                        </button>
+                        <button type="button" class="btn-close ms-0" aria-label="Cerrar" @onclick="() => verLista = false"></button>
+                    </div>
+                    <div class="modal-body small">
+                        <input class="form-control form-control-sm mb-2" placeholder="Buscar marca (ej. 1007, 800H), perfil (L 90X6), conjunto u hoja…"
+                               @bind="Filtro" @bind:event="oninput" />
+                        @{ var filas = FilasLista.ToList(); var paginas = Math.Max(1, (int)Math.Ceiling(filas.Count / (double)TamPagina)); if (pagina >= paginas) pagina = paginas - 1; }
+                        <div class="d-flex align-items-center gap-2 mb-1">
+                            <span class="text-muted">@filas.Count de @modelo!.ListaMateriales.Count filas · hojas H@(filas.Count > 0 ? filas.Min(x => x.Hoja) : 0)–H@(filas.Count > 0 ? filas.Max(x => x.Hoja) : 0)</span>
+                            <span class="ms-auto"></span>
+                            <button type="button" class="btn btn-outline-secondary btn-sm py-0" disabled="@(pagina == 0)" @onclick="() => pagina--">‹</button>
+                            <span>Página @(pagina + 1) / @paginas</span>
+                            <button type="button" class="btn btn-outline-secondary btn-sm py-0" disabled="@(pagina >= paginas - 1)" @onclick="() => pagina++">›</button>
+                        </div>
+                        <table class="table table-sm table-striped">
+                            <thead><tr>
+                                @foreach (var c in ColumnasBom)
+                                {
+                                    <th style="cursor:pointer;white-space:nowrap" @onclick="() => Ordenar(c.Clave)">@c.Nombre@(colOrden == c.Clave ? (ordenAsc ? " ▲" : " ▼") : "")</th>
+                                }
+                                <th></th></tr></thead>
+                            <tbody>
+                                @foreach (var f in filas.Skip(pagina * TamPagina).Take(TamPagina))
+                                {
+                                    var clave = f.Hoja + "|" + f.Marca;
+                                    <tr>
+                                        @foreach (var c in ColumnasBom)
+                                        {
+                                            <CeldaCampo Motor="motorBom!" Campo="c" Fila="IdBom(f)" Clase="@(c.Clave == "marca" ? "fw-bold" : null)" OnCambio="StateHasChanged" />
+                                        }
+                                        <td>
+                                            @if (modelo.Miembros.Any(m => m.Marcas != null && m.Marcas.Contains(clave)))
+                                            {
+                                                <button type="button" class="btn btn-outline-primary btn-sm py-0" @onclick="() => VerMarcaAsync(clave)">Ver en modelo</button>
+                                            }
+                                        </td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    }
+
+}
+
+@if (modelo is null)
+{
+    @if (!string.IsNullOrEmpty(error))
+    {
+        <div class="alert alert-warning py-1">@error</div>
+    }
+    <div class="ens-grid m3d-grid">
+        @foreach (var m in manifiesto)
+        {
+            var it = ItemDe(m);
+            var desc = !string.IsNullOrWhiteSpace(m.Descripcion) ? m.Descripcion : it.Descripcion;
+            <div class="ens-cuadro m3d-cuadro" role="button" title="@(string.IsNullOrWhiteSpace(desc) ? m.Nombre : m.Nombre + " — " + desc)"
+                 @onclick="() => ElegirTorreAsync(it, m.Archivo)">
+                @if (miniaturas.TryGetValue(m.Archivo, out var mini) && !string.IsNullOrEmpty(mini))
+                {
+                    <img class="m3d-mini" src="@mini" alt="" />
+                }
+                else
+                {
+                    <div class="m3d-mini m3d-mini-vacia">@(miniaturas.ContainsKey(m.Archivo) ? "—" : "…")</div>
+                }
+                <div class="ens-nombre">@m.Nombre</div>
+            </div>
+        }
+    </div>
+}
+else
+{
+    <div class="m3d-layout">
+        <div class="m3d-visor" @ref="contenedor"></div>
+    </div>
+}
+
+@code {
+    private static readonly CultureInfo Ci = CultureInfo.InvariantCulture;
+
+    private ModeloTorre? modelo;
+    private string? error;
+    private bool verSupuestos, verLista, verInfo, verSelector, iniciando;
+    private string? archivoModelo;
+    private DefinicionCatalogo? catalogoTorres;
+    private List<ItemCatalogo> itemsTorre = new();
+    private ItemCatalogo? itemActual;
+    private List<ConfigModelo> manifiesto = new();
+    private bool verAdmin;
+    private List<ConfigModelo> edicion = new();
+    private string? avisoAdmin;
+    private string filtroLista = "";
+    private string Filtro { get => filtroLista; set { filtroLista = value; pagina = 0; } }
+    private Miembro? sel;
+    private ElementReference contenedor;
+    private IJSObjectReference? modulo, visor;
+    private DotNetObjectReference<Modelos3D>? yo;
+
+    private const int TamPagina = 100;
+    private int pagina;
+    private string colOrden = "hoja";
+    private bool ordenAsc = true;
+    private static readonly (string, string)[] Columnas =
+    {
+        ("marca", "Marca"), ("clase", "Clase"), ("perfil", "Perfil"), ("long", "Long. (mm)"),
+        ("cant", "Cant."), ("acero", "Acero"), ("conjunto", "Conjunto"), ("hoja", "Hoja")
+    };
+
+    // ---------- Campos de la lista de materiales (uno por modelo; fila = posición en la lista del JSON) ----------
+    private MotorTabla? motorBom;
+    private bool verCamposBom;
+    private string? bomCargado;
+    private IEnumerable<CampoTabla> ColumnasBom => motorBom?.Visibles ?? Enumerable.Empty<CampoTabla>();
+
+    private int IdBom(FilaLista f) => modelo!.ListaMateriales.IndexOf(f) + 1;
+
+    private IEnumerable<ColumnaNativa> ColumnasNativasBom()
+    {
+        FilaLista? F(int id) => modelo is not null && id >= 1 && id <= modelo.ListaMateriales.Count ? modelo.ListaMateriales[id - 1] : null;
+        object? N(string? t) => double.TryParse((t ?? "").Replace(",", ""), NumberStyles.Float, Ci, out var v) ? v : (string.IsNullOrWhiteSpace(t) ? null : t);
+        return new[]
+        {
+            new ColumnaNativa("marca", "Marca", TipoCampoTabla.Texto, id => F(id)?.Marca),
+            new ColumnaNativa("clase", "Clase", TipoCampoTabla.Texto, id => F(id)?.Clase),
+            new ColumnaNativa("perfil", "Perfil", TipoCampoTabla.Texto, id => F(id)?.Perfil),
+            new ColumnaNativa("long", "Long. (mm)", TipoCampoTabla.Numero, id => N(F(id)?.LongMm)),
+            new ColumnaNativa("cant", "Cant.", TipoCampoTabla.Numero, id => N(F(id)?.Cant)),
+            new ColumnaNativa("acero", "Acero", TipoCampoTabla.Texto, id => F(id)?.Acero),
+            new ColumnaNativa("conjunto", "Conjunto", TipoCampoTabla.Texto, id => F(id)?.Conjunto),
+            new ColumnaNativa("hoja", "Hoja", TipoCampoTabla.Texto, id => F(id) is { } f ? "H" + (f.HojaTxt ?? f.Hoja.ToString()) : null),
+        };
+    }
+
+    private async Task AbrirListaAsync()
+    {
+        verLista = true;
+        await CargarBomAsync();
+    }
+
+    private async Task CargarBomAsync()
+    {
+        if (modelo is null || bomCargado == archivoModelo) return;
+        bomCargado = archivoModelo;
+        try
+        {
+            motorBom = await MotorTabla.CargarAsync(Db, "bom:" + archivoModelo, ColumnasNativasBom(),
+                modelo.ListaMateriales.Select((f, i) => (i + 1, $"{f.Marca} · {f.Perfil} · H{f.HojaTxt ?? f.Hoja.ToString()}")));
+        }
+        catch { motorBom = null; }
+        StateHasChanged();
+    }
+
+    private void Ordenar(string col)
+    {
+        if (colOrden == col) ordenAsc = !ordenAsc; else { colOrden = col; ordenAsc = true; }
+        pagina = 0;
+    }
+
+    private static double Num(string? t)
+        => double.TryParse((t ?? "").Replace(",", ""), NumberStyles.Float, Ci, out var v) ? v : double.MaxValue;
+
+    // Clave "natural": 1007H < 1008H < 1010H (el número manda, luego el sufijo)
+    private static (double, string) Nat(string t)
+    {
+        var d = new string(t.TakeWhile(char.IsDigit).ToArray());
+        return (d.Length > 0 ? double.Parse(d, Ci) : double.MaxValue, t);
+    }
+
+    private IEnumerable<FilaLista> FilasLista
+    {
+        get
+        {
+            var q = filtroLista.Trim();
+            var baseq = q.Length == 0 ? modelo!.ListaMateriales
+                : modelo!.ListaMateriales.Where(f => f.Marca.Contains(q, StringComparison.OrdinalIgnoreCase)
+                    || f.Perfil.Contains(q, StringComparison.OrdinalIgnoreCase)
+                    || f.Conjunto.Contains(q, StringComparison.OrdinalIgnoreCase)
+                    || ("H" + f.Hoja).Equals(q, StringComparison.OrdinalIgnoreCase));
+            if (motorBom is not null && !Columnas.Any(c => c.Item1 == colOrden))
+                return motorBom.Ordenar(baseq, IdBom, colOrden, ordenAsc);
+            IOrderedEnumerable<FilaLista> o = colOrden switch
+            {
+                "marca" => ordenAsc ? baseq.OrderBy(f => Nat(f.Marca)) : baseq.OrderByDescending(f => Nat(f.Marca)),
+                "clase" => ordenAsc ? baseq.OrderBy(f => f.Clase) : baseq.OrderByDescending(f => f.Clase),
+                "perfil" => ordenAsc ? baseq.OrderBy(f => f.Perfil) : baseq.OrderByDescending(f => f.Perfil),
+                "long" => ordenAsc ? baseq.OrderBy(f => Num(f.LongMm)) : baseq.OrderByDescending(f => Num(f.LongMm)),
+                "cant" => ordenAsc ? baseq.OrderBy(f => Num(f.Cant)) : baseq.OrderByDescending(f => Num(f.Cant)),
+                "acero" => ordenAsc ? baseq.OrderBy(f => f.Acero) : baseq.OrderByDescending(f => f.Acero),
+                "conjunto" => ordenAsc ? baseq.OrderBy(f => f.Conjunto) : baseq.OrderByDescending(f => f.Conjunto),
+                _ => ordenAsc ? baseq.OrderBy(f => f.Hoja) : baseq.OrderByDescending(f => f.Hoja),
+            };
+            return o.ThenBy(f => f.Hoja).ThenBy(f => Nat(f.Marca));
+        }
+    }
+
+    private async Task VerMarcaAsync(string clave)
+    {
+        var m = modelo!.Miembros.FirstOrDefault(x => x.Marcas != null && x.Marcas.Contains(clave) && x.Cara == "A")
+                ?? modelo.Miembros.FirstOrDefault(x => x.Marcas != null && x.Marcas.Contains(clave));
+        verLista = false;
+        if (m is not null) await SeleccionarDesdeListaAsync(m);
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            manifiesto = ConfigModelos3D.Cargar(Env.WebRootPath);
+            await CargarCatalogoTorresAsync();
+        }
+        catch (Exception ex) { error = "No se pudo leer la lista de modelos: " + ex.Message; }
+    }
+
+    // Catálogo de tipos de torre: el primer catálogo activo cuyo nombre contiene "torre" (se prefiere el que dice "tipo").
+    private void AbrirAdmin()
+    {
+        edicion = manifiesto.Select(c => new ConfigModelo { Codigo = c.Codigo, Archivo = c.Archivo, Familia = c.Familia, Nombre = c.Nombre, Descripcion = c.Descripcion, Vinculado = c.Vinculado }).ToList();
+        avisoAdmin = null; verAdmin = true;
+    }
+
+    private void CambiarNombre(ConfigModelo c, string nombre)
+    {
+        c.Nombre = string.IsNullOrWhiteSpace(nombre) ? c.Codigo : nombre.Trim();
+        ConfigModelos3D.Normalizar(edicion);
+    }
+
+    private void Vincular(ConfigModelo c, bool marcado)
+    {
+        foreach (var x in edicion.Where(x => ConfigModelos3D.Norm(x.Nombre) == ConfigModelos3D.Norm(c.Nombre))) x.Vinculado = false;
+        c.Vinculado = marcado;
+    }
+
+    private void GuardarAdmin()
+    {
+        try
+        {
+            ConfigModelos3D.Normalizar(edicion);
+            ConfigModelos3D.Guardar(Env.WebRootPath, edicion);
+            manifiesto = ConfigModelos3D.Cargar(Env.WebRootPath);
+            avisoAdmin = "Guardado";
+        }
+        catch (Exception ex) { avisoAdmin = null; error = "No se pudo guardar: " + ex.Message; verAdmin = false; }
+    }
+
+    private async Task CargarCatalogoTorresAsync()
+    {
+        try
+        {
+            var defs = await Db.DefinicionesCatalogo.Where(d => d.Activo).ToListAsync();
+            catalogoTorres = defs.Where(d => d.Nombre.Contains("torre", StringComparison.OrdinalIgnoreCase))
+                                 .OrderByDescending(d => d.Nombre.Contains("tipo", StringComparison.OrdinalIgnoreCase))
+                                 .ThenBy(d => d.Orden).FirstOrDefault();
+            itemsTorre = catalogoTorres is null ? new()
+                : await Db.Catalogos.Where(c => c.Tipo == catalogoTorres.Nombre && c.Activo).OrderBy(c => c.Nombre).ToListAsync();
+        }
+        catch (Exception ex) { error = "No se pudo leer el catálogo: " + ex.Message; }
+    }
+
+    // El botón de la torre del encabezado vuelve a la cuadrícula de tipos de torre.
+    private async Task AbrirSelector()
+    {
+        await LiberarVisorAsync();
+        modelo = null; sel = null; archivoModelo = null; itemActual = null;
+        await CargarCatalogoTorresAsync();
+    }
+
+    // ---------- Cuadrícula con miniaturas ----------
+    private readonly Dictionary<string, string> miniaturas = new();
+    private bool cargandoMini;
+
+    private async Task CargarMiniaturasAsync()
+    {
+        if (cargandoMini) return;
+        cargandoMini = true;
+        try
+        {
+            modulo ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/visor3d.js");
+            foreach (var m in manifiesto.ToList())
+            {
+                if (modelo is not null) break;
+                if (miniaturas.ContainsKey(m.Archivo)) continue;
+                try { miniaturas[m.Archivo] = await modulo.InvokeAsync<string>("miniatura", "modelos3d/" + m.Archivo); }
+                catch (JSException) { miniaturas[m.Archivo] = ""; }
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        catch (JSDisconnectedException) { }
+        finally { cargandoMini = false; }
+    }
+
+    // El ítem del catálogo se asigna al modelo cuando su nombre contiene el código como palabra ("BE", "Tipo BE", "Torre BE"…).
+    // Ítem del catálogo asociado al modelo (para su descripción); si no hay, uno sintético con el código.
+    private ItemCatalogo ItemDe(ConfigModelo m)
+    {
+        bool Palabra(string it, string t) => Regex.IsMatch(it, $@"(?<![\p{{L}}\d]){Regex.Escape(t)}(?![\p{{L}}\d])", RegexOptions.IgnoreCase);
+        return itemsTorre.FirstOrDefault(i => Palabra(i.Nombre, m.Codigo))
+            ?? itemsTorre.FirstOrDefault(i => !string.IsNullOrEmpty(m.Familia) && Palabra(i.Nombre, m.Familia))
+            ?? new ItemCatalogo { Id = -Math.Abs(m.Codigo.GetHashCode()), Nombre = m.Codigo };
+    }
+
+    private async Task ElegirTorreAsync(ItemCatalogo it, string archivo)
+    {
+        verSelector = false;
+        if (itemActual?.Id == it.Id && archivoModelo == archivo && modelo is not null) return;
+        await LiberarVisorAsync();
+        modelo = null; sel = null; error = null;
+        try
+        {
+            var ruta = Path.Combine(Env.WebRootPath, "modelos3d", archivo);
+            await using var fs = File.OpenRead(ruta);
+            modelo = await JsonSerializer.DeserializeAsync<ModeloTorre>(fs);
+            archivoModelo = archivo; itemActual = it; pagina = 0; filtroLista = "";
+        }
+        catch (Exception ex) { error = "No se pudo cargar el modelo: " + ex.Message; }
+    }
+
+    private async Task LiberarVisorAsync()
+    {
+        try { if (visor is not null) { await visor.InvokeVoidAsync("liberar"); await visor.DisposeAsync(); } }
+        catch (JSException) { }
+        catch (JSDisconnectedException) { }
+        visor = null; iniciando = false;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (modelo is null)
+        {
+            if (!cargandoMini && manifiesto.Any(m => !miniaturas.ContainsKey(m.Archivo))) _ = CargarMiniaturasAsync();
+            return;
+        }
+        if (visor is not null || iniciando) return;
+        iniciando = true;
+        try
+        {
+            yo = DotNetObjectReference.Create(this);
+            modulo ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/visor3d.js");
+            visor = await modulo.InvokeAsync<IJSObjectReference>("crear", contenedor, "modelos3d/" + archivoModelo, yo);
+            await EnlazarPlanosAsync();
+            await visor.InvokeVoidAsync("setCatalogo", manifiesto.Select(x => new { nombre = x.Nombre, url = "modelos3d/" + x.Archivo }).ToList());
+        }
+        catch (Exception ex) { error = "No se pudo iniciar el visor 3D: " + ex.Message; modelo = null; StateHasChanged(); }
+    }
+
+    // Relaciona cada plano citado por las piezas con el listado maestro: si hay PDF adjunto de esa hoja,
+    // el visor lo muestra como enlace azul (📄); si no, solo el nombre del plano.
+    private async Task EnlazarPlanosAsync()
+    {
+        if (visor is null || modelo is null) return;
+        try
+        {
+            var hoja = new Regex(@"H(\d+)");
+            var refs = new Dictionary<string, (string Cod, int Hoja, string? Tit)>();
+            foreach (var m in modelo.Miembros)
+            {
+                string? cod = null; int h = 0; string? tit = null;
+                if (m.Plano is not null) { cod = m.Plano.Codigo; h = m.Plano.Hoja; tit = m.Plano.Titulo; }
+                else if (!string.IsNullOrEmpty(modelo.Meta.PlanoBase) && hoja.Match(m.Fuente ?? "") is { Success: true } mt)
+                { cod = modelo.Meta.PlanoBase; h = int.Parse(mt.Groups[1].Value); }
+                if (cod is not null) refs.TryAdd($"{cod}|{h}", (cod, h, tit));
+            }
+            var maestros = await Db.PlanosMaestro.Where(p => !p.Eliminado).ToListAsync();
+            var archivos = await Db.ArchivosPlanoMaestro.Where(a => !a.Eliminado).ToListAsync();
+            var lista = new List<object>();
+            foreach (var (clave, r) in refs)
+            {
+                var nombre = r.Hoja == 0 ? r.Cod : $"{r.Cod}-H{r.Hoja}";
+                var pm = CoincidenciaPlanos.MejorCoincidencia(nombre, maestros, x => x.Codigo);
+                // El maestro puede llevar prefijo (p. ej. "ACAD-" antes del código del plano).
+                if (pm is null)
+                {
+                    var nn = CoincidenciaPlanos.Normalizar(nombre);
+                    pm = maestros.Where(x => { var c = CoincidenciaPlanos.Normalizar(x.Codigo); return c == nn || c.EndsWith("-" + nn) || c.Contains("-" + nn + "-"); })
+                                 .OrderBy(x => x.Codigo.Length).FirstOrDefault();
+                }
+                ArchivoPlanoMaestro? arch = null;
+                if (pm is not null)
+                {
+                    var suyos = archivos.Where(a => a.PlanoMaestroId == pm.Id).ToList();
+                    var rx = new Regex($@"(^|-)(H|HOJA|HJ|SHEET)-?0*{r.Hoja}(-|$)");
+                    var rxNum = new Regex($@"-0*{r.Hoja}(-|$)");
+                    var cmaestro = CoincidenciaPlanos.Normalizar(pm.Codigo);
+                    // El maestro puede ser la hoja misma (código termina en -H14) o el juego completo.
+                    bool maestroEsHoja = r.Hoja != 0 && rx.IsMatch(cmaestro);
+                    arch = r.Hoja == 0 || maestroEsHoja ? suyos.FirstOrDefault()
+                        : suyos.FirstOrDefault(a => rx.IsMatch(CoincidenciaPlanos.NormalizarNombreArchivo(a.NombreOriginal)))
+                          ?? suyos.FirstOrDefault(a => rxNum.IsMatch(CoincidenciaPlanos.NormalizarNombreArchivo(a.NombreOriginal).Replace(cmaestro, "")));
+                    if (arch is null && suyos.Count == 1 && CoincidenciaPlanos.Normalizar(pm.Codigo) == CoincidenciaPlanos.Normalizar(nombre)) arch = suyos[0];
+                }
+                var texto = arch is not null ? arch.NombreOriginal : (r.Tit is null ? nombre : $"{nombre} · {r.Tit}");
+                lista.Add(new { clave, texto, url = arch?.RutaArchivo });
+            }
+            await visor.InvokeVoidAsync("setPlanos", lista);
+        }
+        catch (Exception) { /* sin enlaces: el visor muestra el texto de la fuente */ }
+    }
+
+    [JSInvokable]
+    public Task AlSeleccionarMiembro(string? id)
+    {
+        sel = id is null ? null : modelo?.Miembros.FirstOrDefault(m => m.Id == id);
+        StateHasChanged();
+        return Task.CompletedTask;
+    }
+
+    private async Task SeleccionarDesdeListaAsync(Miembro m)
+    {
+        sel = m;
+        await Js("grupoVisible", m.Grupo, true);
+        await Js("seleccionar", m.Id, false);
+        await Js("enfocar", m.Id);
+    }
+
+    private async Task Js(string metodo, params object?[] args)
+    {
+        if (visor is null) return;
+        try { await visor.InvokeVoidAsync(metodo, args); } catch (JSException) { }
+    }
+
+    private static string Metros(double mm) => (mm / 1000.0).ToString("0.000", Ci) + " m";
+    private static double Horizontal(Miembro m) => Math.Sqrt((double)m.DxMm * m.DxMm + (double)m.DzMm * m.DzMm);
+    private static string Inclinacion(Miembro m)
+        => Math.Abs(m.DyMm) < 1 ? "90.0" : (Math.Atan2(Horizontal(m), Math.Abs(m.DyMm)) * 180 / Math.PI).ToString("0.0", Ci);
+    private static string Coord(double[] p) => $"{p[0] / 1000:0.000}, {p[1] / 1000:0.000}, {p[2] / 1000:0.000} m";
+
+    public async ValueTask DisposeAsync()
+    {
+        try
+        {
+            if (visor is not null) { await visor.InvokeVoidAsync("liberar"); await visor.DisposeAsync(); }
+            if (modulo is not null) await modulo.DisposeAsync();
+        }
+        catch (JSDisconnectedException) { }
+        yo?.Dispose();
+    }
+
+    // ---------- Modelo de datos (JSON) ----------
+    private class ModeloTorre
+    {
+        [JsonPropertyName("meta")] public MetaModelo Meta { get; set; } = new();
+        [JsonPropertyName("grupos")] public List<GrupoModelo> Grupos { get; set; } = new();
+        [JsonPropertyName("miembros")] public List<Miembro> Miembros { get; set; } = new();
+        [JsonPropertyName("marcas")] public Dictionary<string, InfoMarca> Catalogo { get; set; } = new();
+        [JsonPropertyName("lista_materiales")] public List<FilaLista> ListaMateriales { get; set; } = new();
+    }
+    private class InfoMarca
+    {
+        [JsonPropertyName("marca")] public string Marca { get; set; } = "";
+        [JsonPropertyName("hoja")] public int Hoja { get; set; }
+        [JsonPropertyName("clase")] public string? Clase { get; set; }
+        [JsonPropertyName("perfil")] public string? Perfil { get; set; }
+        [JsonPropertyName("long_mm")] public string? LongMm { get; set; }
+        [JsonPropertyName("cant")] public string? Cant { get; set; }
+        [JsonPropertyName("acero")] public string? Acero { get; set; }
+        [JsonPropertyName("en_lista")] public bool EnLista { get; set; }
+    }
+    private class FilaLista
+    {
+        [JsonPropertyName("hoja")] public int Hoja { get; set; }
+        [JsonPropertyName("hoja_txt")] public string? HojaTxt { get; set; }
+        [JsonPropertyName("clase")] public string Clase { get; set; } = "";
+        [JsonPropertyName("marca")] public string Marca { get; set; } = "";
+        [JsonPropertyName("perfil")] public string Perfil { get; set; } = "";
+        [JsonPropertyName("long_mm")] public string LongMm { get; set; } = "";
+        [JsonPropertyName("cant")] public string Cant { get; set; } = "";
+        [JsonPropertyName("acero")] public string Acero { get; set; } = "";
+        [JsonPropertyName("conjunto")] public string Conjunto { get; set; } = "";
+    }
+    private class MetaModelo
+    {
+        [JsonPropertyName("nombre")] public string Nombre { get; set; } = "";
+        [JsonPropertyName("linea")] public string Linea { get; set; } = "";
+        [JsonPropertyName("fuente")] public string Fuente { get; set; } = "";
+        [JsonPropertyName("marcas_vinculadas")] public int MarcasVinculadas { get; set; }
+        [JsonPropertyName("plano_base")] public string? PlanoBase { get; set; }
+        [JsonPropertyName("alto_total_mm")] public double AltoTotalMm { get; set; }
+        [JsonPropertyName("ancho_base_mm")] public double AnchoBaseMm { get; set; }
+        [JsonPropertyName("validacion")] public List<Validacion> Validacion { get; set; } = new();
+        [JsonPropertyName("supuestos")] public List<string> Supuestos { get; set; } = new();
+    }
+    private class Validacion
+    {
+        [JsonPropertyName("hoja")] public string Hoja { get; set; } = "";
+        [JsonPropertyName("cota")] public string Cota { get; set; } = "";
+        [JsonPropertyName("plano_mm")] public double PlanoMm { get; set; }
+        [JsonPropertyName("modelo_mm")] public double ModeloMm { get; set; }
+    }
+    private class PlanoRef
+    {
+        [JsonPropertyName("codigo")] public string Codigo { get; set; } = "";
+        [JsonPropertyName("hoja")] public int Hoja { get; set; }
+        [JsonPropertyName("titulo")] public string? Titulo { get; set; }
+    }
+    private class GrupoModelo
+    {
+        [JsonPropertyName("nombre")] public string Nombre { get; set; } = "";
+        [JsonPropertyName("color")] public string Color { get; set; } = "#888";
+    }
+    private class Miembro
+    {
+        [JsonPropertyName("id")] public string Id { get; set; } = "";
+        [JsonPropertyName("nombre")] public string Nombre { get; set; } = "";
+        [JsonPropertyName("grupo")] public string Grupo { get; set; } = "";
+        [JsonPropertyName("tramo")] public string Tramo { get; set; } = "";
+        [JsonPropertyName("tipo")] public string Tipo { get; set; } = "";
+        [JsonPropertyName("cara")] public string Cara { get; set; } = "";
+        [JsonPropertyName("a")] public double[] A { get; set; } = new double[3];
+        [JsonPropertyName("b")] public double[] B { get; set; } = new double[3];
+        [JsonPropertyName("longitud_mm")] public double LongitudMm { get; set; }
+        [JsonPropertyName("dx_mm")] public double DxMm { get; set; }
+        [JsonPropertyName("dy_mm")] public double DyMm { get; set; }
+        [JsonPropertyName("dz_mm")] public double DzMm { get; set; }
+        [JsonPropertyName("fuente")] public string Fuente { get; set; } = "";
+        [JsonPropertyName("plano")] public PlanoRef? Plano { get; set; }
+        [JsonPropertyName("marcas")] public List<string>? Marcas { get; set; }
+        [JsonPropertyName("marca")] public string? Marca { get; set; }
+        [JsonPropertyName("coherencia")] public string? Coherencia { get; set; }
+        [JsonPropertyName("coherencia_txt")] public string? CoherenciaTxt { get; set; }
+        [JsonPropertyName("verificacion")] public string? Verificacion { get; set; }
+    }
+
+    // Con una torre abierta, «volver» regresa a la cuadrícula de tipos; en la cuadrícula, a la página anterior.
+    private EventCallback AtrasModelos => modelo is null ? default : EventCallback.Factory.Create(this, AbrirSelector);
+}
